@@ -68,7 +68,7 @@ export default async function Home() {
             <div className="flex flex-col gap-2 pt-2">
               {user ? (
                 <Link
-                  href="/protected"
+                  href="/dashboard"
                   className={buttonVariants({ className: "w-full" })}
                 >
                   Go to dashboard

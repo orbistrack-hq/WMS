@@ -41,12 +41,22 @@ export async function updateSession(request: NextRequest) {
     data: { user },
   } = await supabase.auth.getUser()
 
-  if (
-    // if the user is not logged in and the app path, in this case, /protected, is accessed, redirect to the login page
-    request.nextUrl.pathname.startsWith('/protected') &&
-    !user
-  ) {
-    // no user, potentially respond by redirecting the user to the login page
+  // Authenticated app routes — redirect to login if there is no session.
+  const protectedPrefixes = [
+    '/protected',
+    '/dashboard',
+    '/inventory',
+    '/orders',
+    '/packing',
+    '/catalog',
+    '/reports',
+  ]
+  const isProtected = protectedPrefixes.some((prefix) =>
+    request.nextUrl.pathname.startsWith(prefix),
+  )
+
+  if (isProtected && !user) {
+    // no user, redirect to the login page
     const url = request.nextUrl.clone()
     url.pathname = '/auth/login'
     return NextResponse.redirect(url)
@@ -62,8 +72,4 @@ export async function updateSession(request: NextRequest) {
   //    the cookies!
   // 4. Finally:
   //    return myNewResponse
-  // If this is not done, you may be causing the browser and server to go out
-  // of sync and terminate the user's session prematurely!
-
-  return supabaseResponse
-}
+  // If this is not done, yo
