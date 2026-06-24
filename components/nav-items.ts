@@ -7,6 +7,7 @@ import {
   FolderTree,
   BarChart3,
   Store,
+  Settings,
 } from "lucide-react"
 
 export type NavItem = {
@@ -62,5 +63,11 @@ export const NAV_ITEMS: NavItem[] = [
     href: "/integrations/shopify",
     icon: Store,
     description: "Import Shopify orders via webhooks",
+  },
+  {
+    label: "Settings",
+    href: "/settings",
+    icon: Settings,
+    description: "Sites, categories, and integrations",
   },
 ]

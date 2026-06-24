@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
+import Link from "next/link"
 import { useRouter } from "next/navigation"
 import {
   AlertCircle,
@@ -119,7 +120,11 @@ export function Connections({
         </div>
       ) : sites.length === 0 ? (
         <p className="text-sm text-muted-foreground">
-          You don&apos;t have access to a site to connect a store to yet.
+          No sites yet — add one in{" "}
+          <Link href="/settings/sites" className="underline">
+            Sites
+          </Link>{" "}
+          first, then connect a store to it.
         </p>
       ) : null}
     </div>
