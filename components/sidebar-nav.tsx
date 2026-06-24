@@ -1,64 +1,10 @@
 "use client"
 
-import type { ComponentType } from "react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import {
-  LayoutDashboard,
-  Boxes,
-  ClipboardList,
-  PackageCheck,
-  FolderTree,
-  BarChart3,
-} from "lucide-react"
 
 import { cn } from "@/lib/utils"
-
-export type NavItem = {
-  label: string
-  href: string
-  icon: ComponentType<{ className?: string }>
-  description: string
-}
-
-export const NAV_ITEMS: NavItem[] = [
-  {
-    label: "Dashboard",
-    href: "/dashboard",
-    icon: LayoutDashboard,
-    description: "Operations overview across all sites",
-  },
-  {
-    label: "Inventory",
-    href: "/inventory",
-    icon: Boxes,
-    description: "On-hand, available, and reserved per SKU",
-  },
-  {
-    label: "Orders",
-    href: "/orders",
-    icon: ClipboardList,
-    description: "Create, edit, hold, combine, and fulfill",
-  },
-  {
-    label: "Packing",
-    href: "/packing",
-    icon: PackageCheck,
-    description: "Pack orders and record packaging costs",
-  },
-  {
-    label: "Catalog",
-    href: "/catalog",
-    icon: FolderTree,
-    description: "Products, child SKUs, and categories",
-  },
-  {
-    label: "Reports",
-    href: "/reports",
-    icon: BarChart3,
-    description: "Sales, inventory, packaging, and shipping",
-  },
-]
+import { NAV_ITEMS } from "@/components/nav-items"
 
 export function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname()
