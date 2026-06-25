@@ -5,13 +5,22 @@ import { headers } from "next/headers"
 
 import { createClient } from "@/lib/supabase/server"
 import { importShopifyProduct } from "@/lib/shopify/import-products"
-import type { ShopifyProduct } from "@/lib/shopify/types"
+import type { ShopifyInventoryItem, ShopifyProduct } from "@/lib/shopify/types"
 
 const SHOPIFY_API_VERSION = "2024-10"
 
 export type ActionResult = { ok: true } | { ok: false; error: string }
 export type SyncResult =
-  | { ok: true; products: number; created: number; updated: number; skipped: number }
+  | {
+      ok: true
+      products: number
+      created: number
+      updated: number
+      skipped: number
+      costSeeded: number
+      stockSynced: number
+      warning?: string
+    }
   | { ok: false; error: string }
 
 type PgError = { message?: string; details?: string; code?: string } | null
@@ -152,9 +161,51 @@ function nextPageUrl(linkHeader: string | null): string | null {
 }
 
 /**
+ * Pull unit costs for a set of Shopify InventoryItems (cost lives there, not on
+ * the variant). Batched ≤100 ids per call. A non-OK response (typically a token
+ * missing the read_inventory scope) is non-fatal: we return what we have plus a
+ * flag so the caller can sync price/stock and just skip cost seeding.
+ */
+async function fetchVariantCosts(
+  shopDomain: string,
+  token: string,
+  inventoryItemIds: string[],
+): Promise<{ costs: Map<string, number>; unavailable: boolean }> {
+  const costs = new Map<string, number>()
+  const ids = [...new Set(inventoryItemIds)]
+
+  for (let i = 0; i < ids.length; i += 100) {
+    const chunk = ids.slice(i, i + 100)
+    const url = `https://${shopDomain}/admin/api/${SHOPIFY_API_VERSION}/inventory_items.json?ids=${chunk.join(
+      ",",
+    )}&limit=250`
+    const r = await fetch(url, {
+      headers: {
+        "X-Shopify-Access-Token": token,
+        "Content-Type": "application/json",
+      },
+    })
+    if (!r.ok) {
+      console.error(`[shopify] inventory_items ${r.status} — skipping cost sync`)
+      return { costs, unavailable: true }
+    }
+    const body = (await r.json()) as { inventory_items?: ShopifyInventoryItem[] }
+    for (const it of body.inventory_items ?? []) {
+      if (it.id != null && it.cost != null) {
+        const c = Number(it.cost)
+        if (Number.isFinite(c)) costs.set(String(it.id), c)
+      }
+    }
+  }
+  return { costs, unavailable: false }
+}
+
+/**
  * Backfill: pull every product from the connected store via the Admin API and
- * upsert each variant into the catalog. Runs server-side with the store's token
- * (which never leaves the server). Ongoing changes arrive via product webhooks.
+ * upsert each variant into the catalog — including price, unit cost (seeded
+ * only when WMS has none), and available stock (synced into WMS on_hand, logged,
+ * reservations preserved). Runs server-side with the store's token (which never
+ * leaves the server). Ongoing changes still arrive via product webhooks.
  */
 export async function syncProducts(connectionId: string): Promise<SyncResult> {
   const supabase = await createClient()
@@ -178,8 +229,12 @@ export async function syncProducts(connectionId: string): Promise<SyncResult> {
       error: "Set this store's Admin API access token first.",
     }
   }
+  const token = secret.access_token
 
-  const totals = { products: 0, created: 0, updated: 0, skipped: 0 }
+  // Phase 1: page through every product, collecting them plus the inventory
+  // item ids we'll need cost for.
+  const products: ShopifyProduct[] = []
+  const inventoryItemIds: string[] = []
   let url: string | null =
     `https://${conn.shop_domain}/admin/api/${SHOPIFY_API_VERSION}/products.json?limit=250`
 
@@ -187,7 +242,7 @@ export async function syncProducts(connectionId: string): Promise<SyncResult> {
     for (let page = 0; url && page < 40; page++) {
       const r: Response = await fetch(url, {
         headers: {
-          "X-Shopify-Access-Token": secret.access_token,
+          "X-Shopify-Access-Token": token,
           "Content-Type": "application/json",
         },
       })
@@ -198,20 +253,63 @@ export async function syncProducts(connectionId: string): Promise<SyncResult> {
       }
       const body = (await r.json()) as { products?: ShopifyProduct[] }
       for (const product of body.products ?? []) {
-        const res = await importShopifyProduct(
-          supabase,
-          conn.site_id as string,
-          product,
-        )
-        totals.products++
-        totals.created += res.created
-        totals.updated += res.updated
-        totals.skipped += res.skipped
+        products.push(product)
+        for (const v of product.variants ?? []) {
+          if (v.inventory_item_id != null)
+            inventoryItemIds.push(String(v.inventory_item_id))
+        }
       }
       url = nextPageUrl(r.headers.get("link"))
     }
   } catch {
     return { ok: false, error: "Could not reach Shopify. Try again." }
+  }
+
+  // Phase 2: pull costs (best-effort — cost seeding is skipped if unavailable).
+  let costByInventoryItemId = new Map<string, number>()
+  let costUnavailable = false
+  try {
+    const r = await fetchVariantCosts(conn.shop_domain, token, inventoryItemIds)
+    costByInventoryItemId = r.costs
+    costUnavailable = r.unavailable
+  } catch {
+    costUnavailable = true
+  }
+
+  // Phase 3: upsert each variant with price + cost + stock.
+  const totals = {
+    products: 0,
+    created: 0,
+    updated: 0,
+    skipped: 0,
+    costSeeded: 0,
+    stockSynced: 0,
+  }
+  let firstError: string | undefined
+  for (const product of products) {
+    const res = await importShopifyProduct(
+      supabase,
+      conn.site_id as string,
+      product,
+      { costByInventoryItemId, syncInventory: true },
+    )
+    totals.products++
+    totals.created += res.created
+    totals.updated += res.updated
+    totals.skipped += res.skipped
+    totals.costSeeded += res.costSeeded
+    totals.stockSynced += res.stockSynced
+    if (!firstError && res.firstError) firstError = res.firstError
+  }
+
+  // Every variant failed to write — surface the real reason instead of a
+  // misleading "success" with zero imports.
+  if (totals.created === 0 && totals.updated === 0 && totals.skipped > 0) {
+    console.error(`[shopify] all ${totals.skipped} variants skipped: ${firstError}`)
+    return {
+      ok: false,
+      error: `All ${totals.skipped} variants were skipped — the catalog write is failing${firstError ? `: ${firstError}` : "."}`,
+    }
   }
 
   await supabase
@@ -221,7 +319,16 @@ export async function syncProducts(connectionId: string): Promise<SyncResult> {
 
   revalidatePath("/integrations/shopify")
   revalidatePath("/catalog")
-  return { ok: true, ...totals }
+  revalidatePath("/inventory")
+  // Cost and stock both need the read_inventory scope; if cost was blocked and
+  // no stock came through either, point at the scope rather than failing.
+  const warning =
+    costUnavailable && totals.stockSynced === 0
+      ? "Price and names synced, but cost and stock were skipped — add the read_inventory scope to the Admin API token, then sync again."
+      : costUnavailable
+        ? "Cost was skipped (token may be missing the read_inventory scope). Price and stock synced."
+        : undefined
+  return { ok: true, ...totals, warning }
 }
 
 export type RegisterResult =

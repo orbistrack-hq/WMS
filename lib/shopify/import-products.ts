@@ -6,19 +6,39 @@ export type ProductImportResult = {
   created: number
   updated: number
   skipped: number
+  costSeeded: number
+  stockSynced: number
+  firstError?: string
+}
+
+export type ImportOptions = {
+  // inventory_item_id (string) -> unit cost, gathered from the Admin API.
+  costByInventoryItemId?: Map<string, number>
+  // When true, push each variant's available quantity into WMS on_hand.
+  syncInventory?: boolean
 }
 
 /**
  * Map every variant of one Shopify product to a WMS product + child SKU at the
  * given site, via the idempotent upsert_shopify_variant RPC. Works with either
  * an end-user client (RLS applies) or the service-role client (webhook).
+ *
+ * Cost and inventory are only sent when opts provides them, so the webhook
+ * product path (no opts) keeps its original name/price/sku-only behaviour.
  */
 export async function importShopifyProduct(
   client: SupabaseClient,
   siteId: string,
   product: ShopifyProduct,
+  opts: ImportOptions = {},
 ): Promise<ProductImportResult> {
-  const res: ProductImportResult = { created: 0, updated: 0, skipped: 0 }
+  const res: ProductImportResult = {
+    created: 0,
+    updated: 0,
+    skipped: 0,
+    costSeeded: 0,
+    stockSynced: 0,
+  }
 
   for (const v of product.variants ?? []) {
     const variantId = v.id != null ? String(v.id) : null
@@ -27,20 +47,45 @@ export async function importShopifyProduct(
       continue
     }
     const price = v.price != null ? Number(v.price) : 0
+
+    // Cost from the InventoryItem lookup (the RPC seeds it only when unset).
+    let cost: number | null = null
+    const invItemId =
+      v.inventory_item_id != null ? String(v.inventory_item_id) : null
+    if (invItemId && opts.costByInventoryItemId?.has(invItemId)) {
+      const c = opts.costByInventoryItemId.get(invItemId)!
+      if (Number.isFinite(c)) cost = c
+    }
+
+    // Available quantity (requires read_inventory; may be absent).
+    let invQty: number | null = null
+    if (
+      opts.syncInventory &&
+      v.inventory_quantity != null &&
+      Number.isFinite(Number(v.inventory_quantity))
+    ) {
+      invQty = Math.trunc(Number(v.inventory_quantity))
+    }
+
     const { data, error } = await client.rpc("upsert_shopify_variant", {
       p_site_id: siteId,
       p_store_variant_id: variantId,
       p_name: variantProductName(product.title, v.title),
       p_sku: v.sku ?? null,
       p_price: Number.isFinite(price) ? price : 0,
+      p_cost: cost,
+      p_inventory_qty: invQty,
     })
     if (error) {
       res.skipped++
+      if (!res.firstError) res.firstError = error.message
       continue
     }
     const row = Array.isArray(data) ? data[0] : data
     if (row?.created) res.created++
     else res.updated++
+    if (row?.cost_seeded) res.costSeeded++
+    if (invQty != null) res.stockSynced++
   }
 
   return res

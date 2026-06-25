@@ -35,6 +35,17 @@ export type ShopifyVariant = {
   title?: string | null
   sku?: string | null
   price?: string | number | null
+  // Links the variant to its InventoryItem (where cost lives) and the legacy
+  // total-available count. Both require the read_inventory scope; when the
+  // token lacks it, Shopify returns them as null and we simply skip those facts.
+  inventory_item_id?: number | string | null
+  inventory_quantity?: number | null
+}
+
+// One InventoryItem from /admin/api/.../inventory_items.json — only the cost.
+export type ShopifyInventoryItem = {
+  id?: number | string | null
+  cost?: string | number | null
 }
 
 export type ShopifyProduct = {

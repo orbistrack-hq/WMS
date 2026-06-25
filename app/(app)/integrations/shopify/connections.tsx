@@ -179,7 +179,9 @@ function ConnectionCard({
       if (!res.ok) setError(res.error)
       else {
         setNote(
-          `Synced ${res.products} product${res.products === 1 ? "" : "s"}: ${res.created} new, ${res.updated} updated${res.skipped ? `, ${res.skipped} skipped` : ""}.`,
+          `Synced ${res.products} product${res.products === 1 ? "" : "s"}: ${res.created} new, ${res.updated} updated${res.skipped ? `, ${res.skipped} skipped` : ""}. ` +
+            `Stock updated on ${res.stockSynced}, cost seeded on ${res.costSeeded}.` +
+            (res.warning ? ` Note: ${res.warning}` : ""),
         )
         router.refresh()
       }
