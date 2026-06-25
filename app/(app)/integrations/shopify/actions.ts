@@ -116,6 +116,31 @@ export async function setCredentials(
   return { ok: true }
 }
 
+/** Turn a Shopify Admin API error response into a readable, actionable message. */
+function shopifyApiError(status: number, body: string): string {
+  let detail = ""
+  try {
+    const j = JSON.parse(body)
+    detail =
+      typeof j?.errors === "string"
+        ? j.errors
+        : j?.errors
+          ? JSON.stringify(j.errors)
+          : ""
+  } catch {
+    detail = body.slice(0, 200)
+  }
+  const hint =
+    status === 403
+      ? " The token is likely missing a required scope (e.g. read_products) — add it to the custom app, reinstall, and update the token."
+      : status === 401
+        ? " The access token is invalid or revoked — generate a fresh one."
+        : status === 404
+          ? " Check the store domain — it must be the xxx.myshopify.com admin domain."
+          : ""
+  return `Shopify API ${status}${detail ? `: ${detail}` : ""}.${hint}`
+}
+
 /** Extract the rel="next" URL from a Shopify Link header, if any. */
 function nextPageUrl(linkHeader: string | null): string | null {
   if (!linkHeader) return null
@@ -167,10 +192,9 @@ export async function syncProducts(connectionId: string): Promise<SyncResult> {
         },
       })
       if (!r.ok) {
-        return {
-          ok: false,
-          error: `Shopify API returned ${r.status}. Check the store domain and token.`,
-        }
+        const raw = await r.text().catch(() => "")
+        console.error(`[shopify] product sync ${r.status}: ${raw}`)
+        return { ok: false, error: shopifyApiError(r.status, raw) }
       }
       const body = (await r.json()) as { products?: ShopifyProduct[] }
       for (const product of body.products ?? []) {
