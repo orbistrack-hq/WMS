@@ -14,7 +14,7 @@ export default async function Home() {
   const supabase = await createClient()
 
   const { data, error } = await supabase
-    .from("connection_test")
+    .from("orders")
     .select("message")
     .limit(1)
     .maybeSingle()
