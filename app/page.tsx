@@ -15,7 +15,7 @@ export default async function Home() {
 
   const { data, error } = await supabase
     .from("orders")
-    .select("message")
+    .select("id")
     .limit(1)
     .maybeSingle()
 
@@ -57,8 +57,8 @@ export default async function Home() {
               </span>
             </div>
 
-            {connected && data?.message ? (
-              <p className="text-sm text-muted-foreground">{data.message}</p>
+            {connected && data?.id ? (
+              <p className="text-sm text-muted-foreground">Order ID: {data.id}</p>
             ) : null}
 
             {error ? (
