@@ -32,7 +32,18 @@ type SearchParams = {
   site?: string
   channel?: string
   hold?: string
+  sort?: string
+  dir?: string
 }
+
+// Columns Postgres can order directly. Computed columns (total/items) are
+// sorted in JS after the totals are derived, below.
+const DB_SORTS = new Set([
+  "entered_at",
+  "sale_date",
+  "order_number",
+  "status",
+])
 
 type OrderRow = {
   id: string
@@ -67,6 +78,10 @@ export default async function OrdersPage({
     .select("id, name")
     .order("name")
 
+  const sort = sp.sort ?? "entered_at"
+  const dir: "asc" | "desc" = sp.dir === "asc" ? "asc" : "desc"
+  const dbSort = DB_SORTS.has(sort) ? sort : "entered_at"
+
   let query = supabase
     .from("orders")
     .select(
@@ -76,7 +91,7 @@ export default async function OrdersPage({
        site:sites(name, code),
        order_line_items(quantity, unit_price, discount, tax)`,
     )
-    .order("entered_at", { ascending: false })
+    .order(dbSort, { ascending: dir === "asc" })
     .limit(200)
 
   if (sp.status) query = query.eq("status", sp.status)
@@ -87,7 +102,17 @@ export default async function OrdersPage({
   if (sp.q) query = query.ilike("order_number", `%${sp.q}%`)
 
   const { data, error } = await query
-  const orders = (data ?? []) as unknown as OrderRow[]
+
+  // Attach computed totals once, then sort in JS for the computed columns.
+  const orders = ((data ?? []) as unknown as OrderRow[]).map((o) => ({
+    ...o,
+    ...computeOrderTotals(o.order_line_items),
+  }))
+  if (sort === "total" || sort === "items") {
+    const sign = dir === "asc" ? 1 : -1
+    const key = sort === "items" ? "itemCount" : "total"
+    orders.sort((a, b) => sign * (a[key] - b[key]))
+  }
 
   return (
     <>
@@ -144,9 +169,7 @@ export default async function OrdersPage({
             <TableBody>
               {orders.map((o) => {
                 const badge = STATUS_BADGE[o.status]
-                const { itemCount, total } = computeOrderTotals(
-                  o.order_line_items,
-                )
+                const { itemCount, total } = o
                 return (
                   <TableRow key={o.id}>
                     <TableCell className="font-medium">

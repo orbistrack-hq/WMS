@@ -1,9 +1,10 @@
 import Link from "next/link"
 import { notFound } from "next/navigation"
-import { ArrowLeft } from "lucide-react"
+import { ArrowLeft, ListChecks } from "lucide-react"
 
 import { createClient } from "@/lib/supabase/server"
 import { Badge } from "@/components/ui/badge"
+import { buttonVariants } from "@/components/ui/button"
 import {
   Card,
   CardContent,
@@ -105,12 +106,20 @@ export default async function PackDetailPage({
 
   return (
     <>
-      <Link
-        href="/packing"
-        className="mb-4 inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
-      >
-        <ArrowLeft className="size-4" /> Packing queue
-      </Link>
+      <div className="mb-4 flex items-center justify-between">
+        <Link
+          href="/packing"
+          className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+        >
+          <ArrowLeft className="size-4" /> Packing queue
+        </Link>
+        <Link
+          href={`/packing/${id}/pick-list`}
+          className={buttonVariants({ variant: "outline", size: "sm" })}
+        >
+          <ListChecks data-icon="inline-start" /> Pick list
+        </Link>
+      </div>
 
       <div className="mb-6 flex flex-wrap items-center gap-2.5">
         <h1 className="text-2xl font-semibold tracking-tight">

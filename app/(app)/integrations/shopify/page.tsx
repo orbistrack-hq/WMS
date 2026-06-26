@@ -70,9 +70,11 @@ export default async function ShopifyIntegrationPage() {
       )
       .order("received_at", { ascending: false })
       .limit(50),
-    // Read only on the server to derive which fields are set; the raw token /
-    // secret values are converted to booleans and never sent to the client.
-    supabase.from("shopify_secrets").select("connection_id, access_token, api_secret"),
+    // Boolean-only view: the raw token/secret are sealed from the API role and
+    // never leave the database. We only learn whether each field is set.
+    supabase
+      .from("shopify_credential_status")
+      .select("connection_id, has_token, has_secret"),
     headers(),
   ])
 
@@ -82,12 +84,12 @@ export default async function ShopifyIntegrationPage() {
     (
       (secretsRes.data ?? []) as {
         connection_id: string
-        access_token: string | null
-        api_secret: string | null
+        has_token: boolean
+        has_secret: boolean
       }[]
     ).map((s) => [
       s.connection_id,
-      { hasToken: Boolean(s.access_token), hasSecret: Boolean(s.api_secret) },
+      { hasToken: s.has_token, hasSecret: s.has_secret },
     ]),
   )
   const host = hdrs.get("host") ?? "your-app.vercel.app"

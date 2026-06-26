@@ -37,7 +37,11 @@ export function OrdersFilters({ sites }: { sites: SiteOption[] }) {
   const site = params.get("site") ?? ""
   const channel = params.get("channel") ?? ""
   const hold = params.get("hold") ?? ""
-  const hasFilters = Boolean(q || status || site || channel || hold)
+  const sort = params.get("sort") ?? "entered_at"
+  const dir = params.get("dir") ?? "desc"
+  const hasFilters = Boolean(
+    q || status || site || channel || hold || params.get("sort") || params.get("dir"),
+  )
 
   return (
     <div
@@ -107,6 +111,30 @@ export function OrdersFilters({ sites }: { sites: SiteOption[] }) {
         <option value="">Hold: any</option>
         <option value="true">On hold</option>
         <option value="false">Not held</option>
+      </Select>
+
+      <Select
+        value={sort}
+        onChange={(e) => setParam("sort", e.target.value)}
+        className="w-44"
+        aria-label="Sort by"
+      >
+        <option value="entered_at">Sort: Date entered</option>
+        <option value="sale_date">Sort: Sale date</option>
+        <option value="order_number">Sort: Order #</option>
+        <option value="status">Sort: Status</option>
+        <option value="total">Sort: Total</option>
+        <option value="items">Sort: Items</option>
+      </Select>
+
+      <Select
+        value={dir}
+        onChange={(e) => setParam("dir", e.target.value)}
+        className="w-36"
+        aria-label="Sort direction"
+      >
+        <option value="desc">Descending</option>
+        <option value="asc">Ascending</option>
       </Select>
 
       {hasFilters ? (

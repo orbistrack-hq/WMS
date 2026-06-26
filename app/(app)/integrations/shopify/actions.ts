@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache"
 import { headers } from "next/headers"
 
 import { createClient } from "@/lib/supabase/server"
+import { createAdminClient } from "@/lib/supabase/admin"
 import { importShopifyProduct } from "@/lib/shopify/import-products"
 import type { ShopifyInventoryItem, ShopifyProduct } from "@/lib/shopify/types"
 
@@ -104,14 +105,28 @@ export async function setCredentials(
 
   const supabase = await createClient()
 
+  // Authorize first: the caller must be able to see this connection (RLS is
+  // site-scoped). shopify_secrets itself is sealed from the API role, so we
+  // can't lean on its RLS — we gate on the connection the user CAN read.
+  const { data: conn } = await supabase
+    .from("shopify_connections")
+    .select("id")
+    .eq("id", connectionId)
+    .maybeSingle()
+  if (!conn) return { ok: false, error: "Connection not found or access denied." }
+
+  // Read/write the secret with the service role: the secrets table is reachable
+  // only from trusted server code, never the public Data API.
+  const admin = createAdminClient()
+
   // Merge with any existing values so a blank field keeps the current one.
-  const { data: existing } = await supabase
+  const { data: existing } = await admin
     .from("shopify_secrets")
     .select("access_token, api_secret")
     .eq("connection_id", connectionId)
     .maybeSingle()
 
-  const { error } = await supabase.from("shopify_secrets").upsert(
+  const { error } = await admin.from("shopify_secrets").upsert(
     {
       connection_id: connectionId,
       access_token: token || existing?.access_token || null,
@@ -218,7 +233,9 @@ export async function syncProducts(connectionId: string): Promise<SyncResult> {
   if (connErr) return { ok: false, error: err(connErr) }
   if (!conn) return { ok: false, error: "Connection not found." }
 
-  const { data: secret } = await supabase
+  // Secret read goes through the service role; the connection select above (user
+  // client, RLS) is what authorizes the caller for this connection's site.
+  const { data: secret } = await createAdminClient()
     .from("shopify_secrets")
     .select("access_token")
     .eq("connection_id", connectionId)
@@ -360,7 +377,9 @@ export async function registerWebhooks(
     .maybeSingle()
   if (!conn) return { ok: false, error: "Connection not found." }
 
-  const { data: secret } = await supabase
+  // Secret read goes through the service role; the connection select above (user
+  // client, RLS) is what authorizes the caller for this connection's site.
+  const { data: secret } = await createAdminClient()
     .from("shopify_secrets")
     .select("access_token")
     .eq("connection_id", connectionId)

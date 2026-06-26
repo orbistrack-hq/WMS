@@ -9,7 +9,8 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
-
+// Supabase connection check and user authentication are handled in the layout.tsx file, so we can safely assume that if the user reaches this page, they are authenticated.
+// TODO: remove the connection check and user authentication from this page and move it to the layout.tsx file, so that we can safely assume that if the user reaches this page, they are authenticated.
 export default async function Home() {
   const supabase = await createClient()
 
