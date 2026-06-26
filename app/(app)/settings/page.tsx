@@ -1,5 +1,5 @@
 import Link from "next/link"
-import { Building2, FolderTree, Store, UserCircle } from "lucide-react"
+import { Box, Building2, FolderTree, Store, UserCircle } from "lucide-react"
 
 import { createClient } from "@/lib/supabase/server"
 import { PageHeader } from "@/components/page-header"
@@ -47,6 +47,13 @@ export default async function SettingsPage() {
       description: "The multi-level product category tree.",
       href: "/catalog/categories",
       icon: FolderTree,
+      adminOnly: true,
+    },
+    {
+      title: "Packaging",
+      description: "Boxes, jars, labels, and bags, with their unit costs.",
+      href: "/settings/packaging",
+      icon: Box,
       adminOnly: true,
     },
     {
