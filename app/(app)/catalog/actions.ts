@@ -101,6 +101,7 @@ export type ChildSkuInput = {
   site_id: string
   sku?: string | null
   store_variant_id?: string | null
+  bin_location?: string | null
   price: number
   cost: number
   is_active?: boolean
@@ -126,6 +127,7 @@ export async function createChildSku(
     site_id: input.site_id,
     sku: input.sku?.trim() || null,
     store_variant_id: input.store_variant_id?.trim() || null,
+    bin_location: input.bin_location?.trim() || null,
     price: input.price,
     cost: input.cost,
     is_active: input.is_active ?? true,
@@ -150,6 +152,7 @@ export async function updateChildSku(
     .update({
       sku: input.sku?.trim() || null,
       store_variant_id: input.store_variant_id?.trim() || null,
+      bin_location: input.bin_location?.trim() || null,
       price: input.price,
       cost: input.cost,
       is_active: input.is_active ?? true,

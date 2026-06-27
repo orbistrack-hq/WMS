@@ -27,6 +27,7 @@ export type ChildSku = {
   site_name: string
   sku: string | null
   store_variant_id: string | null
+  bin_location: string | null
   price: number
   cost: number
   is_active: boolean
@@ -39,6 +40,7 @@ type SiteOption = { id: string; name: string }
 type Draft = {
   sku: string
   store_variant_id: string
+  bin_location: string
   price: string
   cost: string
   is_active: boolean
@@ -47,6 +49,7 @@ type Draft = {
 const emptyDraft = (): Draft => ({
   sku: "",
   store_variant_id: "",
+  bin_location: "",
   price: "",
   cost: "",
   is_active: true,
@@ -81,6 +84,7 @@ export function ChildSkuManager({
     setEditDraft({
       sku: s.sku ?? "",
       store_variant_id: s.store_variant_id ?? "",
+      bin_location: s.bin_location ?? "",
       price: String(s.price),
       cost: String(s.cost),
       is_active: s.is_active,
@@ -93,6 +97,7 @@ export function ChildSkuManager({
       const res = await updateChildSku(s.id, productId, {
         sku: editDraft.sku || null,
         store_variant_id: editDraft.store_variant_id || null,
+        bin_location: editDraft.bin_location || null,
         price: Number(editDraft.price),
         cost: Number(editDraft.cost),
         is_active: editDraft.is_active,
@@ -117,6 +122,7 @@ export function ChildSkuManager({
         site_id: addSite,
         sku: addDraft.sku || null,
         store_variant_id: addDraft.store_variant_id || null,
+        bin_location: addDraft.bin_location || null,
         price: Number(addDraft.price || 0),
         cost: Number(addDraft.cost || 0),
         is_active: addDraft.is_active,
@@ -150,6 +156,7 @@ export function ChildSkuManager({
             <TableRow>
               <TableHead>Site</TableHead>
               <TableHead>SKU</TableHead>
+              <TableHead>Bin</TableHead>
               <TableHead>Variant ID</TableHead>
               <TableHead className="text-right">Price</TableHead>
               <TableHead className="text-right">Cost</TableHead>
@@ -171,6 +178,18 @@ export function ChildSkuManager({
                         setEditDraft({ ...editDraft, sku: e.target.value })
                       }
                       className="w-32"
+                    />
+                  </TableCell>
+                  <TableCell>
+                    <Input
+                      value={editDraft.bin_location}
+                      onChange={(e) =>
+                        setEditDraft({
+                          ...editDraft,
+                          bin_location: e.target.value,
+                        })
+                      }
+                      className="w-24"
                     />
                   </TableCell>
                   <TableCell>
@@ -256,6 +275,9 @@ export function ChildSkuManager({
                   <TableCell className="font-medium">{s.site_name}</TableCell>
                   <TableCell className="text-muted-foreground">
                     {s.sku ?? "—"}
+                  </TableCell>
+                  <TableCell className="tabular-nums text-muted-foreground">
+                    {s.bin_location ?? "—"}
                   </TableCell>
                   <TableCell className="text-muted-foreground">
                     {s.store_variant_id ?? "—"}
@@ -355,6 +377,17 @@ export function ChildSkuManager({
                 }
                 className="w-32"
                 placeholder="optional"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label className="text-xs">Bin</Label>
+              <Input
+                value={addDraft.bin_location}
+                onChange={(e) =>
+                  setAddDraft({ ...addDraft, bin_location: e.target.value })
+                }
+                className="w-24"
+                placeholder="A-12-3"
               />
             </div>
             <div className="flex flex-col gap-1">

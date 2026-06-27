@@ -24,13 +24,19 @@ type PickGroup = {
       child_sku: {
         id: string
         sku: string | null
+        bin_location: string | null
         product: { name: string | null } | null
       } | null
     }[]
   }[]
 }
 
-type PickLine = { sku: string | null; name: string; qty: number }
+type PickLine = {
+  sku: string | null
+  bin: string | null
+  name: string
+  qty: number
+}
 
 export default async function PickListPage({
   params,
@@ -48,7 +54,7 @@ export default async function PickListPage({
        site:sites(name),
        orders(order_number, status,
          order_line_items(quantity,
-           child_sku:child_skus(id, sku, product:products(name))))`,
+           child_sku:child_skus(id, sku, bin_location, product:products(name))))`,
     )
     .eq("id", id)
     .maybeSingle()
@@ -70,6 +76,7 @@ export default async function PickListPage({
       } else {
         byKey.set(key, {
           sku: li.child_sku?.sku ?? null,
+          bin: li.child_sku?.bin_location ?? null,
           name: li.child_sku?.product?.name ?? "—",
           qty: li.quantity,
         })
@@ -77,11 +84,19 @@ export default async function PickListPage({
     }
   }
 
-  // No bin locations tracked, so sort by SKU (blanks last), then product name.
+  // Sort into a walking route: bin first (blanks last) so the picker makes one
+  // efficient pass, then SKU (blanks last), then product name as a tiebreak.
   const lines = [...byKey.values()].sort((a, b) => {
-    if (a.sku && b.sku) return a.sku.localeCompare(b.sku)
-    if (a.sku) return -1
-    if (b.sku) return 1
+    if (a.bin && b.bin) {
+      const c = a.bin.localeCompare(b.bin)
+      if (c !== 0) return c
+    } else if (a.bin) return -1
+    else if (b.bin) return 1
+    if (a.sku && b.sku) {
+      const c = a.sku.localeCompare(b.sku)
+      if (c !== 0) return c
+    } else if (a.sku) return -1
+    else if (b.sku) return 1
     return a.name.localeCompare(b.name)
   })
   const totalUnits = lines.reduce((n, l) => n + l.qty, 0)
@@ -127,6 +142,7 @@ export default async function PickListPage({
           <table className="w-full border-collapse">
             <thead>
               <tr className="border-b text-left">
+                <th className="py-1.5 pr-2 font-semibold">Bin</th>
                 <th className="py-1.5 pr-2 font-semibold">Product</th>
                 <th className="py-1.5 pr-2 font-semibold">SKU</th>
                 <th className="py-1.5 pr-2 text-right font-semibold">Qty</th>
@@ -136,6 +152,9 @@ export default async function PickListPage({
             <tbody>
               {lines.map((l, i) => (
                 <tr key={i} className="border-b">
+                  <td className="py-1.5 pr-2 font-semibold tabular-nums">
+                    {l.bin ?? "—"}
+                  </td>
                   <td className="py-1.5 pr-2 font-medium">{l.name}</td>
                   <td className="py-1.5 pr-2 tabular-nums text-muted-foreground">
                     {l.sku ?? "—"}
