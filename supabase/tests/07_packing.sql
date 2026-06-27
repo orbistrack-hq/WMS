@@ -1,7 +1,7 @@
 -- Packing: record_packaging_usage snapshots cost; pack_group advances orders.
 -- Uses seeded packaging types (Standard Box 0.85, 8oz Jar 0.40) and SKU/site MAIN.
 begin;
-select plan(9);
+select plan(12);
 \set BOX  '''11111111-0000-0000-0000-000000000001'''
 \set JAR  '''11111111-0000-0000-0000-000000000003'''
 \set SKU  '''a0000000-0000-0000-0000-000000000001'''
@@ -30,9 +30,18 @@ select is(public.group_packaging_cost(:G), 2.05::numeric,
 select throws_ok($$ select record_packaging_usage('b0000000-0000-0000-0000-000000000001','11111111-0000-0000-0000-000000000001',0) $$,
   NULL, NULL, 'zero quantity rejected');
 
+-- packing is gated on picking: a group with an unpicked order can't be packed
+select throws_ok($$ select pack_group('b0000000-0000-0000-0000-000000000001','x') $$,
+  NULL, NULL, 'pack_group blocked until picking is complete');
+
+-- pick the line fully; first pick moves the order created -> picking
+select lives_ok($$ select set_pick_qty('b0000000-0000-0000-0000-000000000001','a0000000-0000-0000-0000-000000000001',2) $$,
+  'set_pick_qty records the pick');
+select is(public.pick_complete(:G), true, 'picking complete after full pick');
+
 -- pack the group: order advances to packed, note saved
 select lives_ok($$ select pack_group('b0000000-0000-0000-0000-000000000001','handle with care') $$,
-  'pack_group succeeds');
+  'pack_group succeeds once picking is done');
 select is((select status from orders where id=:O), 'packed', 'order advanced to packed');
 select is((select packing_notes from fulfillment_groups where id=:G), 'handle with care',
   'packing note saved');

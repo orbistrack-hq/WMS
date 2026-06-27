@@ -1,6 +1,6 @@
 import Link from "next/link"
 import { notFound } from "next/navigation"
-import { ArrowLeft, ListChecks } from "lucide-react"
+import { ArrowLeft, ClipboardCheck, ListChecks } from "lucide-react"
 
 import { createClient } from "@/lib/supabase/server"
 import { Badge } from "@/components/ui/badge"
@@ -62,7 +62,7 @@ export default async function PackDetailPage({
   const { id } = await params
   const supabase = await createClient()
 
-  const [groupRes, typesRes] = await Promise.all([
+  const [groupRes, typesRes, pickCompleteRes] = await Promise.all([
     supabase
       .from("fulfillment_groups")
       .select(
@@ -82,12 +82,14 @@ export default async function PackDetailPage({
       .select("id, name, kind, unit_cost")
       .eq("is_active", true)
       .order("kind"),
+    supabase.rpc("pick_complete", { p_group_id: id }),
   ])
 
   if (!groupRes.data) notFound()
   const group = groupRes.data as unknown as GroupDetail
 
   const needsPacking = group.orders.some((o) => PREPACK.has(o.status))
+  const pickComplete = pickCompleteRes.data === true
 
   const usageLines: UsageLine[] = group.packaging_usage.map((u) => ({
     id: u.id,
@@ -113,12 +115,22 @@ export default async function PackDetailPage({
         >
           <ArrowLeft className="size-4" /> Packing queue
         </Link>
-        <Link
-          href={`/packing/${id}/pick-list`}
-          className={buttonVariants({ variant: "outline", size: "sm" })}
-        >
-          <ListChecks data-icon="inline-start" /> Pick list
-        </Link>
+        <div className="flex items-center gap-2">
+          <Link
+            href={`/packing/${id}/pick-list`}
+            className={buttonVariants({ variant: "outline", size: "sm" })}
+          >
+            <ListChecks data-icon="inline-start" /> Pick list
+          </Link>
+          {needsPacking ? (
+            <Link
+              href={`/packing/${id}/pick`}
+              className={buttonVariants({ size: "sm" })}
+            >
+              <ClipboardCheck data-icon="inline-start" /> Pick
+            </Link>
+          ) : null}
+        </div>
       </div>
 
       <div className="mb-6 flex flex-wrap items-center gap-2.5">
@@ -212,6 +224,7 @@ export default async function PackDetailPage({
                 groupId={group.id}
                 initialNotes={group.packing_notes}
                 needsPacking={needsPacking}
+                pickComplete={pickComplete}
               />
             </CardContent>
           </Card>

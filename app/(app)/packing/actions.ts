@@ -87,3 +87,92 @@ export async function packGroup(
   revalidatePath("/orders")
   return { ok: true }
 }
+
+// ---------------------------------------------------------------------------
+// Interactive picking
+// ---------------------------------------------------------------------------
+
+export type ClaimState = {
+  holderId: string | null
+  holderName: string | null
+  /** The caller holds the claim after this call. */
+  isSelf: boolean
+  /** The caller took the claim from another picker. */
+  takenOver: boolean
+}
+
+/** Claim, or take over, a group for picking (soft lock). */
+export async function claimPick(
+  groupId: string,
+  takeover = false,
+): Promise<{ ok: true; claim: ClaimState } | { ok: false; error: string }> {
+  const supabase = await createClient()
+  const { data, error } = await supabase.rpc("claim_pick", {
+    p_group_id: groupId,
+    p_takeover: takeover,
+  })
+  if (error) return { ok: false, error: packError(error) }
+
+  const r = data as {
+    holder_id: string | null
+    holder_name: string | null
+    is_self: boolean
+    taken_over: boolean
+  }
+  return {
+    ok: true,
+    claim: {
+      holderId: r.holder_id,
+      holderName: r.holder_name,
+      isSelf: r.is_self,
+      takenOver: r.taken_over,
+    },
+  }
+}
+
+export type PickResult = {
+  childSkuId: string
+  qtyPicked: number
+  required: number
+  short: boolean
+  /** Every required SKU in the group is now picked or marked short. */
+  complete: boolean
+}
+
+/** Record picked quantity for a line (clamped server-side); flag short stock. */
+export async function setPickQty(
+  groupId: string,
+  childSkuId: string,
+  qty: number,
+  short = false,
+): Promise<{ ok: true; result: PickResult } | { ok: false; error: string }> {
+  const supabase = await createClient()
+  const { data, error } = await supabase.rpc("set_pick_qty", {
+    p_group_id: groupId,
+    p_child_sku_id: childSkuId,
+    p_qty: Math.trunc(qty),
+    p_short: short,
+  })
+  if (error) return { ok: false, error: packError(error) }
+
+  const r = data as {
+    child_sku_id: string
+    qty_picked: number
+    required: number
+    short: boolean
+    complete: boolean
+  }
+  revalidatePath(`/packing/${groupId}/pick`)
+  revalidatePath(`/packing/${groupId}`)
+  revalidatePath("/packing")
+  return {
+    ok: true,
+    result: {
+      childSkuId: r.child_sku_id,
+      qtyPicked: r.qty_picked,
+      required: r.required,
+      short: r.short,
+      complete: r.complete,
+    },
+  }
+}
