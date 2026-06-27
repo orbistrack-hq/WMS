@@ -7,7 +7,7 @@ import { AlertCircle, Check } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Select } from "@/components/ui/select"
+import { Combobox } from "@/components/ui/combobox"
 import { Textarea } from "@/components/ui/textarea"
 import {
   createProduct,
@@ -101,18 +101,17 @@ export function ProductForm({
 
       <div className="flex flex-col gap-1">
         <Label htmlFor="prod-cat">Category</Label>
-        <Select
+        <Combobox
           id="prod-cat"
           value={categoryId}
-          onChange={(e) => setCategoryId(e.target.value)}
-        >
-          <option value="">Uncategorized</option>
-          {categories.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.label}
-            </option>
-          ))}
-        </Select>
+          onValueChange={setCategoryId}
+          options={[
+            { value: "", label: "Uncategorized" },
+            ...categories.map((c) => ({ value: c.id, label: c.label })),
+          ]}
+          searchPlaceholder="Search categories…"
+          emptyText="No matching category."
+        />
       </div>
 
       <label className="flex items-center gap-2 text-sm">

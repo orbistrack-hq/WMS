@@ -19,6 +19,7 @@ import {
 } from "@/lib/catalog/types"
 import { ProductForm } from "../product-form"
 import { ChildSkuManager, type ChildSku } from "./child-sku-manager"
+import { MergeProducts } from "./merge-products"
 
 export const dynamic = "force-dynamic"
 
@@ -142,7 +143,7 @@ export default async function ProductDetailPage({
           </Card>
         </div>
 
-        <div>
+        <div className="flex flex-col gap-4">
           <Card>
             <CardHeader>
               <CardTitle>Product</CardTitle>
@@ -158,6 +159,22 @@ export default async function ProductDetailPage({
                   category_id: product.category_id,
                   is_active: product.is_active,
                 }}
+              />
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Duplicates</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="mb-3 text-sm text-muted-foreground">
+                Found this product listed twice? Merge the duplicates in — their
+                SKUs move here and the emptied products are deactivated.
+              </p>
+              <MergeProducts
+                survivorId={product.id}
+                survivorName={product.name}
               />
             </CardContent>
           </Card>

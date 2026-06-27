@@ -1,0 +1,13 @@
+Milestone Timeline
+MILESTONE 1 – FOUNDATION, CATALOG & INVENTORY
+Hours: 20
+Start: June 22nd
+Complete: June 25th EOD
+MILESTONE 2 – ORDERS, PACKING & SHIPPING
+Hours: 25
+Start: June 26th
+Complete: June 30th EOD
+MILESTONE 3 – INTEGRATIONS, REPORTING, TESTING & GO LIVE
+Hours: 25
+Start: July 1st
+Complete: July 6th EOD

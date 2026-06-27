@@ -162,6 +162,212 @@ export async function updateChildSku(
 }
 
 // ---------------------------------------------------------------------------
+// Re-parenting a child SKU (manual product mapping)
+// ---------------------------------------------------------------------------
+// Moves a child SKU from one master product to another — the manual counterpart
+// to the SKU-based auto-attach the Shopify sync does. Guarded by the same
+// one-child-per-site rule the schema enforces (unique(product_id, site_id)):
+// if the destination already owns a SKU at this child's site, the two products
+// must be MERGED instead, so we stop with a clear message rather than erroring.
+
+export type ProductSearchResult = {
+  id: string
+  name: string
+  is_active: boolean
+  /** Number of sites this product already has a SKU at. */
+  site_count: number
+  /** SKU codes across sites, for disambiguating same-named products. */
+  skus: string[]
+}
+
+/** Search master products by name, for the re-parent picker. */
+export async function searchProducts(
+  query: string,
+  excludeProductId?: string,
+): Promise<ActionResult<{ products: ProductSearchResult[] }>> {
+  const supabase = await createClient()
+
+  let q = supabase
+    .from("products")
+    .select("id, name, is_active, child_skus(sku)")
+    .order("name")
+    .limit(20)
+
+  const trimmed = query.trim()
+  if (trimmed) q = q.ilike("name", `%${trimmed}%`)
+  if (excludeProductId) q = q.neq("id", excludeProductId)
+
+  const { data, error } = await q
+  if (error) return { ok: false, error: dbError(error) }
+
+  const rows = (data ?? []) as {
+    id: string
+    name: string
+    is_active: boolean
+    child_skus: { sku: string | null }[] | null
+  }[]
+
+  const products: ProductSearchResult[] = rows.map((p) => {
+    const children = p.child_skus ?? []
+    return {
+      id: p.id,
+      name: p.name,
+      is_active: p.is_active,
+      site_count: children.length,
+      skus: children
+        .map((c) => c.sku)
+        .filter((s): s is string => Boolean(s)),
+    }
+  })
+
+  return { ok: true, products }
+}
+
+/** Move a child SKU to a different master product. */
+export async function reparentChildSku(
+  childSkuId: string,
+  fromProductId: string,
+  toProductId: string,
+): Promise<ActionResult> {
+  if (!toProductId) return { ok: false, error: "Pick a destination product." }
+  if (toProductId === fromProductId)
+    return { ok: false, error: "That SKU is already on this product." }
+
+  const supabase = await createClient()
+
+  // Read the child's site so we can give a precise conflict message.
+  const { data: child, error: childErr } = await supabase
+    .from("child_skus")
+    .select("id, site_id, site:sites(name)")
+    .eq("id", childSkuId)
+    .maybeSingle()
+  if (childErr) return { ok: false, error: dbError(childErr) }
+  if (!child) return { ok: false, error: "That SKU no longer exists." }
+
+  // Confirm the destination product still exists.
+  const { data: target, error: targetErr } = await supabase
+    .from("products")
+    .select("id, name")
+    .eq("id", toProductId)
+    .maybeSingle()
+  if (targetErr) return { ok: false, error: dbError(targetErr) }
+  if (!target) return { ok: false, error: "That product no longer exists." }
+
+  // One-child-per-site guard: destination must not already own a SKU at this
+  // child's site. If it does, the right operation is a merge, not a move.
+  const childRow = child as unknown as {
+    site_id: string
+    site: { name: string | null } | null
+  }
+  const { data: clash, error: clashErr } = await supabase
+    .from("child_skus")
+    .select("id")
+    .eq("product_id", toProductId)
+    .eq("site_id", childRow.site_id)
+    .maybeSingle()
+  if (clashErr) return { ok: false, error: dbError(clashErr) }
+  if (clash) {
+    const siteName = childRow.site?.name ?? "this site"
+    return {
+      ok: false,
+      error: `"${target.name}" already has a SKU at ${siteName}. Merge the products instead of moving this SKU.`,
+    }
+  }
+
+  const { error } = await supabase
+    .from("child_skus")
+    .update({ product_id: toProductId })
+    .eq("id", childSkuId)
+  if (error) return { ok: false, error: dbError(error, SKU_CONFLICTS) }
+
+  // Both detail pages change: the source loses a SKU, the destination gains one.
+  revalidateCatalog(fromProductId)
+  revalidatePath(`/catalog/${toProductId}`)
+  return { ok: true }
+}
+
+// ---------------------------------------------------------------------------
+// Merging products (manual consolidation of duplicate masters)
+// ---------------------------------------------------------------------------
+// Thin wrapper over the merge_products RPC. The RPC does the work and the
+// safety (operator-only, site access, one-child-per-site conflict guard). We
+// run it once in dry-run to preview, then for real to commit.
+
+export type MergeConflict = {
+  site_id: string
+  site_name: string | null
+  skus: string[]
+}
+
+export type MergePreview = {
+  ok: boolean
+  /** Child SKUs that would move onto the survivor. */
+  moved: number
+  /** Sites where survivor + a loser both hold a SKU — block the merge. */
+  conflicts: MergeConflict[]
+}
+
+type MergeRpcResult = {
+  ok: boolean
+  dry_run: boolean
+  survivor_id: string
+  moved: number
+  absorbed: string[]
+  conflicts: MergeConflict[]
+}
+
+/** Preview a merge: how many SKUs move and any blocking site conflicts. */
+export async function previewMerge(
+  survivorId: string,
+  loserIds: string[],
+): Promise<ActionResult<{ preview: MergePreview }>> {
+  if (!survivorId) return { ok: false, error: "Missing the surviving product." }
+  if (!loserIds.length)
+    return { ok: false, error: "Pick at least one product to merge in." }
+
+  const supabase = await createClient()
+  const { data, error } = await supabase.rpc("merge_products", {
+    p_survivor: survivorId,
+    p_losers: loserIds,
+    p_dry_run: true,
+  })
+  if (error) return { ok: false, error: dbError(error) }
+
+  const res = data as MergeRpcResult
+  return {
+    ok: true,
+    preview: {
+      ok: res.ok,
+      moved: res.moved,
+      conflicts: res.conflicts ?? [],
+    },
+  }
+}
+
+/** Commit a merge: absorb the chosen products into the survivor. */
+export async function mergeProducts(
+  survivorId: string,
+  loserIds: string[],
+): Promise<ActionResult<{ moved: number; absorbed: string[] }>> {
+  if (!survivorId) return { ok: false, error: "Missing the surviving product." }
+  if (!loserIds.length)
+    return { ok: false, error: "Pick at least one product to merge in." }
+
+  const supabase = await createClient()
+  const { data, error } = await supabase.rpc("merge_products", {
+    p_survivor: survivorId,
+    p_losers: loserIds,
+    p_dry_run: false,
+  })
+  if (error) return { ok: false, error: dbError(error) }
+
+  const res = data as MergeRpcResult
+  revalidateCatalog(survivorId)
+  for (const id of res.absorbed ?? []) revalidatePath(`/catalog/${id}`)
+  return { ok: true, moved: res.moved, absorbed: res.absorbed ?? [] }
+}
+
+// ---------------------------------------------------------------------------
 // Categories (admin-only; enforced by RLS, guarded here for clear messages)
 // ---------------------------------------------------------------------------
 export async function createCategory(

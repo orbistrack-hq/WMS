@@ -1,4 +1,3 @@
-// TODO turn all dropdowns into searchable selects, so that users can type to filter options instead of scrolling through long lists.
 "use client"
 
 import { useMemo, useState, useTransition } from "react"
@@ -9,6 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select } from "@/components/ui/select"
+import { Combobox } from "@/components/ui/combobox"
 import { Textarea } from "@/components/ui/textarea"
 import {
   Card,
@@ -82,6 +82,27 @@ export function OrderForm({
   const skuById = useMemo(
     () => new Map(skus.map((s) => [s.id, s])),
     [skus],
+  )
+
+  // Searchable options: match on product name OR SKU code.
+  const skuOptions = useMemo(
+    () =>
+      siteSkus.map((s) => ({
+        value: s.id,
+        label: `${s.product_name}${s.sku ? ` (${s.sku})` : ""} — ${s.available} avail`,
+        keywords: s.sku ?? "",
+      })),
+    [siteSkus],
+  )
+  const customerOptions = useMemo(
+    () => [
+      { value: "", label: "No customer" },
+      ...customers.map((c) => ({
+        value: c.id,
+        label: c.name ?? "Unnamed customer",
+      })),
+    ],
+    [customers],
   )
 
   function changeSite(next: string) {
@@ -199,18 +220,15 @@ export function OrderForm({
                   >
                     <div className="flex min-w-48 flex-1 flex-col gap-1">
                       <Label className="text-xs">Product</Label>
-                      <Select
+                      <Combobox
                         value={l.child_sku_id}
-                        onChange={(e) => pickSku(l.key, e.target.value)}
-                      >
-                        <option value="">Select a SKU…</option>
-                        {siteSkus.map((s) => (
-                          <option key={s.id} value={s.id}>
-                            {s.product_name}
-                            {s.sku ? ` (${s.sku})` : ""} — {s.available} avail
-                          </option>
-                        ))}
-                      </Select>
+                        onValueChange={(v) => pickSku(l.key, v)}
+                        options={skuOptions}
+                        placeholder="Select a SKU…"
+                        searchPlaceholder="Search product or SKU…"
+                        emptyText="No matching SKU."
+                        aria-label="Product"
+                      />
                     </div>
                     <div className="flex w-20 flex-col gap-1">
                       <Label className="text-xs">Qty</Label>
@@ -342,18 +360,15 @@ export function OrderForm({
             </div>
             <div className="flex flex-col gap-1">
               <Label htmlFor="customer">Customer</Label>
-              <Select
+              <Combobox
                 id="customer"
                 value={customerId}
-                onChange={(e) => setCustomerId(e.target.value)}
-              >
-                <option value="">No customer</option>
-                {customers.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name ?? "Unnamed"}
-                  </option>
-                ))}
-              </Select>
+                onValueChange={setCustomerId}
+                options={customerOptions}
+                placeholder="No customer"
+                searchPlaceholder="Search customers…"
+                emptyText="No matching customer."
+              />
             </div>
             <div className="flex flex-col gap-1">
               <Label htmlFor="type">Order type</Label>

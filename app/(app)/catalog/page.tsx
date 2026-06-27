@@ -1,5 +1,5 @@
 import Link from "next/link"
-import { Plus, FolderTree, Boxes } from "lucide-react"
+import { Plus, FolderTree, Boxes, CopyCheck } from "lucide-react"
 
 import { createClient } from "@/lib/supabase/server"
 import { PageHeader } from "@/components/page-header"
@@ -48,6 +48,12 @@ export default async function CatalogPage({
     .from("categories")
     .select("id, name, parent_id")
   const categories = (categoryRows ?? []) as CategoryRow[]
+
+  // How many SKUs still span multiple masters — surfaced as a badge on the
+  // Duplicates link so operators know there's cleanup waiting.
+  const { count: dupCount } = await supabase
+    .from("duplicate_products_report")
+    .select("sku", { count: "exact", head: true })
   const pathMap = categoryPathMap(categories)
   const categoryOptions = flattenCategoryTree(buildCategoryTree(categories)).map(
     (n) => ({ id: n.id, label: `${indent(n.depth)}${n.name}` }),
@@ -77,6 +83,17 @@ export default async function CatalogPage({
         description="Master products, their child SKUs per location, and categories."
         action={
           <div className="flex gap-2">
+            <Link
+              href="/catalog/duplicates"
+              className={buttonVariants({ variant: "outline" })}
+            >
+              <CopyCheck data-icon="inline-start" /> Duplicates
+              {dupCount ? (
+                <Badge variant="warning" className="ml-1.5">
+                  {dupCount}
+                </Badge>
+              ) : null}
+            </Link>
             <Link
               href="/catalog/categories"
               className={buttonVariants({ variant: "outline" })}

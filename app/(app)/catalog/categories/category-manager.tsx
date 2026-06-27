@@ -6,7 +6,7 @@ import { AlertCircle, Check, Pencil, Plus, Trash2, X } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Select } from "@/components/ui/select"
+import { Combobox } from "@/components/ui/combobox"
 import {
   buildCategoryTree,
   flattenCategoryTree,
@@ -229,19 +229,18 @@ function ReparentSelect({
   const options = all.filter((n) => !blocked.has(n.id))
 
   return (
-    <Select
+    <Combobox
       aria-label={`Move ${node.name}`}
-      className="h-7 w-40"
+      className="w-44"
       disabled={disabled}
       value={node.parent_id ?? ""}
-      onChange={(e) => onChange(e.target.value || null)}
-    >
-      <option value="">(top level)</option>
-      {options.map((n) => (
-        <option key={n.id} value={n.id}>
-          {n.path}
-        </option>
-      ))}
-    </Select>
+      onValueChange={(v) => onChange(v || null)}
+      options={[
+        { value: "", label: "(top level)" },
+        ...options.map((n) => ({ value: n.id, label: n.path })),
+      ]}
+      searchPlaceholder="Search categories…"
+      emptyText="No category."
+    />
   )
 }

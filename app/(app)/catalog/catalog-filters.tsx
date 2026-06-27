@@ -6,6 +6,7 @@ import { Search, X } from "lucide-react"
 
 import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
+import { Combobox } from "@/components/ui/combobox"
 import { Button } from "@/components/ui/button"
 
 export type CategoryOption = { id: string; label: string }
@@ -50,20 +51,20 @@ export function CatalogFilters({
         />
       </div>
 
-      <Select
+      <Combobox
         value={category}
-        onChange={(e) => setParam("category", e.target.value)}
+        onValueChange={(v) => setParam("category", v)}
         className="w-56"
         aria-label="Filter by category"
-      >
-        <option value="">All categories</option>
-        <option value="none">Uncategorized</option>
-        {categories.map((c) => (
-          <option key={c.id} value={c.id}>
-            {c.label}
-          </option>
-        ))}
-      </Select>
+        placeholder="All categories"
+        searchPlaceholder="Search categories…"
+        emptyText="No matching category."
+        options={[
+          { value: "", label: "All categories" },
+          { value: "none", label: "Uncategorized" },
+          ...categories.map((c) => ({ value: c.id, label: c.label })),
+        ]}
+      />
 
       <Select
         value={active}

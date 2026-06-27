@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
-import { AlertCircle, Pencil, Plus, X } from "lucide-react"
+import { AlertCircle, ArrowRightLeft, Pencil, Plus, X } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/table"
 import { formatCurrency } from "@/lib/format"
 import { createChildSku, updateChildSku } from "../actions"
+import { ReparentSku } from "./reparent-sku"
 
 export type ChildSku = {
   id: string
@@ -66,6 +67,9 @@ export function ChildSkuManager({
 
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editDraft, setEditDraft] = useState<Draft>(emptyDraft())
+
+  const [movingId, setMovingId] = useState<string | null>(null)
+  const movingSku = skus.find((s) => s.id === movingId) ?? null
 
   const [adding, setAdding] = useState(false)
   const [addSite, setAddSite] = useState(availableSites[0]?.id ?? "")
@@ -276,14 +280,29 @@ export function ChildSkuManager({
                     )}
                   </TableCell>
                   <TableCell>
-                    <Button
-                      size="icon-sm"
-                      variant="ghost"
-                      aria-label="Edit SKU"
-                      onClick={() => beginEdit(s)}
-                    >
-                      <Pencil />
-                    </Button>
+                    <div className="flex gap-1">
+                      <Button
+                        size="icon-sm"
+                        variant="ghost"
+                        aria-label="Edit SKU"
+                        onClick={() => beginEdit(s)}
+                      >
+                        <Pencil />
+                      </Button>
+                      <Button
+                        size="icon-sm"
+                        variant="ghost"
+                        aria-label="Move SKU to another product"
+                        title="Move to another product"
+                        onClick={() => {
+                          setError(null)
+                          setEditingId(null)
+                          setMovingId(s.id)
+                        }}
+                      >
+                        <ArrowRightLeft />
+                      </Button>
+                    </div>
                   </TableCell>
                 </TableRow>
               ),
@@ -291,6 +310,19 @@ export function ChildSkuManager({
           </TableBody>
         </Table>
       )}
+
+      {/* Move SKU to another product */}
+      {movingSku ? (
+        <ReparentSku
+          productId={productId}
+          sku={{
+            id: movingSku.id,
+            sku: movingSku.sku,
+            site_name: movingSku.site_name,
+          }}
+          onClose={() => setMovingId(null)}
+        />
+      ) : null}
 
       {/* Add SKU */}
       {availableSites.length === 0 ? (
