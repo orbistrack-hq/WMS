@@ -53,10 +53,10 @@ export const NAV_ITEMS: NavItem[] = [
     description: "Products, child SKUs, and categories",
   },
   {
-    label: "Reports",
+    label: "Analytics",
     href: "/reports",
     icon: BarChart3,
-    description: "Sales, inventory, packaging, and shipping",
+    description: "COGS, landed margin, and sales trends",
   },
   {
     label: "Shopify",
