@@ -1,19 +1,9 @@
-import Link from "next/link"
 import { PackageCheck } from "lucide-react"
 
 import { createClient } from "@/lib/supabase/server"
 import { PageHeader } from "@/components/page-header"
-import { Badge } from "@/components/ui/badge"
 import { Card, CardContent } from "@/components/ui/card"
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table"
-import { formatCurrency } from "@/lib/format"
+import { PackingQueue, type QueueGroup } from "./packing-queue"
 
 export const dynamic = "force-dynamic"
 
@@ -21,6 +11,7 @@ type GroupRow = {
   id: string
   status: string
   window_start: string
+  site_id: string | null
   customer: { name: string | null } | null
   site: { name: string | null } | null
   orders: {
@@ -41,7 +32,7 @@ export default async function PackingPage() {
   const { data, error } = await supabase
     .from("fulfillment_groups")
     .select(
-      `id, status, window_start,
+      `id, status, window_start, site_id,
        customer:customers(name),
        site:sites(name),
        orders(id, order_number, status, order_line_items(quantity)),
@@ -51,7 +42,7 @@ export default async function PackingPage() {
     .order("window_start", { ascending: true })
     .limit(300)
 
-  const groups = ((data ?? []) as unknown as GroupRow[])
+  const groups: QueueGroup[] = ((data ?? []) as unknown as GroupRow[])
     .map((g) => {
       const activeOrders = g.orders.filter((o) => ACTIVE.has(o.status))
       const needsPacking = g.orders.some((o) => PREPACK.has(o.status))
@@ -66,6 +57,7 @@ export default async function PackingPage() {
       )
       return {
         id: g.id,
+        siteId: g.site_id,
         customer: g.customer?.name ?? "—",
         site: g.site?.name ?? "—",
         orderNumbers: activeOrders.map((o) => o.order_number),
@@ -89,7 +81,7 @@ export default async function PackingPage() {
     <>
       <PageHeader
         title="Packing"
-        description="Pack orders by fulfillment group — box and label counted once per group, consumables summed."
+        description="Pack orders by fulfillment group — box and label counted once per group, consumables summed. Select groups at one site to pick them as a wave."
       />
 
       {error ? (
@@ -110,54 +102,7 @@ export default async function PackingPage() {
           </CardContent>
         </Card>
       ) : (
-        <Card className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Customer</TableHead>
-                <TableHead>Site</TableHead>
-                <TableHead>Orders</TableHead>
-                <TableHead className="text-right">Items</TableHead>
-                <TableHead className="text-right">Packaging</TableHead>
-                <TableHead>State</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {groups.map((g) => (
-                <TableRow key={g.id}>
-                  <TableCell className="font-medium">
-                    <Link
-                      href={`/packing/${g.id}`}
-                      className="hover:underline"
-                    >
-                      {g.customer}
-                    </Link>
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {g.site}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {g.orderNumbers.slice(0, 2).join(", ")}
-                    {g.orderCount > 2 ? ` +${g.orderCount - 2}` : ""}
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums">
-                    {g.itemCount}
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums text-muted-foreground">
-                    {formatCurrency(g.packagingCost)}
-                  </TableCell>
-                  <TableCell>
-                    {g.needsPacking ? (
-                      <Badge variant="warning">Needs packing</Badge>
-                    ) : (
-                      <Badge variant="success">Packed</Badge>
-                    )}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </Card>
+        <PackingQueue groups={groups} />
       )}
     </>
   )
