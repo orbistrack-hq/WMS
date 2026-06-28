@@ -12,6 +12,7 @@ import {
   importShopifyProduct,
   deactivateShopifyProduct,
 } from "@/lib/shopify/import-products"
+import { applyShopifyOrderMeta } from "@/lib/shopify/import-orders"
 
 // HMAC verification + the service-role client need the Node runtime.
 export const runtime = "nodejs"
@@ -236,6 +237,9 @@ async function handleOrderCreate(
       error: createErr.message,
     })
   }
+
+  // Stamp the Shopify order number and reflect its fulfilled/cancelled state.
+  await applyShopifyOrderMeta(supabase, newOrderId as string, order)
 
   await finish("imported", { wms_order_id: newOrderId as string })
   return NextResponse.json({ ok: true, status: "imported", orderId: newOrderId })

@@ -453,6 +453,10 @@ const PAST_ORDERS_QUERY = `
         email
         note
         createdAt
+        displayFulfillmentStatus
+        closed
+        closedAt
+        cancelledAt
         customer { id email firstName lastName }
         shippingAddress {
           name address1 address2 city province provinceCode zip country countryCode

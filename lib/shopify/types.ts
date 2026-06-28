@@ -78,9 +78,42 @@ export type ShopifyOrderPayload = {
   note?: string | null
   total_tax?: string | number | null
   current_total_discounts?: string | number | null
+  // Lifecycle signals. fulfillment_status is "fulfilled" | "partial" | null;
+  // closed_at marks an archived/completed order; cancelled_at a cancelled one.
+  fulfillment_status?: string | null
+  closed_at?: string | null
+  cancelled_at?: string | null
   customer?: ShopifyCustomer | null
   shipping_address?: ShopifyAddress | null
   line_items?: ShopifyLineItem[] | null
+}
+
+/**
+ * Where a Shopify order sits in its lifecycle, reduced to what WMS acts on:
+ *  - "fulfilled"  → fully fulfilled or archived/closed; WMS marks it fulfilled
+ *                   directly, skipping pick/pack.
+ *  - "cancelled"  → cancelled in Shopify; WMS cancels it (releases stock).
+ *  - "open"       → still to fulfil (incl. PARTIALLY fulfilled); normal flow.
+ */
+export type ShopifyLifecycle = "open" | "fulfilled" | "cancelled"
+
+/**
+ * Map raw Shopify signals to a WMS lifecycle. Partial fulfilment deliberately
+ * stays "open" so the outstanding units keep flowing through pick/pack.
+ */
+function deriveLifecycle(opts: {
+  cancelledAt: string | null
+  closedAt: string | null
+  /** REST fulfillment_status ("fulfilled"/"partial") or GraphQL display status. */
+  fulfillmentStatus: string | null
+  /** GraphQL `closed` boolean, when present. */
+  closed?: boolean | null
+}): ShopifyLifecycle {
+  if (opts.cancelledAt) return "cancelled"
+  const fs = (opts.fulfillmentStatus ?? "").toUpperCase()
+  const fullyFulfilled = fs === "FULFILLED"
+  if (fullyFulfilled || opts.closedAt || opts.closed === true) return "fulfilled"
+  return "open"
 }
 
 /**
@@ -111,6 +144,11 @@ export type NormalizedShopifyOrder = {
   // Original Shopify order creation time (ISO). Used to backdate the WMS order
   // so a backfilled order keeps its real sale date instead of "now".
   createdAt: string | null
+  // Lifecycle the WMS order should land in (see ShopifyLifecycle).
+  lifecycle: ShopifyLifecycle
+  // Best-effort fulfillment timestamp (closed_at, else created_at) used to
+  // backdate fulfill_order; null unless `lifecycle` is "fulfilled".
+  fulfilledAt: string | null
   customer: {
     externalId: string | null
     email: string | null
@@ -147,13 +185,22 @@ export function normalizeShopifyOrder(
 ): NormalizedShopifyOrder {
   const addr = payload.shipping_address ?? null
   const cust = payload.customer ?? null
+  const createdAt = str(payload.created_at)
+  const closedAt = str(payload.closed_at)
+  const lifecycle = deriveLifecycle({
+    cancelledAt: str(payload.cancelled_at),
+    closedAt,
+    fulfillmentStatus: str(payload.fulfillment_status),
+  })
 
   return {
     shopifyOrderId: str(payload.id) ?? "",
     name: str(payload.name),
     email: str(payload.email),
     note: str(payload.note),
-    createdAt: str(payload.created_at),
+    createdAt,
+    lifecycle,
+    fulfilledAt: lifecycle === "fulfilled" ? (closedAt ?? createdAt) : null,
     customer: cust
       ? {
           externalId: str(cust.id),
@@ -205,6 +252,11 @@ export type ShopifyGraphqlOrder = {
   email?: string | null
   note?: string | null
   createdAt?: string | null
+  // Lifecycle signals (GraphQL spellings).
+  displayFulfillmentStatus?: string | null // FULFILLED | PARTIALLY_FULFILLED | ...
+  closed?: boolean | null
+  closedAt?: string | null
+  cancelledAt?: string | null
   customer?: {
     id?: string | null
     email?: string | null
@@ -248,13 +300,23 @@ export function normalizeGraphqlOrder(
   const custName = cust
     ? [cust.firstName, cust.lastName].filter(Boolean).join(" ").trim() || null
     : null
+  const createdAt = str(node.createdAt)
+  const closedAt = str(node.closedAt)
+  const lifecycle = deriveLifecycle({
+    cancelledAt: str(node.cancelledAt),
+    closedAt,
+    fulfillmentStatus: str(node.displayFulfillmentStatus),
+    closed: node.closed ?? null,
+  })
 
   return {
     shopifyOrderId: gidId(node.id) ?? "",
     name: str(node.name),
     email: str(node.email),
     note: str(node.note),
-    createdAt: str(node.createdAt),
+    createdAt,
+    lifecycle,
+    fulfilledAt: lifecycle === "fulfilled" ? (closedAt ?? createdAt) : null,
     customer: cust
       ? {
           externalId: gidId(cust.id),

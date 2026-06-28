@@ -10,6 +10,64 @@ export type OrderImportOutcome =
   | { status: "error"; error: string }
 
 /**
+ * After an order is created, stamp it with the Shopify-facing order number and
+ * move it to its Shopify lifecycle state. Shared by the backfill and the
+ * orders/create webhook so both behave identically.
+ *
+ *  - order_number → "SHOP-<shopify name>" (e.g. "SHOP-#1001") so WMS searches
+ *    match the number shown in Shopify admin. It's a plain label, so we set it
+ *    with a direct update; a unique clash (re-used name) is non-fatal — we keep
+ *    the auto-assigned ORD-… number and move on.
+ *  - lifecycle → fulfilled orders go straight through the guarded fulfill_order
+ *    (inventory consume + pick-fee snapshot, backdated to the Shopify date),
+ *    cancelled orders through cancel_order. "open" is left in the normal flow.
+ *
+ * Lifecycle/number failures are logged but never fail the import: the order is
+ * already in WMS, and its status can be corrected by hand.
+ *
+ * Must be called with a service-role client (writes orders, calls the RPCs).
+ */
+export async function applyShopifyOrderMeta(
+  client: SupabaseClient,
+  wmsOrderId: string,
+  order: NormalizedShopifyOrder,
+): Promise<void> {
+  if (order.name) {
+    const orderNumber = `SHOP-${order.name}`
+    const { error } = await client
+      .from("orders")
+      .update({ order_number: orderNumber })
+      .eq("id", wmsOrderId)
+    if (error && error.code !== "23505") {
+      console.error(
+        `[shopify] could not set order_number ${orderNumber}: ${error.message}`,
+      )
+    }
+  }
+
+  if (order.lifecycle === "fulfilled") {
+    const { error } = await client.rpc("fulfill_order", {
+      p_order_id: wmsOrderId,
+      p_fulfilled_at: order.fulfilledAt ?? order.createdAt,
+    })
+    if (error) {
+      console.error(
+        `[shopify] fulfill_order failed for ${wmsOrderId}: ${error.message}`,
+      )
+    }
+  } else if (order.lifecycle === "cancelled") {
+    const { error } = await client.rpc("cancel_order", {
+      p_order_id: wmsOrderId,
+    })
+    if (error) {
+      console.error(
+        `[shopify] cancel_order failed for ${wmsOrderId}: ${error.message}`,
+      )
+    }
+  }
+}
+
+/**
  * Import one normalized Shopify order into WMS. Shared by the orders/create
  * webhook and the past-orders backfill so both behave identically:
  *
@@ -169,6 +227,9 @@ export async function importNormalizedOrder(
     await finish("error", { error: createErr.message })
     return { status: "error", error: createErr.message }
   }
+
+  // Stamp the Shopify order number and reflect its fulfilled/cancelled state.
+  await applyShopifyOrderMeta(client, newOrderId as string, order)
 
   await finish("imported", { wms_order_id: newOrderId as string })
   return { status: "imported", wmsOrderId: newOrderId as string }
