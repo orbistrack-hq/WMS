@@ -31,7 +31,7 @@ export default async function PickPage({
          site:sites(name),
          orders(order_number, status,
            order_line_items(quantity,
-             child_sku:child_skus(id, sku, bin_location, product:products(name))))`,
+             child_sku:child_skus(id, sku, bin_location, barcode, product:products(name))))`,
       )
       .eq("id", id)
       .maybeSingle(),
@@ -72,6 +72,7 @@ export default async function PickPage({
       childSkuId: l.childSkuId,
       sku: l.sku,
       bin: l.bin,
+      barcode: l.barcode,
       name: l.name,
       required: l.qty,
       qtyPicked: p?.qty_picked ?? 0,

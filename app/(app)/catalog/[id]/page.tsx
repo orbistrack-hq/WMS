@@ -29,6 +29,7 @@ type SkuQueryRow = {
   sku: string | null
   store_variant_id: string | null
   bin_location: string | null
+  barcode: string | null
   price: number | string
   cost: number | string
   is_active: boolean
@@ -61,7 +62,7 @@ export default async function ProductDetailPage({
       .from("products")
       .select(
         `id, name, description, category_id, is_active,
-         child_skus(id, site_id, sku, store_variant_id, bin_location, price, cost, is_active,
+         child_skus(id, site_id, sku, store_variant_id, bin_location, barcode, price, cost, is_active,
            site:sites(name),
            inventory_levels(on_hand, available))`,
       )
@@ -91,6 +92,7 @@ export default async function ProductDetailPage({
       sku: s.sku,
       store_variant_id: s.store_variant_id,
       bin_location: s.bin_location,
+      barcode: s.barcode,
       price: Number(s.price),
       cost: Number(s.cost),
       is_active: s.is_active,

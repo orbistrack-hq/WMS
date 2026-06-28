@@ -20,6 +20,7 @@ export type PickLineItemRow = {
     id: string
     sku: string | null
     bin_location: string | null
+    barcode: string | null
     product: { name: string | null } | null
   } | null
 }
@@ -41,6 +42,7 @@ export type PickLine = {
   childSkuId: string | null
   sku: string | null
   bin: string | null
+  barcode: string | null
   name: string
   qty: number
 }
@@ -95,6 +97,7 @@ export function aggregatePickLines(orders: PickOrderRow[]): AggregatedPick {
           childSkuId: li.child_sku?.id ?? null,
           sku: li.child_sku?.sku ?? null,
           bin: li.child_sku?.bin_location ?? null,
+          barcode: li.child_sku?.barcode ?? null,
           name: li.child_sku?.product?.name ?? "—",
           qty: li.quantity,
         })
@@ -105,4 +108,21 @@ export function aggregatePickLines(orders: PickOrderRow[]): AggregatedPick {
   const lines = [...byKey.values()].sort(comparePickRoute)
   const totalUnits = lines.reduce((n, l) => n + l.qty, 0)
   return { lines, orderNumbers, totalUnits }
+}
+
+/**
+ * Resolve a scanned/typed code to one of `items`: barcode first, then SKU code,
+ * trimmed and case-insensitive. Returns null when nothing matches. Shared by
+ * scan-to-pick (the runner) and scan-to-pack so both resolve codes identically.
+ */
+export function matchByCode<
+  T extends { sku: string | null; barcode: string | null },
+>(items: T[], code: string): T | null {
+  const c = code.trim().toLowerCase()
+  if (!c) return null
+  return (
+    items.find((i) => i.barcode && i.barcode.toLowerCase() === c) ??
+    items.find((i) => i.sku && i.sku.toLowerCase() === c) ??
+    null
+  )
 }

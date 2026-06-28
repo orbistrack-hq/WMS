@@ -18,6 +18,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { formatCurrency } from "@/lib/format"
+import { SCANNING_ENABLED } from "@/lib/flags"
 import { createChildSku, updateChildSku } from "../actions"
 import { ReparentSku } from "./reparent-sku"
 
@@ -28,6 +29,7 @@ export type ChildSku = {
   sku: string | null
   store_variant_id: string | null
   bin_location: string | null
+  barcode: string | null
   price: number
   cost: number
   is_active: boolean
@@ -41,6 +43,7 @@ type Draft = {
   sku: string
   store_variant_id: string
   bin_location: string
+  barcode: string
   price: string
   cost: string
   is_active: boolean
@@ -50,6 +53,7 @@ const emptyDraft = (): Draft => ({
   sku: "",
   store_variant_id: "",
   bin_location: "",
+  barcode: "",
   price: "",
   cost: "",
   is_active: true,
@@ -85,6 +89,7 @@ export function ChildSkuManager({
       sku: s.sku ?? "",
       store_variant_id: s.store_variant_id ?? "",
       bin_location: s.bin_location ?? "",
+      barcode: s.barcode ?? "",
       price: String(s.price),
       cost: String(s.cost),
       is_active: s.is_active,
@@ -98,6 +103,7 @@ export function ChildSkuManager({
         sku: editDraft.sku || null,
         store_variant_id: editDraft.store_variant_id || null,
         bin_location: editDraft.bin_location || null,
+        barcode: editDraft.barcode || null,
         price: Number(editDraft.price),
         cost: Number(editDraft.cost),
         is_active: editDraft.is_active,
@@ -123,6 +129,7 @@ export function ChildSkuManager({
         sku: addDraft.sku || null,
         store_variant_id: addDraft.store_variant_id || null,
         bin_location: addDraft.bin_location || null,
+        barcode: addDraft.barcode || null,
         price: Number(addDraft.price || 0),
         cost: Number(addDraft.cost || 0),
         is_active: addDraft.is_active,
@@ -157,6 +164,7 @@ export function ChildSkuManager({
               <TableHead>Site</TableHead>
               <TableHead>SKU</TableHead>
               <TableHead>Bin</TableHead>
+              {SCANNING_ENABLED ? <TableHead>Barcode</TableHead> : null}
               <TableHead>Variant ID</TableHead>
               <TableHead className="text-right">Price</TableHead>
               <TableHead className="text-right">Cost</TableHead>
@@ -192,6 +200,17 @@ export function ChildSkuManager({
                       className="w-24"
                     />
                   </TableCell>
+                  {SCANNING_ENABLED ? (
+                    <TableCell>
+                      <Input
+                        value={editDraft.barcode}
+                        onChange={(e) =>
+                          setEditDraft({ ...editDraft, barcode: e.target.value })
+                        }
+                        className="w-28"
+                      />
+                    </TableCell>
+                  ) : null}
                   <TableCell>
                     <Input
                       value={editDraft.store_variant_id}
@@ -279,6 +298,11 @@ export function ChildSkuManager({
                   <TableCell className="tabular-nums text-muted-foreground">
                     {s.bin_location ?? "—"}
                   </TableCell>
+                  {SCANNING_ENABLED ? (
+                    <TableCell className="tabular-nums text-muted-foreground">
+                      {s.barcode ?? "—"}
+                    </TableCell>
+                  ) : null}
                   <TableCell className="text-muted-foreground">
                     {s.store_variant_id ?? "—"}
                   </TableCell>
@@ -390,6 +414,19 @@ export function ChildSkuManager({
                 placeholder="A-12-3"
               />
             </div>
+            {SCANNING_ENABLED ? (
+              <div className="flex flex-col gap-1">
+                <Label className="text-xs">Barcode</Label>
+                <Input
+                  value={addDraft.barcode}
+                  onChange={(e) =>
+                    setAddDraft({ ...addDraft, barcode: e.target.value })
+                  }
+                  className="w-28"
+                  placeholder="UPC / EAN"
+                />
+              </div>
+            ) : null}
             <div className="flex flex-col gap-1">
               <Label className="text-xs">Variant ID</Label>
               <Input

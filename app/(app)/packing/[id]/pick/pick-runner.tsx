@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import Link from "next/link"
 import {
   AlertCircle,
@@ -14,12 +14,16 @@ import {
 
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { matchByCode } from "@/lib/packing/aggregate"
+import { SCANNING_ENABLED } from "@/lib/flags"
+import { ScanInput } from "../../scan-input"
 import { claimPick, setPickQty } from "../../actions"
 
 export type PickRow = {
   childSkuId: string | null
   sku: string | null
   bin: string | null
+  barcode: string | null
   name: string
   required: number
   qtyPicked: number
@@ -54,6 +58,17 @@ export function PickRunner({
   const [rows, setRows] = useState<PickRow[]>(initialRows)
   const [busy, setBusy] = useState<Set<string>>(new Set())
   const [error, setError] = useState<string | null>(null)
+  const [scanMsg, setScanMsg] = useState<{
+    kind: "ok" | "err"
+    text: string
+  } | null>(null)
+
+  // Mirror rows in a ref so a scan resolves against the freshest counts even
+  // between renders (rapid back-to-back scans).
+  const rowsRef = useRef(rows)
+  useEffect(() => {
+    rowsRef.current = rows
+  }, [rows])
 
   const startsSelf =
     !!currentUserId && initialHolderId === currentUserId
@@ -94,6 +109,14 @@ export function PickRunner({
   async function update(row: PickRow, qty: number, short: boolean) {
     if (!row.childSkuId || !canEdit || !groupOpen) return
     const id = row.childSkuId
+    const optimistic = Math.max(0, Math.min(row.required, qty))
+    // Optimistic: show the new count immediately, reconcile with the server's
+    // clamped value when it returns.
+    setRows((rs) =>
+      rs.map((r) =>
+        r.childSkuId === id ? { ...r, qtyPicked: optimistic, short } : r,
+      ),
+    )
     setBusy((b) => new Set(b).add(id))
     setError(null)
     const res = await setPickQty(groupId, id, qty, short)
@@ -113,6 +136,32 @@ export function PickRunner({
           : r,
       ),
     )
+  }
+
+  // Resolve a scanned/typed code to a line and bump it by one.
+  function onScan(code: string) {
+    if (!canEdit || !groupOpen) return
+    const match = matchByCode(rowsRef.current, code)
+    if (!match || !match.childSkuId) {
+      setScanMsg({
+        kind: "err",
+        text: `No item matches “${code}”. Type the SKU, or use +/− on the row.`,
+      })
+      return
+    }
+    if (match.qtyPicked >= match.required) {
+      setScanMsg({
+        kind: "err",
+        text: `${match.name} is already fully picked (${match.required}).`,
+      })
+      return
+    }
+    const next = match.qtyPicked + 1
+    setScanMsg({
+      kind: "ok",
+      text: `+1 ${match.name} · ${next}/${match.required}`,
+    })
+    void update(match, next, false)
   }
 
   const { picked, required, doneCount, complete } = useMemo(() => {
@@ -207,6 +256,30 @@ export function PickRunner({
         <div className="flex items-start gap-2 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
           <AlertCircle className="mt-0.5 size-4 shrink-0" />
           <span>{error}</span>
+        </div>
+      ) : null}
+
+      {/* Scan to pick */}
+      {SCANNING_ENABLED && groupOpen && canEdit ? (
+        <div className="flex flex-col gap-1.5">
+          <ScanInput onScan={onScan} />
+          {scanMsg ? (
+            <p
+              className={
+                "text-xs " +
+                (scanMsg.kind === "ok"
+                  ? "text-emerald-600 dark:text-emerald-400"
+                  : "text-destructive")
+              }
+            >
+              {scanMsg.text}
+            </p>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              Scan an item to add one. No label? Type the SKU and press Enter, or
+              use the buttons below.
+            </p>
+          )}
         </div>
       ) : null}
 

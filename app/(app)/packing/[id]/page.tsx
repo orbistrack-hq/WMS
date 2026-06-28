@@ -20,8 +20,9 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { STATUS_BADGE, type OrderStatus } from "@/lib/orders/types"
+import { aggregatePickLines, type PickOrderRow } from "@/lib/packing/aggregate"
 import { PackagingEditor, type UsageLine } from "./packaging-editor"
-import { PackConfirm } from "./pack-confirm"
+import { PackConfirm, type PackScanItem } from "./pack-confirm"
 
 export const dynamic = "force-dynamic"
 
@@ -39,7 +40,10 @@ type GroupDetail = {
       id: string
       quantity: number
       child_sku: {
+        id: string
         sku: string | null
+        bin_location: string | null
+        barcode: string | null
         product: { name: string | null } | null
       } | null
     }[]
@@ -62,7 +66,7 @@ export default async function PackDetailPage({
   const { id } = await params
   const supabase = await createClient()
 
-  const [groupRes, typesRes, pickCompleteRes] = await Promise.all([
+  const [groupRes, typesRes, pickCompleteRes, operatorRes] = await Promise.all([
     supabase
       .from("fulfillment_groups")
       .select(
@@ -71,7 +75,7 @@ export default async function PackDetailPage({
          site:sites(name),
          orders(id, order_number, status,
            order_line_items(id, quantity,
-             child_sku:child_skus(sku, product:products(name)))),
+             child_sku:child_skus(id, sku, bin_location, barcode, product:products(name)))),
          packaging_usage(id, quantity, unit_cost_snapshot,
            packaging_type:packaging_types(name, kind))`,
       )
@@ -83,6 +87,7 @@ export default async function PackDetailPage({
       .eq("is_active", true)
       .order("kind"),
     supabase.rpc("pick_complete", { p_group_id: id }),
+    supabase.rpc("is_operator"),
   ])
 
   if (!groupRes.data) notFound()
@@ -90,6 +95,21 @@ export default async function PackDetailPage({
 
   const needsPacking = group.orders.some((o) => PREPACK.has(o.status))
   const pickComplete = pickCompleteRes.data === true
+  const isOperator = operatorRes.data === true
+
+  // Units to scan before packing = demand from orders still to pack.
+  const toPack = group.orders.filter((o) => PREPACK.has(o.status))
+  const packItems: PackScanItem[] = aggregatePickLines(
+    toPack as unknown as PickOrderRow[],
+  ).lines
+    .filter((l) => l.childSkuId)
+    .map((l) => ({
+      childSkuId: l.childSkuId as string,
+      sku: l.sku,
+      barcode: l.barcode,
+      name: l.name,
+      required: l.qty,
+    }))
 
   const usageLines: UsageLine[] = group.packaging_usage.map((u) => ({
     id: u.id,
@@ -225,6 +245,8 @@ export default async function PackDetailPage({
                 initialNotes={group.packing_notes}
                 needsPacking={needsPacking}
                 pickComplete={pickComplete}
+                items={packItems}
+                isOperator={isOperator}
               />
             </CardContent>
           </Card>
