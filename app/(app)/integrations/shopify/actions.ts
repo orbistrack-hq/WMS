@@ -6,7 +6,13 @@ import { headers } from "next/headers"
 import { createClient } from "@/lib/supabase/server"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { importShopifyProduct } from "@/lib/shopify/import-products"
-import type { ShopifyInventoryItem, ShopifyProduct } from "@/lib/shopify/types"
+import { importNormalizedOrder } from "@/lib/shopify/import-orders"
+import {
+  normalizeGraphqlOrder,
+  type ShopifyGraphqlOrdersPage,
+  type ShopifyInventoryItem,
+  type ShopifyProduct,
+} from "@/lib/shopify/types"
 
 const SHOPIFY_API_VERSION = "2024-10"
 
@@ -419,4 +425,193 @@ export async function registerWebhooks(
 
   revalidatePath("/integrations/shopify")
   return { ok: true, ...result }
+}
+
+// ---------------------------------------------------------------------------
+// Past-order backfill (GraphQL)
+// ---------------------------------------------------------------------------
+export type OrderSyncResult =
+  | {
+      ok: true
+      fetched: number
+      imported: number
+      duplicates: number
+      needsMapping: number
+      skipped: number
+      firstError?: string
+    }
+  | { ok: false; error: string }
+
+// Pull historical orders oldest-first so backdated WMS orders land in order.
+const PAST_ORDERS_QUERY = `
+  query PastOrders($cursor: String) {
+    orders(first: 100, after: $cursor, sortKey: CREATED_AT, query: "status:any") {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        id
+        name
+        email
+        note
+        createdAt
+        customer { id email firstName lastName }
+        shippingAddress {
+          name address1 address2 city province provinceCode zip country countryCode
+        }
+        lineItems(first: 100) {
+          nodes {
+            quantity
+            title
+            variant { id }
+            originalUnitPriceSet { shopMoney { amount } }
+          }
+        }
+      }
+    }
+  }`
+
+type GraphqlResponse<T> = {
+  data?: T
+  errors?: { message: string; extensions?: { code?: string } }[]
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+/**
+ * Backfill: page through the store's historical orders via the GraphQL Admin
+ * API and import each one into WMS (idempotent — re-running skips orders already
+ * imported). Requires the read_orders scope; orders older than 60 days also need
+ * read_all_orders (Shopify grants it on request). Ongoing orders still arrive
+ * through the orders/create webhook.
+ */
+export async function syncPastOrders(
+  connectionId: string,
+): Promise<OrderSyncResult> {
+  const supabase = await createClient()
+
+  // Authorize via the RLS-scoped connection read (same pattern as syncProducts).
+  const { data: conn, error: connErr } = await supabase
+    .from("shopify_connections")
+    .select("shop_domain, site_id, is_active")
+    .eq("id", connectionId)
+    .maybeSingle()
+  if (connErr) return { ok: false, error: err(connErr) }
+  if (!conn) return { ok: false, error: "Connection not found." }
+  if (!conn.is_active)
+    return { ok: false, error: "Activate this connection before syncing." }
+
+  const admin = createAdminClient()
+  const { data: secret } = await admin
+    .from("shopify_secrets")
+    .select("access_token")
+    .eq("connection_id", connectionId)
+    .maybeSingle()
+  if (!secret?.access_token) {
+    return { ok: false, error: "Set this store's Admin API access token first." }
+  }
+  const token = secret.access_token
+  const shopDomain = conn.shop_domain as string
+  const siteId = conn.site_id as string
+  const endpoint = `https://${shopDomain}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`
+
+  const result = {
+    fetched: 0,
+    imported: 0,
+    duplicates: 0,
+    needsMapping: 0,
+    skipped: 0,
+  }
+  let firstError: string | undefined
+  let cursor: string | null = null
+  let throttleRetries = 0
+
+  // Imports use the service role: shopify_order_imports has no RLS write policy.
+  for (let page = 0; page < 200; page++) {
+    let body: GraphqlResponse<{ orders: ShopifyGraphqlOrdersPage }>
+    try {
+      const r = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "X-Shopify-Access-Token": token,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          query: PAST_ORDERS_QUERY,
+          variables: { cursor },
+        }),
+      })
+      if (!r.ok) {
+        const raw = await r.text().catch(() => "")
+        console.error(`[shopify] order backfill ${r.status}: ${raw}`)
+        return { ok: false, error: shopifyApiError(r.status, raw) }
+      }
+      body = (await r.json()) as typeof body
+    } catch {
+      return { ok: false, error: "Could not reach Shopify. Try again." }
+    }
+
+    if (body.errors?.length) {
+      const throttled = body.errors.some(
+        (e) => e.extensions?.code === "THROTTLED",
+      )
+      if (throttled && throttleRetries < 5) {
+        throttleRetries++
+        await sleep(2000)
+        page-- // retry the same cursor
+        continue
+      }
+      return { ok: false, error: body.errors.map((e) => e.message).join("; ") }
+    }
+    throttleRetries = 0
+
+    const ordersPage = body.data?.orders
+    if (!ordersPage) break
+
+    for (const node of ordersPage.nodes ?? []) {
+      result.fetched++
+      const order = normalizeGraphqlOrder(node)
+      const outcome = await importNormalizedOrder(
+        admin,
+        siteId,
+        shopDomain,
+        order,
+        "orders/backfill",
+        node,
+      )
+      switch (outcome.status) {
+        case "imported":
+          result.imported++
+          break
+        case "duplicate":
+          result.duplicates++
+          break
+        case "needs_mapping":
+          result.needsMapping++
+          if (!firstError)
+            firstError = `Order ${order.name ?? order.shopifyOrderId} has unmapped variants — sync products first.`
+          break
+        case "skipped":
+          result.skipped++
+          break
+        case "error":
+          result.skipped++
+          if (!firstError) firstError = outcome.error
+          break
+      }
+    }
+
+    if (!ordersPage.pageInfo?.hasNextPage) break
+    cursor = ordersPage.pageInfo.endCursor
+    if (!cursor) break
+  }
+
+  if (result.imported > 0) {
+    await supabase
+      .from("shopify_connections")
+      .update({ last_synced_at: new Date().toISOString() })
+      .eq("id", connectionId)
+  }
+
+  revalidatePath("/integrations/shopify")
+  revalidatePath("/orders")
+  return { ok: true, ...result, firstError }
 }

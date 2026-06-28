@@ -108,6 +108,9 @@ export type NormalizedShopifyOrder = {
   name: string | null
   email: string | null
   note: string | null
+  // Original Shopify order creation time (ISO). Used to backdate the WMS order
+  // so a backfilled order keeps its real sale date instead of "now".
+  createdAt: string | null
   customer: {
     externalId: string | null
     email: string | null
@@ -150,6 +153,7 @@ export function normalizeShopifyOrder(
     name: str(payload.name),
     email: str(payload.email),
     note: str(payload.note),
+    createdAt: str(payload.created_at),
     customer: cust
       ? {
           externalId: str(cust.id),
@@ -176,5 +180,109 @@ export function normalizeShopifyOrder(
         unitPrice: li.price != null ? Number(li.price) : null,
         title: str(li.title),
       })),
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Shopify GraphQL Admin API order shape — only the fields the backfill reads.
+// The orders REST endpoint is on Shopify's deprecation path, so historical
+// order pulls go through GraphQL. GraphQL returns global IDs (GIDs) like
+// "gid://shopify/ProductVariant/123"; gidId() strips them back to the bare
+// numeric id we store in child_skus.store_variant_id.
+// ---------------------------------------------------------------------------
+export type ShopifyMoney = { amount?: string | number | null } | null
+
+export type ShopifyGraphqlLineItem = {
+  quantity?: number | null
+  title?: string | null
+  variant?: { id?: string | null } | null
+  originalUnitPriceSet?: { shopMoney?: ShopifyMoney } | null
+}
+
+export type ShopifyGraphqlOrder = {
+  id?: string | null // gid://shopify/Order/123
+  name?: string | null
+  email?: string | null
+  note?: string | null
+  createdAt?: string | null
+  customer?: {
+    id?: string | null
+    email?: string | null
+    firstName?: string | null
+    lastName?: string | null
+  } | null
+  shippingAddress?: {
+    name?: string | null
+    address1?: string | null
+    address2?: string | null
+    city?: string | null
+    province?: string | null
+    provinceCode?: string | null
+    zip?: string | null
+    country?: string | null
+    countryCode?: string | null
+  } | null
+  lineItems?: { nodes?: ShopifyGraphqlLineItem[] | null } | null
+}
+
+export type ShopifyGraphqlOrdersPage = {
+  pageInfo: { hasNextPage: boolean; endCursor: string | null }
+  nodes: ShopifyGraphqlOrder[]
+}
+
+/** Extract the trailing numeric id from a Shopify GID, e.g.
+ *  "gid://shopify/ProductVariant/123" -> "123". Returns null when absent. */
+export function gidId(gid: string | null | undefined): string | null {
+  if (!gid) return null
+  const m = String(gid).match(/(\d+)(?:\?.*)?$/)
+  return m ? m[1] : null
+}
+
+/** Reduce a GraphQL order node to the same shape the REST import uses, so both
+ *  the webhook and the backfill feed identical data into the order importer. */
+export function normalizeGraphqlOrder(
+  node: ShopifyGraphqlOrder,
+): NormalizedShopifyOrder {
+  const addr = node.shippingAddress ?? null
+  const cust = node.customer ?? null
+  const custName = cust
+    ? [cust.firstName, cust.lastName].filter(Boolean).join(" ").trim() || null
+    : null
+
+  return {
+    shopifyOrderId: gidId(node.id) ?? "",
+    name: str(node.name),
+    email: str(node.email),
+    note: str(node.note),
+    createdAt: str(node.createdAt),
+    customer: cust
+      ? {
+          externalId: gidId(cust.id),
+          email: str(cust.email) ?? str(node.email),
+          name: custName,
+        }
+      : null,
+    shipTo: addr
+      ? {
+          name: str(addr.name),
+          address1: str(addr.address1),
+          address2: str(addr.address2),
+          city: str(addr.city),
+          region: str(addr.province) ?? str(addr.provinceCode),
+          postal: str(addr.zip),
+          country: str(addr.country) ?? str(addr.countryCode),
+        }
+      : null,
+    lines: (node.lineItems?.nodes ?? [])
+      .filter((li) => li.variant?.id != null && (li.quantity ?? 0) > 0)
+      .map((li) => {
+        const amount = li.originalUnitPriceSet?.shopMoney?.amount
+        return {
+          variantId: gidId(li.variant?.id),
+          quantity: Number(li.quantity),
+          unitPrice: amount != null ? Number(amount) : null,
+          title: str(li.title),
+        }
+      }),
   }
 }

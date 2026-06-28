@@ -10,6 +10,7 @@ import {
   Plus,
   Power,
   RefreshCw,
+  ShoppingBag,
   Trash2,
   Webhook,
 } from "lucide-react"
@@ -26,6 +27,7 @@ import {
   registerWebhooks,
   setConnectionActive,
   setCredentials,
+  syncPastOrders,
   syncProducts,
 } from "./actions"
 
@@ -188,6 +190,27 @@ function ConnectionCard({
     })
   }
 
+  function syncOrders() {
+    setError(null)
+    setNote(null)
+    startTransition(async () => {
+      const res = await syncPastOrders(conn.id)
+      if (!res.ok) setError(res.error)
+      else {
+        setNote(
+          `Past orders: ${res.imported} imported, ${res.duplicates} already imported` +
+            (res.needsMapping
+              ? `, ${res.needsMapping} need product mapping`
+              : "") +
+            (res.skipped ? `, ${res.skipped} skipped` : "") +
+            ` (of ${res.fetched} fetched).` +
+            (res.firstError ? ` Note: ${res.firstError}` : ""),
+        )
+        router.refresh()
+      }
+    })
+  }
+
   function register() {
     setError(null)
     setNote(null)
@@ -282,6 +305,14 @@ function ConnectionCard({
             onClick={sync}
           >
             <RefreshCw data-icon="inline-start" /> Sync products
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={isPending || !conn.has_token}
+            onClick={syncOrders}
+          >
+            <ShoppingBag data-icon="inline-start" /> Sync past orders
           </Button>
           <span className="text-xs text-muted-foreground">
             {conn.last_synced_at
