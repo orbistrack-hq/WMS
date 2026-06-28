@@ -21,8 +21,10 @@ import {
 } from "@/components/ui/table"
 import { STATUS_BADGE, type OrderStatus } from "@/lib/orders/types"
 import { aggregatePickLines, type PickOrderRow } from "@/lib/packing/aggregate"
+import type { ShipmentRow, ShipmentStatus } from "@/lib/shipping/types"
 import { PackagingEditor, type UsageLine } from "./packaging-editor"
 import { PackConfirm, type PackScanItem } from "./pack-confirm"
+import { ShippingEditor } from "./shipping-editor"
 
 export const dynamic = "force-dynamic"
 
@@ -54,6 +56,20 @@ type GroupDetail = {
     unit_cost_snapshot: number | string
     packaging_type: { name: string | null; kind: string | null } | null
   }[]
+  shipments: {
+    id: string
+    carrier: string | null
+    service_level: string | null
+    estimated_cost: number | string | null
+    actual_cost: number | string | null
+    status: ShipmentStatus
+    packages: {
+      id: string
+      tracking_number: string | null
+      cost: number | string | null
+      weight_grams: number | null
+    }[]
+  }[]
 }
 
 const PREPACK = new Set(["created", "picking"])
@@ -77,7 +93,9 @@ export default async function PackDetailPage({
            order_line_items(id, quantity,
              child_sku:child_skus(id, sku, bin_location, barcode, product:products(name)))),
          packaging_usage(id, quantity, unit_cost_snapshot,
-           packaging_type:packaging_types(name, kind))`,
+           packaging_type:packaging_types(name, kind)),
+         shipments(id, carrier, service_level, estimated_cost, actual_cost, status,
+           packages(id, tracking_number, cost, weight_grams))`,
       )
       .eq("id", id)
       .maybeSingle(),
@@ -124,6 +142,24 @@ export default async function PackDetailPage({
     name: t.name,
     kind: t.kind,
     unit_cost: Number(t.unit_cost),
+  }))
+
+  const num = (v: number | string | null) =>
+    v === null || v === "" ? null : Number(v)
+
+  const shipments: ShipmentRow[] = group.shipments.map((s) => ({
+    id: s.id,
+    carrier: s.carrier,
+    service_level: s.service_level,
+    estimated_cost: num(s.estimated_cost),
+    actual_cost: num(s.actual_cost),
+    status: s.status,
+    packages: s.packages.map((p) => ({
+      id: p.id,
+      tracking_number: p.tracking_number,
+      cost: num(p.cost),
+      weight_grams: p.weight_grams,
+    })),
   }))
 
   return (
@@ -230,6 +266,15 @@ export default async function PackDetailPage({
                 lines={usageLines}
                 packagingTypes={packagingTypes}
               />
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Shipping</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <ShippingEditor groupId={group.id} shipments={shipments} />
             </CardContent>
           </Card>
         </div>

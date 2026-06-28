@@ -176,3 +176,146 @@ export async function setPickQty(
     },
   }
 }
+
+// ---------------------------------------------------------------------------
+// Shipping — operational only. None of these touch the order lifecycle;
+// fulfillment stays a separate, explicit step (fulfill_order).
+// ---------------------------------------------------------------------------
+
+function shipError(error: PgError): string {
+  if (!error) return "Something went wrong."
+  if (error.code === "42501")
+    return "Only an admin can delete a shipment or package."
+  if (error.code === "23514")
+    return error.message || "That value isn't allowed."
+  return error.message || error.details || "Something went wrong."
+}
+
+// Parse an optional money/number input. Empty string -> null (clears the field).
+function optNum(v: number | string | null | undefined): number | null {
+  if (v === "" || v === null || v === undefined) return null
+  const n = typeof v === "string" ? Number(v) : v
+  return Number.isFinite(n) ? n : null
+}
+
+export async function createShipment(
+  groupId: string,
+  fields: { carrier?: string; serviceLevel?: string; estimatedCost?: string },
+): Promise<ActionResult> {
+  const supabase = await createClient()
+  const { error } = await supabase.rpc("create_shipment", {
+    p_group_id: groupId,
+    p_carrier: fields.carrier?.trim() || null,
+    p_service_level: fields.serviceLevel?.trim() || null,
+    p_estimated_cost: optNum(fields.estimatedCost),
+  })
+  if (error) return { ok: false, error: shipError(error) }
+
+  revalidatePath(`/packing/${groupId}`)
+  return { ok: true }
+}
+
+export async function updateShipment(
+  shipmentId: string,
+  groupId: string,
+  fields: {
+    carrier?: string
+    serviceLevel?: string
+    estimatedCost?: string
+    actualCost?: string
+  },
+): Promise<ActionResult> {
+  const supabase = await createClient()
+  const { error } = await supabase.rpc("update_shipment", {
+    p_shipment_id: shipmentId,
+    p_carrier: fields.carrier?.trim() || null,
+    p_service_level: fields.serviceLevel?.trim() || null,
+    p_estimated_cost: optNum(fields.estimatedCost),
+    p_actual_cost: optNum(fields.actualCost),
+  })
+  if (error) return { ok: false, error: shipError(error) }
+
+  revalidatePath(`/packing/${groupId}`)
+  return { ok: true }
+}
+
+export async function setShipmentStatus(
+  shipmentId: string,
+  groupId: string,
+  status: string,
+): Promise<ActionResult> {
+  const supabase = await createClient()
+  const { error } = await supabase.rpc("set_shipment_status", {
+    p_shipment_id: shipmentId,
+    p_new_status: status,
+  })
+  if (error) return { ok: false, error: shipError(error) }
+
+  revalidatePath(`/packing/${groupId}`)
+  return { ok: true }
+}
+
+export async function removeShipment(
+  shipmentId: string,
+  groupId: string,
+): Promise<ActionResult> {
+  const supabase = await createClient()
+  const { error } = await supabase
+    .from("shipments")
+    .delete()
+    .eq("id", shipmentId)
+  if (error) return { ok: false, error: shipError(error) }
+
+  revalidatePath(`/packing/${groupId}`)
+  return { ok: true }
+}
+
+export async function addPackage(
+  shipmentId: string,
+  groupId: string,
+  fields: { trackingNumber?: string; cost?: string; weightGrams?: string },
+): Promise<ActionResult> {
+  const supabase = await createClient()
+  const weight = optNum(fields.weightGrams)
+  const { error } = await supabase.rpc("add_package", {
+    p_shipment_id: shipmentId,
+    p_tracking_number: fields.trackingNumber?.trim() || null,
+    p_cost: optNum(fields.cost),
+    p_weight_grams: weight === null ? null : Math.trunc(weight),
+  })
+  if (error) return { ok: false, error: shipError(error) }
+
+  revalidatePath(`/packing/${groupId}`)
+  return { ok: true }
+}
+
+export async function updatePackage(
+  packageId: string,
+  groupId: string,
+  fields: { trackingNumber?: string; cost?: string; weightGrams?: string },
+): Promise<ActionResult> {
+  const supabase = await createClient()
+  const weight = optNum(fields.weightGrams)
+  const { error } = await supabase.rpc("update_package", {
+    p_package_id: packageId,
+    p_tracking_number: fields.trackingNumber?.trim() || null,
+    p_cost: optNum(fields.cost),
+    p_weight_grams: weight === null ? null : Math.trunc(weight),
+  })
+  if (error) return { ok: false, error: shipError(error) }
+
+  revalidatePath(`/packing/${groupId}`)
+  return { ok: true }
+}
+
+export async function removePackage(
+  packageId: string,
+  groupId: string,
+): Promise<ActionResult> {
+  const supabase = await createClient()
+  const { error } = await supabase.from("packages").delete().eq("id", packageId)
+  if (error) return { ok: false, error: shipError(error) }
+
+  revalidatePath(`/packing/${groupId}`)
+  return { ok: true }
+}

@@ -221,8 +221,14 @@ fulfillment date. `calc_order_pick_fee` / `charge_order_pick_fee` /
 pricing, snapshotting the rate onto each charge.
 
 ### Shipping
-Shipments and packages per group, with carrier, service level, estimated/actual
-cost, tracking number, and weight.
+Per-group shipments and packages, managed from a shipping panel on the packing
+detail screen (`packing/[id]`). A group can carry multiple shipments, each with
+multiple packages, recording carrier, service level, estimated/actual cost,
+tracking number, and weight. Guarded RPCs (`create_shipment`, `update_shipment`,
+`set_shipment_status`, `add_package`, `update_package`) mirror the packing layer.
+Shipping is **operational only** — moving a shipment through `pending → shipped →
+delivered` (or `cancelled`) never consumes inventory or closes an order;
+fulfillment stays a separate, explicit step (`fulfill_order`).
 
 ### Shopify integration
 Self-serve store connection, product/variant import, and order import via
