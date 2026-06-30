@@ -20,7 +20,7 @@ export type ImportOptions = {
 
 /**
  * Map every variant of one Shopify product to a WMS product + child SKU at the
- * given site, via the idempotent upsert_shopify_variant RPC. Works with either
+ * given site, via the idempotent upsert_store_variant RPC. Works with either
  * an end-user client (RLS applies) or the service-role client (webhook).
  *
  * Cost and inventory are only sent when opts provides them, so the webhook
@@ -67,7 +67,7 @@ export async function importShopifyProduct(
       invQty = Math.trunc(Number(v.inventory_quantity))
     }
 
-    const { data, error } = await client.rpc("upsert_shopify_variant", {
+    const { data, error } = await client.rpc("upsert_store_variant", {
       p_site_id: siteId,
       p_store_variant_id: variantId,
       p_name: variantProductName(product.title, v.title),
@@ -75,6 +75,7 @@ export async function importShopifyProduct(
       p_price: Number.isFinite(price) ? price : 0,
       p_cost: cost,
       p_inventory_qty: invQty,
+      p_channel: "shopify",
     })
     if (error) {
       res.skipped++

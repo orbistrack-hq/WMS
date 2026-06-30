@@ -59,8 +59,8 @@ export async function createConnection(
 
   const supabase = await createClient()
   const { error } = await supabase
-    .from("shopify_connections")
-    .insert({ shop_domain: domain, site_id: siteId })
+    .from("store_connections")
+    .insert({ channel: "shopify", source: domain, site_id: siteId })
   if (error) return { ok: false, error: err(error) }
 
   revalidatePath("/integrations/shopify")
@@ -73,7 +73,7 @@ export async function setConnectionActive(
 ): Promise<ActionResult> {
   const supabase = await createClient()
   const { error } = await supabase
-    .from("shopify_connections")
+    .from("store_connections")
     .update({ is_active: isActive })
     .eq("id", id)
   if (error) return { ok: false, error: err(error) }
@@ -85,7 +85,7 @@ export async function setConnectionActive(
 export async function deleteConnection(id: string): Promise<ActionResult> {
   const supabase = await createClient()
   const { error } = await supabase
-    .from("shopify_connections")
+    .from("store_connections")
     .delete()
     .eq("id", id)
   if (error) return { ok: false, error: err(error) }
@@ -112,10 +112,10 @@ export async function setCredentials(
   const supabase = await createClient()
 
   // Authorize first: the caller must be able to see this connection (RLS is
-  // site-scoped). shopify_secrets itself is sealed from the API role, so we
+  // site-scoped). store_secrets itself is sealed from the API role, so we
   // can't lean on its RLS — we gate on the connection the user CAN read.
   const { data: conn } = await supabase
-    .from("shopify_connections")
+    .from("store_connections")
     .select("id")
     .eq("id", connectionId)
     .maybeSingle()
@@ -127,12 +127,12 @@ export async function setCredentials(
 
   // Merge with any existing values so a blank field keeps the current one.
   const { data: existing } = await admin
-    .from("shopify_secrets")
+    .from("store_secrets")
     .select("access_token, api_secret")
     .eq("connection_id", connectionId)
     .maybeSingle()
 
-  const { error } = await admin.from("shopify_secrets").upsert(
+  const { error } = await admin.from("store_secrets").upsert(
     {
       connection_id: connectionId,
       access_token: token || existing?.access_token || null,
@@ -232,8 +232,8 @@ export async function syncProducts(connectionId: string): Promise<SyncResult> {
   const supabase = await createClient()
 
   const { data: conn, error: connErr } = await supabase
-    .from("shopify_connections")
-    .select("shop_domain, site_id")
+    .from("store_connections")
+    .select("source, site_id")
     .eq("id", connectionId)
     .maybeSingle()
   if (connErr) return { ok: false, error: err(connErr) }
@@ -242,7 +242,7 @@ export async function syncProducts(connectionId: string): Promise<SyncResult> {
   // Secret read goes through the service role; the connection select above (user
   // client, RLS) is what authorizes the caller for this connection's site.
   const { data: secret } = await createAdminClient()
-    .from("shopify_secrets")
+    .from("store_secrets")
     .select("access_token")
     .eq("connection_id", connectionId)
     .maybeSingle()
@@ -259,7 +259,7 @@ export async function syncProducts(connectionId: string): Promise<SyncResult> {
   const products: ShopifyProduct[] = []
   const inventoryItemIds: string[] = []
   let url: string | null =
-    `https://${conn.shop_domain}/admin/api/${SHOPIFY_API_VERSION}/products.json?limit=250`
+    `https://${conn.source}/admin/api/${SHOPIFY_API_VERSION}/products.json?limit=250`
 
   try {
     for (let page = 0; url && page < 40; page++) {
@@ -292,7 +292,7 @@ export async function syncProducts(connectionId: string): Promise<SyncResult> {
   let costByInventoryItemId = new Map<string, number>()
   let costUnavailable = false
   try {
-    const r = await fetchVariantCosts(conn.shop_domain, token, inventoryItemIds)
+    const r = await fetchVariantCosts(conn.source, token, inventoryItemIds)
     costByInventoryItemId = r.costs
     costUnavailable = r.unavailable
   } catch {
@@ -336,7 +336,7 @@ export async function syncProducts(connectionId: string): Promise<SyncResult> {
   }
 
   await supabase
-    .from("shopify_connections")
+    .from("store_connections")
     .update({ last_synced_at: new Date().toISOString() })
     .eq("id", connectionId)
 
@@ -377,8 +377,8 @@ export async function registerWebhooks(
   const supabase = await createClient()
 
   const { data: conn } = await supabase
-    .from("shopify_connections")
-    .select("shop_domain")
+    .from("store_connections")
+    .select("source")
     .eq("id", connectionId)
     .maybeSingle()
   if (!conn) return { ok: false, error: "Connection not found." }
@@ -386,7 +386,7 @@ export async function registerWebhooks(
   // Secret read goes through the service role; the connection select above (user
   // client, RLS) is what authorizes the caller for this connection's site.
   const { data: secret } = await createAdminClient()
-    .from("shopify_secrets")
+    .from("store_secrets")
     .select("access_token")
     .eq("connection_id", connectionId)
     .maybeSingle()
@@ -404,7 +404,7 @@ export async function registerWebhooks(
   try {
     for (const topic of WEBHOOK_TOPICS) {
       const r = await fetch(
-        `https://${conn.shop_domain}/admin/api/${SHOPIFY_API_VERSION}/webhooks.json`,
+        `https://${conn.source}/admin/api/${SHOPIFY_API_VERSION}/webhooks.json`,
         {
           method: "POST",
           headers: {

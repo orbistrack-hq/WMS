@@ -50,14 +50,14 @@ type ImportRow = {
   received_at: string
 }
 
-export default async function ShopifyIntegrationPage() {
+export default async function WooCommerceIntegrationPage() {
   const supabase = await createClient()
 
   const [connRes, sitesRes, importsRes, secretsRes, hdrs] = await Promise.all([
     supabase
       .from("store_connections")
       .select("id, source, is_active, last_synced_at, site:sites(name)")
-      .eq("channel", "shopify")
+      .eq("channel", "woocommerce")
       .order("source"),
     supabase
       .from("sites")
@@ -69,35 +69,33 @@ export default async function ShopifyIntegrationPage() {
       .select(
         "id, source, external_order_id, status, error, wms_order_id, received_at",
       )
-      .eq("channel", "shopify")
+      .eq("channel", "woocommerce")
       .order("received_at", { ascending: false })
       .limit(50),
-    // Boolean-only view: the raw token/secret are sealed from the API role and
-    // never leave the database. We only learn whether each field is set.
+    // Boolean-only view: raw credentials are sealed from the API role.
     supabase
       .from("store_credential_status")
-      .select("connection_id, has_token, has_secret")
-      .eq("channel", "shopify"),
+      .select(
+        "connection_id, has_consumer_key, has_consumer_secret, has_webhook_secret",
+      )
+      .eq("channel", "woocommerce"),
     headers(),
   ])
 
-  // Any user who can see a connection (RLS site-scoped) can manage it.
   const canManage = true
   const credByConn = new Map(
     (
       (secretsRes.data ?? []) as {
         connection_id: string
-        has_token: boolean
-        has_secret: boolean
+        has_consumer_key: boolean
+        has_consumer_secret: boolean
+        has_webhook_secret: boolean
       }[]
-    ).map((s) => [
-      s.connection_id,
-      { hasToken: s.has_token, hasSecret: s.has_secret },
-    ]),
+    ).map((s) => [s.connection_id, s]),
   )
   const host = hdrs.get("host") ?? "your-app.vercel.app"
   const proto = host.startsWith("localhost") ? "http" : "https"
-  const webhookUrl = `${proto}://${host}/api/shopify/webhooks`
+  const webhookUrl = `${proto}://${host}/api/woocommerce/webhooks`
 
   const connections: Connection[] = (
     (connRes.data ?? []) as unknown as {
@@ -111,11 +109,12 @@ export default async function ShopifyIntegrationPage() {
     const cred = credByConn.get(c.id)
     return {
       id: c.id,
-      shop_domain: c.source,
+      source: c.source,
       site_name: c.site?.name ?? "—",
       is_active: c.is_active,
-      has_token: cred?.hasToken ?? false,
-      has_secret: cred?.hasSecret ?? false,
+      has_consumer_key: cred?.has_consumer_key ?? false,
+      has_consumer_secret: cred?.has_consumer_secret ?? false,
+      has_webhook_secret: cred?.has_webhook_secret ?? false,
       last_synced_at: c.last_synced_at,
     }
   })
@@ -125,8 +124,8 @@ export default async function ShopifyIntegrationPage() {
   return (
     <>
       <PageHeader
-        title="Shopify"
-        description="Import Shopify orders into the WMS in real time via webhooks."
+        title="WooCommerce"
+        description="Import WooCommerce orders into the WMS in real time via webhooks."
       />
 
       <div className="flex flex-col gap-4">
@@ -139,38 +138,39 @@ export default async function ShopifyIntegrationPage() {
           </CardHeader>
           <CardContent className="flex flex-col gap-2.5 text-sm">
             <p className="text-xs text-muted-foreground">
-              In your Shopify admin, go to{" "}
-              <strong>Settings → Apps and sales channels → Develop apps</strong>{" "}
-              and create a custom app.
+              In your WordPress admin, go to{" "}
+              <strong>
+                WooCommerce → Settings → Advanced → REST API
+              </strong>{" "}
+              and add a key.
             </p>
             <ol className="ml-4 flex list-decimal flex-col gap-1.5 text-xs text-muted-foreground marker:text-muted-foreground">
               <li>
-                Under <strong>Admin API access scopes</strong>, enable{" "}
-                <code className="font-mono">read_orders</code>,{" "}
-                <code className="font-mono">read_products</code>, and{" "}
-                <code className="font-mono">read_customers</code>, then install
-                the app.
+                Create an API key with <strong>Read/Write</strong> permissions
+                and copy the <strong>Consumer key</strong> (
+                <code className="font-mono">ck_…</code>) and{" "}
+                <strong>Consumer secret</strong> (
+                <code className="font-mono">cs_…</code>).
               </li>
               <li>
-                Copy the <strong>Admin API access token</strong> (
-                <code className="font-mono">shpat_…</code>) and the{" "}
-                <strong>API secret key</strong> from the app&apos;s API
-                credentials.
+                Connect your store below, paste the keys plus a{" "}
+                <strong>webhook secret</strong> of your choosing into{" "}
+                <strong>Add credentials</strong>.
               </li>
               <li>
-                Connect your store below, paste both into{" "}
-                <strong>Add credentials</strong>, then click{" "}
-                <strong>Register webhooks</strong> and <strong>Sync products</strong>.
-                Syncing fills in the{" "}
+                Click <strong>Register webhooks</strong> and{" "}
+                <strong>Sync products</strong>. Syncing fills in the{" "}
                 <Link href="/catalog" className="underline">
                   catalog
                 </Link>{" "}
-                so incoming order lines map automatically.
+                (including each variation of variable products) so incoming order
+                lines map automatically.
               </li>
             </ol>
             <div className="flex flex-col gap-1">
               <span className="text-xs font-medium text-muted-foreground">
-                Webhook endpoint (if you prefer to add webhooks manually)
+                Webhook endpoint (if you prefer to add webhooks manually, set the
+                same secret on each)
               </span>
               <code className="rounded-md bg-muted px-2 py-1.5 font-mono text-xs break-all">
                 {webhookUrl}
@@ -214,7 +214,7 @@ export default async function ShopifyIntegrationPage() {
                   <TableRow>
                     <TableHead>Received</TableHead>
                     <TableHead>Store</TableHead>
-                    <TableHead>Shopify order</TableHead>
+                    <TableHead>Woo order</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead>Detail</TableHead>
                   </TableRow>

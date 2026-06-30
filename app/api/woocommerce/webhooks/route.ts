@@ -3,16 +3,16 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { createAdminClient } from "@/lib/supabase/admin"
 import {
-  normalizeShopifyOrder,
-  verifyShopifyHmac,
-  type ShopifyOrderPayload,
-  type ShopifyProduct,
-} from "@/lib/shopify/types"
+  normalizeWooOrder,
+  normalizeWooSource,
+  verifyWooSignature,
+  type WooOrderPayload,
+  type WooProduct,
+} from "@/lib/woocommerce/types"
 import {
-  importShopifyProduct,
-  deactivateShopifyProduct,
-} from "@/lib/shopify/import-products"
-import { applyShopifyOrderMeta } from "@/lib/shopify/import-orders"
+  importWooProduct,
+  deactivateWooProduct,
+} from "@/lib/woocommerce/import-products"
 
 // HMAC verification + the service-role client need the Node runtime.
 export const runtime = "nodejs"
@@ -20,66 +20,72 @@ export const dynamic = "force-dynamic"
 
 export async function POST(req: Request) {
   const raw = await req.text()
-  const hmac = req.headers.get("x-shopify-hmac-sha256")
-  const topic = req.headers.get("x-shopify-topic") ?? ""
-  const shopDomain = req.headers.get("x-shopify-shop-domain") ?? ""
+  const signature = req.headers.get("x-wc-webhook-signature")
+  const topic = req.headers.get("x-wc-webhook-topic") ?? ""
+  const source = normalizeWooSource(
+    req.headers.get("x-wc-webhook-source") ?? "",
+  )
 
   const supabase = createAdminClient()
 
-  // Authenticate per-store: verify the HMAC against THIS store's own API secret
-  // (entered by the client). Falls back to a global env secret if one is set.
+  // Authenticate per-store: verify the signature against THIS store's own
+  // webhook secret (entered by the client). Falls back to a global env secret.
   const { data: connRow } = await supabase
     .from("store_connections")
-    .select("secret:store_secrets(api_secret)")
-    .eq("channel", "shopify")
-    .eq("source", shopDomain)
+    .select("secret:store_secrets(webhook_secret)")
+    .eq("channel", "woocommerce")
+    .eq("source", source)
     .eq("is_active", true)
     .maybeSingle()
   const embed = (connRow as { secret?: unknown } | null)?.secret
-  const storeSecret = (
-    Array.isArray(embed) ? embed[0] : embed
-  ) as { api_secret?: string | null } | null | undefined
-  const secret = storeSecret?.api_secret ?? process.env.SHOPIFY_WEBHOOK_SECRET
+  const storeSecret = (Array.isArray(embed) ? embed[0] : embed) as
+    | { webhook_secret?: string | null }
+    | null
+    | undefined
+  const secret =
+    storeSecret?.webhook_secret ?? process.env.WOOCOMMERCE_WEBHOOK_SECRET
 
-  if (!verifyShopifyHmac(raw, hmac, secret ?? undefined)) {
-    return NextResponse.json({ error: "invalid hmac" }, { status: 401 })
+  if (!verifyWooSignature(raw, signature, secret ?? undefined)) {
+    return NextResponse.json({ error: "invalid signature" }, { status: 401 })
   }
 
+  // Woo sends a non-JSON ping ("webhook_id=...") when a webhook is first saved.
   let payload: unknown
   try {
     payload = JSON.parse(raw)
   } catch {
-    return NextResponse.json({ error: "invalid json" }, { status: 400 })
+    return NextResponse.json({ ok: true, ignored: "non-json ping" })
   }
 
   switch (topic) {
-    case "orders/create":
+    case "order.created":
+    case "order.updated":
       return handleOrderCreate(
         supabase,
-        shopDomain,
+        source,
         topic,
-        payload as ShopifyOrderPayload,
+        payload as WooOrderPayload,
       )
-    case "products/create":
-    case "products/update":
-      return handleProductUpsert(supabase, shopDomain, payload as ShopifyProduct)
-    case "products/delete":
-      return handleProductDelete(supabase, shopDomain, payload as ShopifyProduct)
+    case "product.created":
+    case "product.updated":
+      return handleProductUpsert(supabase, source, payload as WooProduct)
+    case "product.deleted":
+      return handleProductDelete(supabase, source, payload as WooProduct)
     default:
       return NextResponse.json({ ok: true, ignored: topic }, { status: 200 })
   }
 }
 
 /** The active WMS site a store feeds, or null if not connected. */
-async function siteForShop(
+async function siteForSource(
   supabase: SupabaseClient,
-  shopDomain: string,
+  source: string,
 ): Promise<string | null> {
   const { data } = await supabase
     .from("store_connections")
     .select("site_id")
-    .eq("channel", "shopify")
-    .eq("source", shopDomain)
+    .eq("channel", "woocommerce")
+    .eq("source", source)
     .eq("is_active", true)
     .maybeSingle()
   return (data?.site_id as string) ?? null
@@ -90,22 +96,22 @@ async function siteForShop(
 // ---------------------------------------------------------------------------
 async function handleOrderCreate(
   supabase: SupabaseClient,
-  shopDomain: string,
+  source: string,
   topic: string,
-  payload: ShopifyOrderPayload,
+  payload: WooOrderPayload,
 ) {
-  const order = normalizeShopifyOrder(payload)
-  if (!order.shopifyOrderId) {
+  const order = normalizeWooOrder(payload)
+  if (!order.externalOrderId) {
     return NextResponse.json({ error: "missing order id" }, { status: 400 })
   }
 
-  // Idempotency: a Shopify retry hits the unique (channel, source, order_id) key.
+  // Idempotency: a Woo retry hits the unique (channel, source, order_id) key.
   const { data: importRow, error: insErr } = await supabase
     .from("store_order_imports")
     .insert({
-      channel: "shopify",
-      source: shopDomain,
-      external_order_id: order.shopifyOrderId,
+      channel: "woocommerce",
+      source,
+      external_order_id: order.externalOrderId,
       topic,
       status: "received",
       payload,
@@ -130,9 +136,9 @@ async function handleOrderCreate(
       .update({ status, processed_at: new Date().toISOString(), ...extra })
       .eq("id", importId)
 
-  const siteId = await siteForShop(supabase, shopDomain)
+  const siteId = await siteForSource(supabase, source)
   if (!siteId) {
-    await finish("error", { error: `No active connection for ${shopDomain}` })
+    await finish("error", { error: `No active connection for ${source}` })
     return NextResponse.json({ ok: true, status: "no_connection" })
   }
 
@@ -141,7 +147,7 @@ async function handleOrderCreate(
     return NextResponse.json({ ok: true, status: "empty" })
   }
 
-  // Map Shopify variant IDs -> child SKUs at this site.
+  // Map Woo product/variation ids -> child SKUs at this site.
   const variantIds = order.lines
     .map((l) => l.variantId)
     .filter((v): v is string => Boolean(v))
@@ -178,7 +184,7 @@ async function handleOrderCreate(
 
   if (unmapped.length > 0) {
     await finish("needs_mapping", {
-      error: `Unmapped Shopify variants: ${unmapped.join(", ")}. Sync products or set store_variant_id, then re-send.`,
+      error: `Unmapped WooCommerce items: ${unmapped.join(", ")}. Sync products (variable products need a sync to map their variations), then re-send.`,
     })
     return NextResponse.json({ ok: true, status: "needs_mapping", unmapped })
   }
@@ -202,7 +208,7 @@ async function handleOrderCreate(
           name: order.customer.name,
           email,
           external_ref: order.customer.externalId
-            ? { shopify_customer_id: order.customer.externalId }
+            ? { woocommerce_customer_id: order.customer.externalId }
             : null,
         })
         .select("id")
@@ -211,13 +217,14 @@ async function handleOrderCreate(
     }
   }
 
+  const label = order.number ?? order.externalOrderId
   const { data: newOrderId, error: createErr } = await supabase.rpc(
     "create_order",
     {
       p_site_id: siteId,
       p_lines: mappedLines,
       p_customer_id: customerId,
-      p_channel: "shopify",
+      p_channel: "woocommerce",
       p_order_type: "standard",
       p_ship_to_name: order.shipTo?.name ?? null,
       p_ship_to_address1: order.shipTo?.address1 ?? null,
@@ -227,8 +234,8 @@ async function handleOrderCreate(
       p_ship_to_postal: order.shipTo?.postal ?? null,
       p_ship_to_country: order.shipTo?.country ?? null,
       p_notes: order.note
-        ? `Shopify ${order.name ?? order.shopifyOrderId}: ${order.note}`
-        : `Imported from Shopify ${order.name ?? order.shopifyOrderId}`,
+        ? `WooCommerce #${label}: ${order.note}`
+        : `Imported from WooCommerce #${label}`,
     },
   )
 
@@ -241,9 +248,6 @@ async function handleOrderCreate(
     })
   }
 
-  // Stamp the Shopify order number and reflect its fulfilled/cancelled state.
-  await applyShopifyOrderMeta(supabase, newOrderId as string, order)
-
   await finish("imported", { wms_order_id: newOrderId as string })
   return NextResponse.json({ ok: true, status: "imported", orderId: newOrderId })
 }
@@ -253,28 +257,26 @@ async function handleOrderCreate(
 // ---------------------------------------------------------------------------
 async function handleProductUpsert(
   supabase: SupabaseClient,
-  shopDomain: string,
-  product: ShopifyProduct,
+  source: string,
+  product: WooProduct,
 ) {
-  const siteId = await siteForShop(supabase, shopDomain)
+  const siteId = await siteForSource(supabase, source)
   if (!siteId) {
     return NextResponse.json({ ok: true, status: "no_connection" })
   }
-  const result = await importShopifyProduct(supabase, siteId, product)
+  const result = await importWooProduct(supabase, siteId, product)
   return NextResponse.json({ ok: true, status: "synced", ...result })
 }
 
 async function handleProductDelete(
   supabase: SupabaseClient,
-  shopDomain: string,
-  product: ShopifyProduct,
+  source: string,
+  product: WooProduct,
 ) {
-  const siteId = await siteForShop(supabase, shopDomain)
+  const siteId = await siteForSource(supabase, source)
   if (!siteId) {
     return NextResponse.json({ ok: true, status: "no_connection" })
   }
-  // products/delete usually carries only the id; deactivate when variants are
-  // present, otherwise ack (the SKU can be deactivated manually in Catalog).
-  const deactivated = await deactivateShopifyProduct(supabase, siteId, product)
+  const deactivated = await deactivateWooProduct(supabase, siteId, product)
   return NextResponse.json({ ok: true, status: "deleted", deactivated })
 }

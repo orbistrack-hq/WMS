@@ -7,6 +7,7 @@ import {
   FolderTree,
   BarChart3,
   Store,
+  ShoppingCart,
   Settings,
 } from "lucide-react"
 
@@ -63,6 +64,12 @@ export const NAV_ITEMS: NavItem[] = [
     href: "/integrations/shopify",
     icon: Store,
     description: "Import Shopify orders via webhooks",
+  },
+  {
+    label: "WooCommerce",
+    href: "/integrations/woocommerce",
+    icon: ShoppingCart,
+    description: "Import WooCommerce orders via webhooks",
   },
   {
     label: "Settings",
