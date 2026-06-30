@@ -1,0 +1,235 @@
+import type { SupabaseClient } from "@supabase/supabase-js"
+
+import type { NormalizedStoreOrder } from "./types"
+
+export type OrderImportOutcome =
+  | { status: "imported"; wmsOrderId: string }
+  | { status: "duplicate" }
+  | { status: "needs_mapping"; unmapped: string[] }
+  | { status: "skipped"; reason: string }
+  | { status: "error"; error: string }
+
+/**
+ * After a Woo order is created, stamp it with the Woo order number and move it
+ * to its lifecycle state. Shared by the webhook and the backfill so both behave
+ * identically.
+ *
+ *  - order_number → "WOO-<number>" so WMS searches match the Woo order number.
+ *    A unique clash is non-fatal — keep the auto-assigned ORD-… number.
+ *  - lifecycle → completed orders go through the guarded fulfill_order
+ *    (inventory consume + pick-fee, backdated), cancelled/refunded/failed
+ *    through cancel_order. "open" stays in the normal pick/pack flow.
+ *
+ * Lifecycle/number failures are logged but never fail the import: the order is
+ * already in WMS and its status can be corrected by hand.
+ *
+ * Must be called with a service-role client (writes orders, calls the RPCs).
+ */
+export async function applyWooOrderMeta(
+  client: SupabaseClient,
+  wmsOrderId: string,
+  order: NormalizedStoreOrder,
+): Promise<void> {
+  if (order.number) {
+    const orderNumber = `WOO-${order.number}`
+    const { error } = await client
+      .from("orders")
+      .update({ order_number: orderNumber })
+      .eq("id", wmsOrderId)
+    if (error && error.code !== "23505") {
+      console.error(
+        `[woocommerce] could not set order_number ${orderNumber}: ${error.message}`,
+      )
+    }
+  }
+
+  if (order.lifecycle === "fulfilled") {
+    const { error } = await client.rpc("fulfill_order", {
+      p_order_id: wmsOrderId,
+      p_fulfilled_at: order.fulfilledAt ?? order.createdAt,
+    })
+    if (error) {
+      console.error(
+        `[woocommerce] fulfill_order failed for ${wmsOrderId}: ${error.message}`,
+      )
+    }
+  } else if (order.lifecycle === "cancelled") {
+    const { error } = await client.rpc("cancel_order", {
+      p_order_id: wmsOrderId,
+    })
+    if (error) {
+      console.error(
+        `[woocommerce] cancel_order failed for ${wmsOrderId}: ${error.message}`,
+      )
+    }
+  }
+}
+
+/**
+ * Import one normalized Woo order into WMS. Shared by the order webhook and the
+ * past-orders backfill so both behave identically:
+ *
+ *  - idempotent on (channel, source, external_order_id) via store_order_imports
+ *  - maps Woo product/variation ids -> child SKUs at the order's site
+ *  - resolves/creates the customer by email
+ *  - writes the order through the guarded create_order RPC, backdated to the
+ *    original Woo date so historical orders keep their real sale date
+ *  - stamps the Woo order number and reflects completed/cancelled state
+ *
+ * Must be called with a service-role client: it writes store_order_imports
+ * (no RLS write policy) and reads across customers/child_skus.
+ */
+export async function importWooOrder(
+  client: SupabaseClient,
+  siteId: string,
+  source: string,
+  order: NormalizedStoreOrder,
+  topic: string,
+  rawPayload: unknown,
+): Promise<OrderImportOutcome> {
+  if (!order.externalOrderId) {
+    return { status: "error", error: "missing order id" }
+  }
+
+  // Idempotency: a re-run (or Woo retry) hits the unique key and is skipped.
+  const { data: importRow, error: insErr } = await client
+    .from("store_order_imports")
+    .insert({
+      channel: "woocommerce",
+      source,
+      external_order_id: order.externalOrderId,
+      topic,
+      status: "received",
+      payload: rawPayload,
+    })
+    .select("id")
+    .single()
+
+  if (insErr) {
+    if (insErr.code === "23505") return { status: "duplicate" }
+    return { status: "error", error: insErr.message }
+  }
+
+  const importId = importRow.id as string
+  const finish = (
+    status: string,
+    extra: { error?: string; wms_order_id?: string } = {},
+  ) =>
+    client
+      .from("store_order_imports")
+      .update({ status, processed_at: new Date().toISOString(), ...extra })
+      .eq("id", importId)
+
+  if (order.lines.length === 0) {
+    await finish("error", { error: "Order has no mappable line items" })
+    return { status: "skipped", reason: "empty" }
+  }
+
+  // Map Woo product/variation ids -> child SKUs at this site.
+  const variantIds = order.lines
+    .map((l) => l.variantId)
+    .filter((v): v is string => Boolean(v))
+  const { data: skus } = await client
+    .from("child_skus")
+    .select("id, store_variant_id")
+    .eq("site_id", siteId)
+    .eq("is_active", true)
+    .in("store_variant_id", variantIds)
+  const skuByVariant = new Map(
+    (skus ?? []).map((s) => [s.store_variant_id as string, s.id as string]),
+  )
+
+  const mappedLines: {
+    child_sku_id: string
+    quantity: number
+    unit_price: number | null
+  }[] = []
+  const unmapped: string[] = []
+  for (const line of order.lines) {
+    const childSkuId = line.variantId
+      ? skuByVariant.get(line.variantId)
+      : undefined
+    if (!childSkuId) {
+      unmapped.push(line.variantId ?? line.title ?? "unknown")
+      continue
+    }
+    mappedLines.push({
+      child_sku_id: childSkuId,
+      quantity: line.quantity,
+      unit_price: line.unitPrice,
+    })
+  }
+
+  if (unmapped.length > 0) {
+    await finish("needs_mapping", {
+      error: `Unmapped WooCommerce items: ${unmapped.join(", ")}. Sync products (variable products need a sync to map their variations), then re-run.`,
+    })
+    return { status: "needs_mapping", unmapped }
+  }
+
+  // Resolve / create the customer (by email).
+  let customerId: string | null = null
+  if (order.customer?.email) {
+    const email = order.customer.email
+    const { data: existing } = await client
+      .from("customers")
+      .select("id")
+      .ilike("email", email)
+      .limit(1)
+      .maybeSingle()
+    if (existing) {
+      customerId = existing.id as string
+    } else {
+      const { data: created } = await client
+        .from("customers")
+        .insert({
+          name: order.customer.name,
+          email,
+          external_ref: order.customer.externalId
+            ? { woocommerce_customer_id: order.customer.externalId }
+            : null,
+        })
+        .select("id")
+        .single()
+      customerId = created?.id ?? null
+    }
+  }
+
+  // Backdate to the original Woo order time when present.
+  const saleDate = order.createdAt ? order.createdAt.slice(0, 10) : null
+  const label = order.number ?? order.externalOrderId
+
+  const { data: newOrderId, error: createErr } = await client.rpc(
+    "create_order",
+    {
+      p_site_id: siteId,
+      p_lines: mappedLines,
+      p_customer_id: customerId,
+      p_channel: "woocommerce",
+      p_order_type: "standard",
+      p_sale_date: saleDate,
+      p_entered_at: order.createdAt ?? null,
+      p_ship_to_name: order.shipTo?.name ?? null,
+      p_ship_to_address1: order.shipTo?.address1 ?? null,
+      p_ship_to_address2: order.shipTo?.address2 ?? null,
+      p_ship_to_city: order.shipTo?.city ?? null,
+      p_ship_to_region: order.shipTo?.region ?? null,
+      p_ship_to_postal: order.shipTo?.postal ?? null,
+      p_ship_to_country: order.shipTo?.country ?? null,
+      p_notes: order.note
+        ? `WooCommerce #${label}: ${order.note}`
+        : `Imported from WooCommerce #${label}`,
+    },
+  )
+
+  if (createErr) {
+    await finish("error", { error: createErr.message })
+    return { status: "error", error: createErr.message }
+  }
+
+  // Stamp the Woo order number and reflect its completed/cancelled state.
+  await applyWooOrderMeta(client, newOrderId as string, order)
+
+  await finish("imported", { wms_order_id: newOrderId as string })
+  return { status: "imported", wmsOrderId: newOrderId as string }
+}
