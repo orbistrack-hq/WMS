@@ -53,10 +53,13 @@ type ImportRow = {
 export default async function ShopifyIntegrationPage() {
   const supabase = await createClient()
 
-  const [connRes, sitesRes, importsRes, secretsRes, hdrs] = await Promise.all([
+  const [connRes, sitesRes, importsRes, secretsRes, outboundRes, hdrs] =
+    await Promise.all([
     supabase
       .from("store_connections")
-      .select("id, source, is_active, last_synced_at, site:sites(name)")
+      .select(
+        "id, source, site_id, is_active, last_synced_at, sync_inventory_outbound, inventory_location_id, site:sites(name)",
+      )
       .eq("channel", "shopify")
       .order("source"),
     supabase
@@ -78,8 +81,23 @@ export default async function ShopifyIntegrationPage() {
       .from("store_credential_status")
       .select("connection_id, has_token, has_secret")
       .eq("channel", "shopify"),
+    supabase
+      .from("store_outbound_sync_status")
+      .select("site_id, pending, processing, failed, skipped"),
     headers(),
   ])
+
+  const outboundBySite = new Map(
+    (
+      (outboundRes.data ?? []) as {
+        site_id: string
+        pending: number
+        processing: number
+        failed: number
+        skipped: number
+      }[]
+    ).map((o) => [o.site_id, o]),
+  )
 
   // Any user who can see a connection (RLS site-scoped) can manage it.
   const canManage = true
@@ -103,12 +121,16 @@ export default async function ShopifyIntegrationPage() {
     (connRes.data ?? []) as unknown as {
       id: string
       source: string
+      site_id: string
       is_active: boolean
       last_synced_at: string | null
+      sync_inventory_outbound: boolean
+      inventory_location_id: string | null
       site: { name: string | null } | null
     }[]
   ).map((c) => {
     const cred = credByConn.get(c.id)
+    const ob = outboundBySite.get(c.site_id)
     return {
       id: c.id,
       shop_domain: c.source,
@@ -117,6 +139,10 @@ export default async function ShopifyIntegrationPage() {
       has_token: cred?.hasToken ?? false,
       has_secret: cred?.hasSecret ?? false,
       last_synced_at: c.last_synced_at,
+      sync_inventory_outbound: c.sync_inventory_outbound ?? false,
+      has_location: Boolean(c.inventory_location_id),
+      outbound_pending: (ob?.pending ?? 0) + (ob?.processing ?? 0),
+      outbound_failed: ob?.failed ?? 0,
     }
   })
 

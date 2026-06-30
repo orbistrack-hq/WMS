@@ -87,6 +87,16 @@ export async function importShopifyProduct(
     else res.updated++
     if (row?.cost_seeded) res.costSeeded++
     if (invQty != null) res.stockSynced++
+
+    // Persist the InventoryItem id so OUTBOUND stock pushes (migration 0026)
+    // can address this variant's stock. Best-effort: a failure here must not
+    // fail the catalog import.
+    if (invItemId && row?.child_sku_id) {
+      await client
+        .from("child_skus")
+        .update({ store_inventory_item_id: invItemId })
+        .eq("id", row.child_sku_id)
+    }
   }
 
   return res

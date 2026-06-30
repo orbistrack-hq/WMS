@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache"
 
 import { createClient } from "@/lib/supabase/server"
+import { kickOutboundDrain } from "@/lib/store-sync/outbound"
 import type { OrderChannel, OrderType } from "@/lib/orders/types"
 import { LABEL_STATUSES } from "@/lib/orders/types"
 
@@ -69,6 +70,8 @@ export async function createOrder(
 
   revalidatePath("/orders")
   revalidatePath("/inventory")
+  // Reserving stock changed available — push it to any outbound-enabled store.
+  await kickOutboundDrain()
   return { ok: true, orderId: data as string }
 }
 
@@ -99,6 +102,7 @@ export async function fulfillOrder(orderId: string): Promise<ActionResult> {
   revalidatePath(`/orders/${orderId}`)
   revalidatePath("/orders")
   revalidatePath("/inventory")
+  await kickOutboundDrain()
   return { ok: true }
 }
 
@@ -110,6 +114,7 @@ export async function cancelOrder(orderId: string): Promise<ActionResult> {
   revalidatePath(`/orders/${orderId}`)
   revalidatePath("/orders")
   revalidatePath("/inventory")
+  await kickOutboundDrain()
   return { ok: true }
 }
 

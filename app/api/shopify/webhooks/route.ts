@@ -3,6 +3,7 @@ import { NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { verifyShopifyHmac } from "@/lib/shopify/types"
 import { processShopifyEvent } from "@/lib/shopify/process-event"
+import { kickOutboundDrain } from "@/lib/store-sync/outbound"
 import {
   dedupeKey,
   publishToQueue,
@@ -82,6 +83,7 @@ export async function POST(req: Request) {
   // 3) Fallback: process inline (local dev / Upstash not yet provisioned).
   try {
     const result = await processShopifyEvent(supabase, topic, shopDomain, payload)
+    await kickOutboundDrain()
     return NextResponse.json({ ok: true, ...result }, { status: 200 })
   } catch (err) {
     // Return 500 so Shopify retries; durable idempotency makes the retry safe.

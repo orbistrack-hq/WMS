@@ -14,6 +14,7 @@ import {
   toProgress,
   type JobProgress,
 } from "@/lib/store-sync/jobs"
+import { drainOutboundInventory, kickOutboundDrain } from "@/lib/store-sync/outbound"
 import {
   normalizeGraphqlOrder,
   type ShopifyGraphqlOrdersPage,
@@ -99,6 +100,102 @@ export async function deleteConnection(id: string): Promise<ActionResult> {
 
   revalidatePath("/integrations/shopify")
   return { ok: true }
+}
+
+/**
+ * Turn OUTBOUND inventory sync on/off for one connection (migration 0026). Off
+ * by default so stores are enabled one at a time. Enabling it makes future WMS
+ * stock changes push `available` to this store; turning it on also nudges the
+ * drain so any already-queued jobs go out promptly.
+ */
+export async function setInventoryOutbound(
+  id: string,
+  enabled: boolean,
+): Promise<ActionResult> {
+  const supabase = await createClient()
+  const { error } = await supabase
+    .from("store_connections")
+    .update({ sync_inventory_outbound: enabled })
+    .eq("id", id)
+  if (error) return { ok: false, error: err(error) }
+
+  if (enabled) await kickOutboundDrain()
+  revalidatePath("/integrations/shopify")
+  return { ok: true }
+}
+
+/** Manually drain the outbound inventory queue now (Sync inventory button). */
+export async function runOutboundDrainNow(): Promise<
+  { ok: true; pushed: number; skipped: number; failed: number } | { ok: false; error: string }
+> {
+  // Authorize: any user who can reach an outbound-enabled connection. The drain
+  // itself runs with the service role (claim/complete are sealed to it).
+  const supabase = await createClient()
+  const { data: conns, error: connErr } = await supabase
+    .from("store_connections")
+    .select("id")
+    .eq("sync_inventory_outbound", true)
+    .limit(1)
+  if (connErr) return { ok: false, error: err(connErr) }
+  if (!conns || conns.length === 0)
+    return { ok: false, error: "No store has outbound inventory sync enabled." }
+
+  try {
+    const summary = await drainOutboundInventory(createAdminClient(), { limit: 200 })
+    revalidatePath("/integrations/shopify")
+    return {
+      ok: true,
+      pushed: summary.pushed,
+      skipped: summary.skipped,
+      failed: summary.failed,
+    }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Drain failed." }
+  }
+}
+
+/**
+ * Best-effort capture of the store's primary location id onto the connection,
+ * used as the target for outbound stock writes. Only sets it when unset.
+ */
+async function captureShopifyLocation(
+  connectionId: string,
+  source: string,
+  token: string,
+): Promise<void> {
+  try {
+    const admin = createAdminClient()
+    const { data: c } = await admin
+      .from("store_connections")
+      .select("inventory_location_id")
+      .eq("id", connectionId)
+      .maybeSingle()
+    if (c?.inventory_location_id) return
+
+    const r = await fetch(
+      `https://${source}/admin/api/${SHOPIFY_API_VERSION}/locations.json`,
+      {
+        headers: {
+          "X-Shopify-Access-Token": token,
+          "Content-Type": "application/json",
+        },
+      },
+    )
+    if (!r.ok) return
+    const body = (await r.json()) as {
+      locations?: { id: number; active?: boolean }[]
+    }
+    const locs = body.locations ?? []
+    const loc = locs.find((l) => l.active !== false) ?? locs[0]
+    if (loc?.id != null) {
+      await admin
+        .from("store_connections")
+        .update({ inventory_location_id: String(loc.id) })
+        .eq("id", connectionId)
+    }
+  } catch {
+    // non-fatal; an admin can set the location later or re-sync
+  }
 }
 
 /**
@@ -260,6 +357,11 @@ export async function syncProducts(connectionId: string): Promise<SyncResult> {
     }
   }
   const token = secret.access_token
+
+  // Capture the store's primary location id for OUTBOUND stock writes
+  // (migration 0026). Only set it when unset, so an admin's explicit choice is
+  // preserved. Best-effort — never blocks the catalog sync.
+  await captureShopifyLocation(connectionId, conn.source as string, token)
 
   // Phase 1: page through every product, collecting them plus the inventory
   // item ids we'll need cost for.

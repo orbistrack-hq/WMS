@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache"
 
 import { createClient } from "@/lib/supabase/server"
+import { kickOutboundDrain } from "@/lib/store-sync/outbound"
 
 export type ActionResult = { ok: true } | { ok: false; error: string }
 
@@ -38,6 +39,8 @@ export async function receiveStock(
 
   revalidatePath(`/inventory/${childSkuId}`)
   revalidatePath("/inventory")
+  // Push the new available out to any outbound-enabled store (no-op otherwise).
+  await kickOutboundDrain()
   return { ok: true }
 }
 
@@ -65,5 +68,6 @@ export async function adjustStock(
 
   revalidatePath(`/inventory/${childSkuId}`)
   revalidatePath("/inventory")
+  await kickOutboundDrain()
   return { ok: true }
 }
