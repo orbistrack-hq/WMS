@@ -8,6 +8,13 @@ import { createAdminClient } from "@/lib/supabase/admin"
 import { importShopifyProduct } from "@/lib/shopify/import-products"
 import { importNormalizedOrder } from "@/lib/shopify/import-orders"
 import {
+  getJob,
+  saveJob,
+  startOrResumeJob,
+  toProgress,
+  type JobProgress,
+} from "@/lib/store-sync/jobs"
+import {
   normalizeGraphqlOrder,
   type ShopifyGraphqlOrdersPage,
   type ShopifyInventoryItem,
@@ -626,4 +633,209 @@ export async function syncPastOrders(
   revalidatePath("/integrations/shopify")
   revalidatePath("/orders")
   return { ok: true, ...result, firstError }
+}
+
+// ---------------------------------------------------------------------------
+// Background past-order import (resumable, chunked) — one page per call.
+//
+// syncPastOrders() above runs the whole backfill in a single request, which
+// blocks the page and risks timeouts on large stores. These three actions drive
+// the same import through a store_sync_jobs row instead: the UI starts a job and
+// calls stepOrderImport() repeatedly (one GraphQL page each) until done, so each
+// request is short and progress is visible + resumable. Idempotency still lives
+// in store_order_imports, so a replayed page never double-imports.
+// ---------------------------------------------------------------------------
+
+export type ImportStepResult =
+  | { ok: true; job: JobProgress }
+  | { ok: false; error: string }
+
+/** Start (or resume) the Shopify past-order import for a connection. */
+export async function startOrderImport(
+  connectionId: string,
+): Promise<ImportStepResult> {
+  const supabase = await createClient()
+  const { data: conn, error: connErr } = await supabase
+    .from("store_connections")
+    .select("is_active")
+    .eq("id", connectionId)
+    .maybeSingle()
+  if (connErr) return { ok: false, error: err(connErr) }
+  if (!conn) return { ok: false, error: "Connection not found." }
+  if (!conn.is_active)
+    return { ok: false, error: "Activate this connection before syncing." }
+
+  try {
+    const job = await startOrResumeJob(createAdminClient(), connectionId, "shopify")
+    return { ok: true, job: toProgress(job) }
+  } catch (e) {
+    return {
+      ok: false,
+      error: e instanceof Error ? e.message : "Could not start the import.",
+    }
+  }
+}
+
+/** Cancel an in-flight import. */
+export async function cancelOrderImport(
+  jobId: string,
+): Promise<ImportStepResult> {
+  const admin = createAdminClient()
+  const job = await getJob(admin, jobId)
+  if (!job) return { ok: false, error: "Import job not found." }
+
+  // Authorize: caller must be able to see the job's connection (site-scoped RLS).
+  const supabase = await createClient()
+  const { data: conn } = await supabase
+    .from("store_connections")
+    .select("id")
+    .eq("id", job.connection_id)
+    .maybeSingle()
+  if (!conn) return { ok: false, error: "Access denied." }
+
+  const updated = await saveJob(admin, jobId, {
+    status: "cancelled",
+    finished_at: new Date().toISOString(),
+  })
+  return { ok: true, job: toProgress(updated) }
+}
+
+/** Import ONE page of past orders, advancing (and persisting) the cursor. */
+export async function stepOrderImport(
+  jobId: string,
+): Promise<ImportStepResult> {
+  const admin = createAdminClient()
+  const job = await getJob(admin, jobId)
+  if (!job) return { ok: false, error: "Import job not found." }
+  if (job.status !== "running") return { ok: true, job: toProgress(job) }
+
+  const supabase = await createClient()
+  const { data: conn } = await supabase
+    .from("store_connections")
+    .select("source, site_id")
+    .eq("id", job.connection_id)
+    .maybeSingle()
+  if (!conn) return { ok: false, error: "Access denied." }
+
+  const { data: secret } = await admin
+    .from("store_secrets")
+    .select("access_token")
+    .eq("connection_id", job.connection_id)
+    .maybeSingle()
+  if (!secret?.access_token) {
+    const u = await saveJob(admin, jobId, {
+      status: "failed",
+      last_error: "Set this store's Admin API access token first.",
+    })
+    return { ok: true, job: toProgress(u) }
+  }
+
+  const token = secret.access_token as string
+  const shopDomain = conn.source as string
+  const siteId = conn.site_id as string
+  const endpoint = `https://${shopDomain}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`
+
+  let body: GraphqlResponse<{ orders: ShopifyGraphqlOrdersPage }>
+  try {
+    const r = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "X-Shopify-Access-Token": token,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        query: PAST_ORDERS_QUERY,
+        variables: { cursor: job.cursor },
+      }),
+    })
+    if (!r.ok) {
+      const raw = await r.text().catch(() => "")
+      const u = await saveJob(admin, jobId, {
+        status: "failed",
+        last_error: shopifyApiError(r.status, raw),
+      })
+      return { ok: true, job: toProgress(u) }
+    }
+    body = (await r.json()) as typeof body
+  } catch {
+    const u = await saveJob(admin, jobId, {
+      status: "failed",
+      last_error: "Could not reach Shopify. Run again to resume.",
+    })
+    return { ok: true, job: toProgress(u) }
+  }
+
+  if (body.errors?.length) {
+    const throttled = body.errors.some((e) => e.extensions?.code === "THROTTLED")
+    // Throttle: stay running so the client paces and retries the same cursor.
+    const u = await saveJob(
+      admin,
+      jobId,
+      throttled
+        ? { last_error: "Throttled by Shopify; retrying…" }
+        : { status: "failed", last_error: body.errors.map((e) => e.message).join("; ") },
+    )
+    return { ok: true, job: toProgress(u) }
+  }
+
+  const ordersPage = body.data?.orders
+  let { fetched, imported, duplicates, needs_mapping, skipped } = job
+  let firstError = job.first_error
+  for (const node of ordersPage?.nodes ?? []) {
+    fetched++
+    const order = normalizeGraphqlOrder(node)
+    const outcome = await importNormalizedOrder(
+      admin,
+      siteId,
+      shopDomain,
+      order,
+      "orders/backfill",
+      node,
+    )
+    switch (outcome.status) {
+      case "imported":
+        imported++
+        break
+      case "duplicate":
+        duplicates++
+        break
+      case "needs_mapping":
+        needs_mapping++
+        if (!firstError)
+          firstError = `Order ${order.name ?? order.shopifyOrderId} has unmapped variants — sync products first.`
+        break
+      case "skipped":
+        skipped++
+        break
+      case "error":
+        skipped++
+        if (!firstError) firstError = outcome.error
+        break
+    }
+  }
+
+  const hasNext = Boolean(
+    ordersPage?.pageInfo?.hasNextPage && ordersPage?.pageInfo?.endCursor,
+  )
+  const patch: Record<string, unknown> = {
+    fetched,
+    imported,
+    duplicates,
+    needs_mapping,
+    skipped,
+    first_error: firstError,
+    last_error: null,
+    page_count: job.page_count + 1,
+    cursor: hasNext ? ordersPage!.pageInfo.endCursor : job.cursor,
+  }
+  if (!hasNext) {
+    patch.status = "completed"
+    patch.finished_at = new Date().toISOString()
+  }
+  const updated = await saveJob(admin, jobId, patch)
+  if (!hasNext) {
+    revalidatePath("/integrations/shopify")
+    revalidatePath("/orders")
+  }
+  return { ok: true, job: toProgress(updated) }
 }

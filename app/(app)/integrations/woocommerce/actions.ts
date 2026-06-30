@@ -8,6 +8,13 @@ import { createAdminClient } from "@/lib/supabase/admin"
 import { importWooProduct } from "@/lib/woocommerce/import-products"
 import { importWooOrder } from "@/lib/woocommerce/import-orders"
 import {
+  getJob,
+  saveJob,
+  startOrResumeJob,
+  toProgress,
+  type JobProgress,
+} from "@/lib/store-sync/jobs"
+import {
   normalizeWooOrder,
   normalizeWooSource,
   type WooOrderPayload,
@@ -497,4 +504,171 @@ export async function syncPastOrders(
       ? `${result.needsMapping} order(s) reference items not in the catalog — run "Sync products" first, then re-run.${firstError ? ` (${firstError})` : ""}`
       : undefined
   return { ok: true, ...result, warning }
+}
+
+// ---------------------------------------------------------------------------
+// Background past-order import (resumable, chunked) — one page per call.
+// Mirrors the Shopify implementation; Woo pages by number, so the job cursor
+// holds the next page number as text. See store-sync/jobs.ts for the model.
+// ---------------------------------------------------------------------------
+export type ImportStepResult =
+  | { ok: true; job: JobProgress }
+  | { ok: false; error: string }
+
+/** Start (or resume) the WooCommerce past-order import for a connection. */
+export async function startOrderImport(
+  connectionId: string,
+): Promise<ImportStepResult> {
+  const supabase = await createClient()
+  const { data: conn, error: connErr } = await supabase
+    .from("store_connections")
+    .select("is_active")
+    .eq("id", connectionId)
+    .maybeSingle()
+  if (connErr) return { ok: false, error: err(connErr) }
+  if (!conn) return { ok: false, error: "Connection not found." }
+  if (!conn.is_active)
+    return { ok: false, error: "Activate this connection before syncing." }
+
+  try {
+    const job = await startOrResumeJob(
+      createAdminClient(),
+      connectionId,
+      "woocommerce",
+    )
+    return { ok: true, job: toProgress(job) }
+  } catch (e) {
+    return {
+      ok: false,
+      error: e instanceof Error ? e.message : "Could not start the import.",
+    }
+  }
+}
+
+/** Cancel an in-flight import. */
+export async function cancelOrderImport(
+  jobId: string,
+): Promise<ImportStepResult> {
+  const admin = createAdminClient()
+  const job = await getJob(admin, jobId)
+  if (!job) return { ok: false, error: "Import job not found." }
+
+  const supabase = await createClient()
+  const { data: conn } = await supabase
+    .from("store_connections")
+    .select("id")
+    .eq("id", job.connection_id)
+    .maybeSingle()
+  if (!conn) return { ok: false, error: "Access denied." }
+
+  const updated = await saveJob(admin, jobId, {
+    status: "cancelled",
+    finished_at: new Date().toISOString(),
+  })
+  return { ok: true, job: toProgress(updated) }
+}
+
+/** Import ONE page (~100 orders) of past orders, advancing the page cursor. */
+export async function stepOrderImport(
+  jobId: string,
+): Promise<ImportStepResult> {
+  const admin = createAdminClient()
+  const job = await getJob(admin, jobId)
+  if (!job) return { ok: false, error: "Import job not found." }
+  if (job.status !== "running") return { ok: true, job: toProgress(job) }
+
+  // loadCreds authorizes the caller (RLS connection read) and returns secrets.
+  const { creds, error: credErr } = await loadCreds(job.connection_id)
+  if (!creds) {
+    const u = await saveJob(admin, jobId, {
+      status: "failed",
+      last_error: credErr ?? "Missing credentials.",
+    })
+    return { ok: true, job: toProgress(u) }
+  }
+
+  const base = `${creds.source}/wp-json/wc/v3`
+  const auth = { Authorization: authHeader(creds.key, creds.secret) }
+  const pageNum = job.cursor ? Math.max(1, parseInt(job.cursor, 10) || 1) : 1
+
+  let orders: WooOrderPayload[]
+  try {
+    const r = await fetch(
+      `${base}/orders?per_page=100&page=${pageNum}&orderby=date&order=desc`,
+      { headers: auth },
+    )
+    if (!r.ok) {
+      const raw = await r.text().catch(() => "")
+      const u = await saveJob(admin, jobId, {
+        status: "failed",
+        last_error: wooApiError(r.status, raw),
+      })
+      return { ok: true, job: toProgress(u) }
+    }
+    orders = (await r.json()) as WooOrderPayload[]
+  } catch {
+    const u = await saveJob(admin, jobId, {
+      status: "failed",
+      last_error: "Could not reach WooCommerce. Run again to resume.",
+    })
+    return { ok: true, job: toProgress(u) }
+  }
+
+  let { fetched, imported, duplicates, needs_mapping, skipped } = job
+  let firstError = job.first_error
+  for (const raw of Array.isArray(orders) ? orders : []) {
+    fetched++
+    const order = normalizeWooOrder(raw)
+    const outcome = await importWooOrder(
+      admin,
+      creds.site_id,
+      creds.source,
+      order,
+      "order.backfill",
+      raw,
+    )
+    switch (outcome.status) {
+      case "imported":
+        imported++
+        break
+      case "duplicate":
+        duplicates++
+        break
+      case "needs_mapping":
+        needs_mapping++
+        if (!firstError)
+          firstError = `Order #${order.number ?? order.externalOrderId} has unmapped items — sync products first.`
+        break
+      case "skipped":
+        skipped++
+        break
+      case "error":
+        skipped++
+        if (!firstError) firstError = outcome.error
+        break
+    }
+  }
+
+  const hasNext = Array.isArray(orders) && orders.length === 100
+  const patch: Record<string, unknown> = {
+    fetched,
+    imported,
+    duplicates,
+    needs_mapping,
+    skipped,
+    first_error: firstError,
+    last_error: null,
+    page_count: job.page_count + 1,
+    cursor: hasNext ? String(pageNum + 1) : job.cursor,
+  }
+  if (!hasNext) {
+    patch.status = "completed"
+    patch.finished_at = new Date().toISOString()
+  }
+  const updated = await saveJob(admin, jobId, patch)
+  if (!hasNext) {
+    revalidatePath("/integrations/woocommerce")
+    revalidatePath("/orders")
+  }
+  return { ok: true, job: toProgress(updated) }
 }

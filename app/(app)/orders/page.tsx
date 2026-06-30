@@ -43,7 +43,7 @@ const PAGE_SIZE = 50
 // enough for this team's volume; DB-sortable columns paginate without a cap.
 const COMPUTED_SORT_CAP = 1000
 
-const ORDERS_SELECT = `id, order_number, status, on_hold, order_type, channel, sale_date, entered_at,
+const ORDERS_SELECT = `id, order_number, status, on_hold, backordered, order_type, channel, sale_date, entered_at,
    group_id,
    customer:customers(name),
    site:sites(name, code),
@@ -72,6 +72,7 @@ type OrderRow = {
   order_number: string
   status: OrderStatus
   on_hold: boolean
+  backordered: boolean
   order_type: "standard" | "layaway"
   channel: OrderChannel
   sale_date: string
@@ -232,6 +233,9 @@ export default async function OrdersPage({
                         ) : null}
                         {o.order_type === "layaway" ? (
                           <Badge variant="outline">Layaway</Badge>
+                        ) : null}
+                        {o.backordered ? (
+                          <Badge variant="warning">Backordered</Badge>
                         ) : null}
                       </div>
                     </TableCell>

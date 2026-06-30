@@ -10,7 +10,6 @@ import {
   Plus,
   Power,
   RefreshCw,
-  ShoppingBag,
   Trash2,
   Webhook,
 } from "lucide-react"
@@ -27,9 +26,12 @@ import {
   registerWebhooks,
   setConnectionActive,
   setCredentials,
-  syncPastOrders,
+  startOrderImport,
+  stepOrderImport,
+  cancelOrderImport,
   syncProducts,
 } from "./actions"
+import { StoreImportRunner } from "@/components/store-import-runner"
 
 type SiteOption = { id: string; name: string }
 export type Connection = {
@@ -190,27 +192,6 @@ function ConnectionCard({
     })
   }
 
-  function syncOrders() {
-    setError(null)
-    setNote(null)
-    startTransition(async () => {
-      const res = await syncPastOrders(conn.id)
-      if (!res.ok) setError(res.error)
-      else {
-        setNote(
-          `Past orders: ${res.imported} imported, ${res.duplicates} already imported` +
-            (res.needsMapping
-              ? `, ${res.needsMapping} need product mapping`
-              : "") +
-            (res.skipped ? `, ${res.skipped} skipped` : "") +
-            ` (of ${res.fetched} fetched).` +
-            (res.firstError ? ` Note: ${res.firstError}` : ""),
-        )
-        router.refresh()
-      }
-    })
-  }
-
   function register() {
     setError(null)
     setNote(null)
@@ -306,14 +287,13 @@ function ConnectionCard({
           >
             <RefreshCw data-icon="inline-start" /> Sync products
           </Button>
-          <Button
-            size="sm"
-            variant="outline"
+          <StoreImportRunner
+            connectionId={conn.id}
             disabled={isPending || !conn.has_token}
-            onClick={syncOrders}
-          >
-            <ShoppingBag data-icon="inline-start" /> Sync past orders
-          </Button>
+            start={startOrderImport}
+            step={stepOrderImport}
+            cancel={cancelOrderImport}
+          />
           <span className="text-xs text-muted-foreground">
             {conn.last_synced_at
               ? `Last synced ${formatDateTime(conn.last_synced_at)}`

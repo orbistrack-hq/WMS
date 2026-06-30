@@ -283,6 +283,9 @@ export async function importNormalizedOrder(
       p_customer_id: customerId,
       p_channel: "shopify",
       p_order_type: "standard",
+      // Store sale already happened; never lose it to short stock — backorder
+      // the shortfall instead of failing (manual orders still hard-fail).
+      p_allow_backorder: true,
       p_sale_date: saleDate,
       p_entered_at: order.createdAt ?? null,
       p_ship_to_name: order.shipTo?.name ?? null,

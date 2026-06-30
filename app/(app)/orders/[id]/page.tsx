@@ -37,6 +37,7 @@ export const dynamic = "force-dynamic"
 type LineItem = {
   id: string
   quantity: number
+  backordered_qty: number
   unit_price: number | string
   discount: number | string | null
   tax: number | string | null
@@ -51,6 +52,7 @@ type OrderDetail = {
   order_number: string
   status: OrderStatus
   on_hold: boolean
+  backordered: boolean
   order_type: OrderType
   channel: OrderChannel
   sale_date: string
@@ -89,13 +91,13 @@ export default async function OrderDetailPage({
   const { data } = await supabase
     .from("orders")
     .select(
-      `id, order_number, status, on_hold, order_type, channel, sale_date, entered_at,
+      `id, order_number, status, on_hold, backordered, order_type, channel, sale_date, entered_at,
        fulfilled_at, cancelled_at, notes, group_id,
        ship_to_name, ship_to_address1, ship_to_address2, ship_to_city,
        ship_to_region, ship_to_postal, ship_to_country,
        customer:customers(name, email),
        site:sites(name, code),
-       order_line_items(id, quantity, unit_price, discount, tax,
+       order_line_items(id, quantity, backordered_qty, unit_price, discount, tax,
          child_sku:child_skus(sku, product:products(name))),
        order_payments(id, amount, method, note, paid_at)`,
     )
@@ -149,6 +151,9 @@ export default async function OrderDetailPage({
           {order.on_hold ? <Badge variant="destructive">Hold</Badge> : null}
           {order.order_type === "layaway" ? (
             <Badge variant="outline">Layaway</Badge>
+          ) : null}
+          {order.backordered ? (
+            <Badge variant="warning">Backordered</Badge>
           ) : null}
         </div>
         <div className="flex items-center gap-3">
