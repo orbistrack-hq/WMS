@@ -6,8 +6,11 @@ import { headers } from "next/headers"
 import { createClient } from "@/lib/supabase/server"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { importWooProduct } from "@/lib/woocommerce/import-products"
+import { importWooOrder } from "@/lib/woocommerce/import-orders"
 import {
+  normalizeWooOrder,
   normalizeWooSource,
+  type WooOrderPayload,
   type WooProduct,
   type WooVariation,
 } from "@/lib/woocommerce/types"
@@ -21,6 +24,19 @@ export type SyncResult =
       updated: number
       skipped: number
       stockSynced: number
+      costSeeded: number
+      warning?: string
+    }
+  | { ok: false; error: string }
+
+export type OrderSyncResult =
+  | {
+      ok: true
+      fetched: number
+      imported: number
+      duplicates: number
+      needsMapping: number
+      skipped: number
       warning?: string
     }
   | { ok: false; error: string }
@@ -209,6 +225,7 @@ export async function syncProducts(connectionId: string): Promise<SyncResult> {
     updated: 0,
     skipped: 0,
     stockSynced: 0,
+    costSeeded: 0,
   }
   let firstError: string | undefined
 
@@ -252,6 +269,7 @@ export async function syncProducts(connectionId: string): Promise<SyncResult> {
         totals.updated += res.updated
         totals.skipped += res.skipped
         totals.stockSynced += res.stockSynced
+        totals.costSeeded += res.costSeeded
         if (!firstError && res.firstError) firstError = res.firstError
       }
 
@@ -366,4 +384,94 @@ export async function registerWebhooks(
 
   revalidatePath("/integrations/woocommerce")
   return { ok: true, ...result }
+}
+
+/**
+ * Backfill: page through the store's historical orders via the Woo REST API and
+ * import each into WMS (idempotent — re-running skips orders already imported).
+ * Each order is backdated to its original Woo date, and completed/cancelled
+ * orders land in that lifecycle (so historical orders don't sit open). Newest
+ * first. Ongoing orders still arrive through the order webhook.
+ */
+export async function syncPastOrders(
+  connectionId: string,
+): Promise<OrderSyncResult> {
+  const { creds, error: credErr } = await loadCreds(connectionId)
+  if (!creds) return { ok: false, error: credErr ?? "Missing credentials." }
+  const base = `${creds.source}/wp-json/wc/v3`
+  const auth = { Authorization: authHeader(creds.key, creds.secret) }
+
+  // Imports use the service role: store_order_imports has no RLS write policy.
+  const admin = createAdminClient()
+
+  const result = {
+    fetched: 0,
+    imported: 0,
+    duplicates: 0,
+    needsMapping: 0,
+    skipped: 0,
+  }
+  let firstError: string | undefined
+
+  try {
+    for (let page = 1; page <= 100; page++) {
+      const r: Response = await fetch(
+        `${base}/orders?per_page=100&page=${page}&orderby=date&order=desc`,
+        { headers: auth },
+      )
+      if (!r.ok) {
+        const raw = await r.text().catch(() => "")
+        return { ok: false, error: wooApiError(r.status, raw) }
+      }
+      const orders = (await r.json()) as WooOrderPayload[]
+      if (!Array.isArray(orders) || orders.length === 0) break
+
+      for (const raw of orders) {
+        result.fetched++
+        const order = normalizeWooOrder(raw)
+        const outcome = await importWooOrder(
+          admin,
+          creds.site_id,
+          creds.source,
+          order,
+          "order.backfill",
+          raw,
+        )
+        switch (outcome.status) {
+          case "imported":
+            result.imported++
+            break
+          case "duplicate":
+            result.duplicates++
+            break
+          case "needs_mapping":
+            result.needsMapping++
+            if (!firstError)
+              firstError = `Order #${order.number ?? order.externalOrderId} has unmapped items — sync products first.`
+            break
+          case "skipped":
+            result.skipped++
+            break
+          case "error":
+            result.skipped++
+            if (!firstError) firstError = outcome.error
+            break
+        }
+      }
+
+      if (orders.length < 100) break
+    }
+  } catch {
+    return { ok: false, error: "Could not reach WooCommerce. Try again." }
+  }
+
+  revalidatePath("/integrations/woocommerce")
+  revalidatePath("/orders")
+  revalidatePath("/inventory")
+
+  const warning =
+    result.needsMapping > 0
+      ? `${result.needsMapping} order(s) reference items not in the catalog — run "Sync products" first, then re-run.${firstError ? ` (${firstError})` : ""}`
+      : undefined
+  return { ok: true, ...result, warning }
 }

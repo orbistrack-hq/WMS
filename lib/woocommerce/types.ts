@@ -40,13 +40,24 @@ export type WooLineItem = {
 export type WooOrderPayload = {
   id?: number | string | null
   number?: string | null // human order number, e.g. "1042"
-  status?: string | null
+  status?: string | null // pending|processing|on-hold|completed|cancelled|refunded|failed
+  date_created?: string | null
+  date_completed?: string | null
   customer_id?: number | string | null
   customer_note?: string | null
   billing?: WooAddress | null
   shipping?: WooAddress | null
   line_items?: WooLineItem[] | null
 }
+
+/** One entry from a product/variation `meta_data` array (plugin custom fields). */
+export type WooMetaData = { key?: string | null; value?: unknown }
+
+// Cost-of-goods meta keys to read, in priority order. WPFactory's "Cost of
+// Goods for WooCommerce" uses _alg_wc_cog_cost; the SkyVerge plugin uses
+// _wc_cog_cost. Woo core has no cost field, so cost only exists if a plugin
+// provides it.
+const COST_META_KEYS = ["_alg_wc_cog_cost", "_wc_cog_cost"]
 
 /**
  * Canonical form of a Woo store URL, used as the connection `source` key on
@@ -76,6 +87,7 @@ export type WooProduct = {
   regular_price?: string | number | null
   manage_stock?: boolean | null
   stock_quantity?: number | null
+  meta_data?: WooMetaData[] | null
   // On a variable product the webhook payload carries variation IDs only; full
   // per-variation data must be pulled from /products/{id}/variations.
   variations?: number[] | null
@@ -90,6 +102,7 @@ export type WooVariation = {
   manage_stock?: boolean | null
   stock_quantity?: number | null
   attributes?: WooAttribute[] | null
+  meta_data?: WooMetaData[] | null
 }
 
 const str = (v: unknown): string | null =>
@@ -110,6 +123,25 @@ export function wooLineVariantId(li: WooLineItem): string | null {
   const variation = num(li.variation_id)
   if (variation && variation > 0) return String(variation)
   return str(li.product_id)
+}
+
+/**
+ * Pull unit cost from a product/variation `meta_data` array, reading the known
+ * Cost-of-Goods plugin keys in priority order. Returns null when no plugin cost
+ * is present (Woo core has none) so the catalog keeps WMS-owned cost untouched.
+ */
+export function wooCost(
+  metaData: WooMetaData[] | null | undefined,
+): number | null {
+  if (!Array.isArray(metaData)) return null
+  for (const key of COST_META_KEYS) {
+    const hit = metaData.find((m) => m?.key === key)
+    if (hit) {
+      const c = num(hit.value)
+      if (c !== null) return c
+    }
+  }
+  return null
 }
 
 /** Build a WMS product name from a Woo variation's attribute options. */
@@ -145,10 +177,32 @@ export function verifyWooSignature(
   return crypto.timingSafeEqual(a, b)
 }
 
+/**
+ * Where a Woo order sits, reduced to what WMS acts on:
+ *  - "fulfilled" → completed; WMS marks it fulfilled (skips pick/pack).
+ *  - "cancelled" → cancelled/refunded/failed; WMS cancels it (releases stock).
+ *  - "open"      → pending/processing/on-hold; normal pick/pack flow.
+ */
+export type WooLifecycle = "open" | "fulfilled" | "cancelled"
+
+export function deriveWooLifecycle(status: string | null | undefined): WooLifecycle {
+  const s = (status ?? "").toLowerCase()
+  if (s === "completed") return "fulfilled"
+  if (s === "cancelled" || s === "refunded" || s === "failed") return "cancelled"
+  return "open"
+}
+
 export type NormalizedStoreOrder = {
   externalOrderId: string
   number: string | null
   note: string | null
+  // Original Woo order time (ISO), used to backdate a backfilled WMS order so it
+  // keeps its real sale date instead of "now".
+  createdAt: string | null
+  lifecycle: WooLifecycle
+  // Best-effort fulfillment time (date_completed, else date_created); null
+  // unless lifecycle is "fulfilled".
+  fulfilledAt: string | null
   customer: {
     externalId: string | null
     email: string | null
@@ -184,11 +238,17 @@ export function normalizeWooOrder(
   const bill = payload.billing ?? null
   const hasShip = ship && (ship.address_1 || ship.city || ship.postcode)
   const addr = hasShip ? ship : bill
+  const createdAt = str(payload.date_created)
+  const lifecycle = deriveWooLifecycle(payload.status)
 
   return {
     externalOrderId: str(payload.id) ?? "",
     number: str(payload.number),
     note: str(payload.customer_note),
+    createdAt,
+    lifecycle,
+    fulfilledAt:
+      lifecycle === "fulfilled" ? (str(payload.date_completed) ?? createdAt) : null,
     customer: bill
       ? {
           externalId: str(payload.customer_id) === "0" ? null : str(payload.customer_id),

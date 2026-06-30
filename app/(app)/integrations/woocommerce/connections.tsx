@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation"
 import {
   AlertCircle,
   Check,
+  History,
   KeyRound,
   Plus,
   Power,
@@ -26,6 +27,7 @@ import {
   registerWebhooks,
   setConnectionActive,
   setCredentials,
+  syncPastOrders,
   syncProducts,
 } from "./actions"
 
@@ -184,7 +186,23 @@ function ConnectionCard({
       if (!res.ok) setError(res.error)
       else {
         setNote(
-          `Synced ${res.products} product${res.products === 1 ? "" : "s"}: ${res.created} new, ${res.updated} updated${res.skipped ? `, ${res.skipped} skipped` : ""}. Stock updated on ${res.stockSynced}.` +
+          `Synced ${res.products} product${res.products === 1 ? "" : "s"}: ${res.created} new, ${res.updated} updated${res.skipped ? `, ${res.skipped} skipped` : ""}. Stock updated on ${res.stockSynced}, cost seeded on ${res.costSeeded}.` +
+            (res.warning ? ` Note: ${res.warning}` : ""),
+        )
+        router.refresh()
+      }
+    })
+  }
+
+  function syncOrders() {
+    setError(null)
+    setNote(null)
+    startTransition(async () => {
+      const res = await syncPastOrders(conn.id)
+      if (!res.ok) setError(res.error)
+      else {
+        setNote(
+          `Past orders: ${res.imported} imported, ${res.duplicates} already in WMS${res.needsMapping ? `, ${res.needsMapping} need product mapping` : ""}${res.skipped ? `, ${res.skipped} skipped` : ""} (of ${res.fetched} fetched).` +
             (res.warning ? ` Note: ${res.warning}` : ""),
         )
         router.refresh()
@@ -281,6 +299,14 @@ function ConnectionCard({
           </Button>
           <Button size="sm" disabled={isPending || !hasApi} onClick={sync}>
             <RefreshCw data-icon="inline-start" /> Sync products
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={isPending || !hasApi}
+            onClick={syncOrders}
+          >
+            <History data-icon="inline-start" /> Sync past orders
           </Button>
           <span className="text-xs text-muted-foreground">
             {conn.last_synced_at

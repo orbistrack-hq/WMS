@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 import {
+  wooCost,
   wooVariantName,
   type WooProduct,
   type WooVariation,
@@ -11,6 +12,7 @@ export type WooImportResult = {
   updated: number
   skipped: number
   stockSynced: number
+  costSeeded: number
   firstError?: string
 }
 
@@ -67,6 +69,7 @@ export async function importWooProduct(
     updated: 0,
     skipped: 0,
     stockSynced: 0,
+    costSeeded: 0,
   }
 
   const upsert = async (
@@ -74,6 +77,7 @@ export async function importWooProduct(
     name: string,
     sku: string | null,
     price: number,
+    cost: number | null,
     invQty: number | null,
   ) => {
     const { data, error } = await client.rpc("upsert_store_variant", {
@@ -82,7 +86,7 @@ export async function importWooProduct(
       p_name: name,
       p_sku: sku,
       p_price: price,
-      p_cost: null,
+      p_cost: cost,
       p_inventory_qty: invQty,
       p_channel: "woocommerce",
     })
@@ -94,6 +98,7 @@ export async function importWooProduct(
     const row = Array.isArray(data) ? data[0] : data
     if (row?.created) res.created++
     else res.updated++
+    if (row?.cost_seeded) res.costSeeded++
     if (invQty != null) res.stockSynced++
   }
 
@@ -113,6 +118,7 @@ export async function importWooProduct(
       (product.name ?? "").trim() || "Untitled product",
       product.sku ?? null,
       priceOf(product.regular_price, product.price),
+      wooCost(product.meta_data),
       stockOf(product.manage_stock, product.stock_quantity, opts.syncInventory),
     )
     return res
@@ -135,6 +141,7 @@ export async function importWooProduct(
       wooVariantName(product.name, v.attributes),
       v.sku ?? null,
       priceOf(v.regular_price, v.price),
+      wooCost(v.meta_data),
       stockOf(v.manage_stock, v.stock_quantity, opts.syncInventory),
     )
   }
