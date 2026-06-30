@@ -71,7 +71,7 @@ export async function applyShopifyOrderMeta(
  * Import one normalized Shopify order into WMS. Shared by the orders/create
  * webhook and the past-orders backfill so both behave identically:
  *
- *  - idempotent on (shop_domain, shopify_order_id) via shopify_order_imports
+ *  - idempotent on (channel, source, external_order_id) via store_order_imports
  *  - maps Shopify variant ids -> child SKUs at the order's site
  *  - resolves/creates the customer by email
  *  - writes the order through the guarded create_order RPC
@@ -79,7 +79,7 @@ export async function applyShopifyOrderMeta(
  * Unlike the webhook, this backdates the WMS order to the original Shopify
  * created_at (sale_date + entered_at) so historical orders keep their real date.
  *
- * Must be called with a service-role client: it writes shopify_order_imports
+ * Must be called with a service-role client: it writes store_order_imports
  * (no RLS write policy) and reads across customers/child_skus.
  */
 export async function importNormalizedOrder(
@@ -96,10 +96,11 @@ export async function importNormalizedOrder(
 
   // Idempotency: a re-run (or Shopify retry) hits the unique key and is skipped.
   const { data: importRow, error: insErr } = await client
-    .from("shopify_order_imports")
+    .from("store_order_imports")
     .insert({
-      shop_domain: shopDomain,
-      shopify_order_id: order.shopifyOrderId,
+      channel: "shopify",
+      source: shopDomain,
+      external_order_id: order.shopifyOrderId,
       topic,
       status: "received",
       payload: rawPayload,
@@ -118,7 +119,7 @@ export async function importNormalizedOrder(
     extra: { error?: string; wms_order_id?: string } = {},
   ) =>
     client
-      .from("shopify_order_imports")
+      .from("store_order_imports")
       .update({ status, processed_at: new Date().toISOString(), ...extra })
       .eq("id", importId)
 
