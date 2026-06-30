@@ -7,7 +7,7 @@ select plan(9);
 
 -- 1 & 2. Cost seeds on create when Shopify provides one.
 select is(
-  (select cost_seeded from public.upsert_shopify_variant(
+  (select cost_seeded from public.upsert_store_variant(
      '11111111-1111-1111-1111-111111111111'::uuid,
      'shopvar-cost-1', 'Beeswax Bar', 'BWX-1', 9.00, 3.50, null)),
   true, 'cost seeded on create');
@@ -17,7 +17,7 @@ select is(
 
 -- 3 & 4. Re-sync with a different Shopify cost must NOT clobber the set cost.
 select is(
-  (select cost_seeded from public.upsert_shopify_variant(
+  (select cost_seeded from public.upsert_store_variant(
      '11111111-1111-1111-1111-111111111111'::uuid,
      'shopvar-cost-1', 'Beeswax Bar', 'BWX-1', 9.00, 7.99, null)),
   false, 'cost not re-seeded once WMS has one');
@@ -26,7 +26,7 @@ select is(
   3.50::numeric, 'existing cost preserved (WMS owns it)');
 
 -- 5 & 6. Stock sync sets on_hand and logs a single shopify_sync ledger row.
-select public.upsert_shopify_variant(
+select public.upsert_store_variant(
   '11111111-1111-1111-1111-111111111111'::uuid,
   'shopvar-inv-1', 'Wax Melts', 'WM-1', 5.00, null, 42);
 select is(
@@ -41,7 +41,7 @@ select is(
   1, 'one shopify_sync ledger row written');
 
 -- 7. Re-syncing the same quantity is a no-op — no extra ledger noise.
-select public.upsert_shopify_variant(
+select public.upsert_store_variant(
   '11111111-1111-1111-1111-111111111111'::uuid,
   'shopvar-inv-1', 'Wax Melts', 'WM-1', 5.00, null, 42);
 select is(
