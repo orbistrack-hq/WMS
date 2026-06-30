@@ -298,7 +298,13 @@ export async function syncProducts(connectionId: string): Promise<SyncResult> {
 }
 
 export type RegisterResult =
-  | { ok: true; created: number; existing: number; failed: number }
+  | {
+      ok: true
+      created: number
+      existing: number
+      failed: number
+      firstError?: string
+    }
   | { ok: false; error: string }
 
 const WEBHOOK_TOPICS = [
@@ -346,7 +352,11 @@ export async function registerWebhooks(
     "Content-Type": "application/json",
   }
 
-  const result = { created: 0, existing: 0, failed: 0 }
+  const result: { created: number; existing: number; failed: number; firstError?: string } = {
+    created: 0,
+    existing: 0,
+    failed: 0,
+  }
   try {
     // Existing webhooks pointing at our endpoint, so we don't duplicate.
     const existingTopics = new Set<string>()
@@ -379,8 +389,17 @@ export async function registerWebhooks(
           status: "active",
         }),
       })
-      if (r.status === 201) result.created++
-      else result.failed++
+      if (r.status === 201) {
+        result.created++
+      } else {
+        result.failed++
+        // Capture the first failure's reason so the UI can show WHY (e.g. a
+        // Read-only API key, which lets the GET above succeed but blocks POST).
+        if (!result.firstError) {
+          const body = await r.text().catch(() => "")
+          result.firstError = wooApiError(r.status, body)
+        }
+      }
     }
   } catch {
     return { ok: false, error: "Could not reach WooCommerce. Try again." }

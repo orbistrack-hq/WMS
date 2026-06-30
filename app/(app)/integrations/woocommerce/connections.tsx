@@ -220,6 +220,8 @@ function ConnectionCard({
         setNote(
           `Webhooks: ${res.created} created, ${res.existing} already set${res.failed ? `, ${res.failed} failed` : ""}.`,
         )
+        // When some failed, show the first reason (e.g. a Read-only API key).
+        if (res.failed && res.firstError) setError(res.firstError)
         router.refresh()
       }
     })

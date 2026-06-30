@@ -502,8 +502,8 @@ export async function syncPastOrders(
 
   // Authorize via the RLS-scoped connection read (same pattern as syncProducts).
   const { data: conn, error: connErr } = await supabase
-    .from("shopify_connections")
-    .select("shop_domain, site_id, is_active")
+    .from("store_connections")
+    .select("source, site_id, is_active")
     .eq("id", connectionId)
     .maybeSingle()
   if (connErr) return { ok: false, error: err(connErr) }
@@ -513,7 +513,7 @@ export async function syncPastOrders(
 
   const admin = createAdminClient()
   const { data: secret } = await admin
-    .from("shopify_secrets")
+    .from("store_secrets")
     .select("access_token")
     .eq("connection_id", connectionId)
     .maybeSingle()
@@ -521,7 +521,7 @@ export async function syncPastOrders(
     return { ok: false, error: "Set this store's Admin API access token first." }
   }
   const token = secret.access_token
-  const shopDomain = conn.shop_domain as string
+  const shopDomain = conn.source as string
   const siteId = conn.site_id as string
   const endpoint = `https://${shopDomain}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`
 
@@ -536,7 +536,7 @@ export async function syncPastOrders(
   let cursor: string | null = null
   let throttleRetries = 0
 
-  // Imports use the service role: shopify_order_imports has no RLS write policy.
+  // Imports use the service role: store_order_imports has no RLS write policy.
   for (let page = 0; page < 200; page++) {
     let body: GraphqlResponse<{ orders: ShopifyGraphqlOrdersPage }>
     try {
@@ -618,7 +618,7 @@ export async function syncPastOrders(
 
   if (result.imported > 0) {
     await supabase
-      .from("shopify_connections")
+      .from("store_connections")
       .update({ last_synced_at: new Date().toISOString() })
       .eq("id", connectionId)
   }
