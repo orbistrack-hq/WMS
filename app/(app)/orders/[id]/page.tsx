@@ -1,6 +1,6 @@
 import Link from "next/link"
 import { notFound } from "next/navigation"
-import { ArrowLeft } from "lucide-react"
+import { ArrowLeft, PackageCheck } from "lucide-react"
 
 import { createClient } from "@/lib/supabase/server"
 import { buttonVariants } from "@/components/ui/button"
@@ -151,9 +151,17 @@ export default async function OrderDetailPage({
             <Badge variant="outline">Layaway</Badge>
           ) : null}
         </div>
-        <span className="text-sm text-muted-foreground">
-          Entered {formatDateTime(order.entered_at)}
-        </span>
+        <div className="flex items-center gap-3">
+          <span className="text-sm text-muted-foreground">
+            Entered {formatDateTime(order.entered_at)}
+          </span>
+          <Link
+            href={`/packing/${order.group_id}`}
+            className={buttonVariants({ variant: "outline", size: "sm" })}
+          >
+            <PackageCheck data-icon="inline-start" /> Pack / Pick
+          </Link>
+        </div>
       </div>
 
       <div className="grid gap-4 lg:grid-cols-3">

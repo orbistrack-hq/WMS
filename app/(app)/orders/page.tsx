@@ -1,5 +1,5 @@
 import Link from "next/link"
-import { Plus, ClipboardList } from "lucide-react"
+import { Plus, ClipboardList, ChevronLeft, ChevronRight } from "lucide-react"
 
 import { createClient } from "@/lib/supabase/server"
 import { PageHeader } from "@/components/page-header"
@@ -34,6 +34,28 @@ type SearchParams = {
   hold?: string
   sort?: string
   dir?: string
+  page?: string
+}
+
+const PAGE_SIZE = 50
+// Computed columns (total/items) can't be ordered in Postgres, so for those
+// sorts we pull a capped window, sort it in JS, then slice the page. Large
+// enough for this team's volume; DB-sortable columns paginate without a cap.
+const COMPUTED_SORT_CAP = 1000
+
+const ORDERS_SELECT = `id, order_number, status, on_hold, order_type, channel, sale_date, entered_at,
+   group_id,
+   customer:customers(name),
+   site:sites(name, code),
+   order_line_items(quantity, unit_price, discount, tax)`
+
+function pageHref(sp: SearchParams, p: number): string {
+  const params = new URLSearchParams()
+  for (const [k, v] of Object.entries(sp)) {
+    if (k !== "page" && v) params.set(k, v)
+  }
+  params.set("page", String(p))
+  return `/orders?${params.toString()}`
 }
 
 // Columns Postgres can order directly. Computed columns (total/items) are
@@ -81,38 +103,60 @@ export default async function OrdersPage({
   const sort = sp.sort ?? "entered_at"
   const dir: "asc" | "desc" = sp.dir === "asc" ? "asc" : "desc"
   const dbSort = DB_SORTS.has(sort) ? sort : "entered_at"
+  const isComputedSort = sort === "total" || sort === "items"
+  const page = Math.max(1, Number.parseInt(sp.page ?? "1", 10) || 1)
 
-  let query = supabase
+  // Shared filters - applied identically whichever sort path we take.
+  let base = supabase
     .from("orders")
-    .select(
-      `id, order_number, status, on_hold, order_type, channel, sale_date, entered_at,
-       group_id,
-       customer:customers(name),
-       site:sites(name, code),
-       order_line_items(quantity, unit_price, discount, tax)`,
-    )
-    .order(dbSort, { ascending: dir === "asc" })
-    .limit(200)
+    .select(ORDERS_SELECT, isComputedSort ? undefined : { count: "exact" })
+  if (sp.status) base = base.eq("status", sp.status)
+  if (sp.site) base = base.eq("site_id", sp.site)
+  if (sp.channel) base = base.eq("channel", sp.channel)
+  if (sp.hold === "true") base = base.eq("on_hold", true)
+  if (sp.hold === "false") base = base.eq("on_hold", false)
+  if (sp.q) base = base.ilike("order_number", `%${sp.q}%`)
 
-  if (sp.status) query = query.eq("status", sp.status)
-  if (sp.site) query = query.eq("site_id", sp.site)
-  if (sp.channel) query = query.eq("channel", sp.channel)
-  if (sp.hold === "true") query = query.eq("on_hold", true)
-  if (sp.hold === "false") query = query.eq("on_hold", false)
-  if (sp.q) query = query.ilike("order_number", `%${sp.q}%`)
-
-  const { data, error } = await query
-
-  // Attach computed totals once, then sort in JS for the computed columns.
-  const orders = ((data ?? []) as unknown as OrderRow[]).map((o) => ({
+  const withTotals = (o: OrderRow) => ({
     ...o,
     ...computeOrderTotals(o.order_line_items),
-  }))
-  if (sort === "total" || sort === "items") {
+  })
+
+  let orders: (OrderRow & ReturnType<typeof computeOrderTotals>)[] = []
+  let totalCount = 0
+  let error: { message: string } | null = null
+
+  if (isComputedSort) {
+    // Pull a capped window, attach totals, sort in JS, then slice the page.
+    const { data, error: e } = await base
+      .order("entered_at", { ascending: false })
+      .limit(COMPUTED_SORT_CAP)
+    error = e
+    const all = ((data ?? []) as unknown as OrderRow[]).map(withTotals)
     const sign = dir === "asc" ? 1 : -1
     const key = sort === "items" ? "itemCount" : "total"
-    orders.sort((a, b) => sign * (a[key] - b[key]))
+    all.sort((a, b) => sign * (a[key] - b[key]))
+    totalCount = all.length
+    const from = (page - 1) * PAGE_SIZE
+    orders = all.slice(from, from + PAGE_SIZE)
+  } else {
+    // DB-sortable column: order + range straight in Postgres with exact count.
+    const from = (page - 1) * PAGE_SIZE
+    const {
+      data,
+      error: e,
+      count,
+    } = await base
+      .order(dbSort, { ascending: dir === "asc" })
+      .range(from, from + PAGE_SIZE - 1)
+    error = e
+    orders = ((data ?? []) as unknown as OrderRow[]).map(withTotals)
+    totalCount = count ?? 0
   }
+
+  const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE))
+  const rangeStart = totalCount === 0 ? 0 : (page - 1) * PAGE_SIZE + 1
+  const rangeEnd = Math.min(page * PAGE_SIZE, totalCount)
 
   return (
     <>
@@ -214,6 +258,51 @@ export default async function OrdersPage({
               })}
             </TableBody>
           </Table>
+          {totalPages > 1 ? (
+            <div className="flex items-center justify-between border-t px-4 py-3 text-sm">
+              <span className="text-muted-foreground tabular-nums">
+                {rangeStart}-{rangeEnd} of {totalCount}
+                {isComputedSort && totalCount === COMPUTED_SORT_CAP ? "+" : ""}
+              </span>
+              <div className="flex items-center gap-2">
+                {page > 1 ? (
+                  <Link
+                    href={pageHref(sp, page - 1)}
+                    className={buttonVariants({ variant: "outline", size: "sm" })}
+                  >
+                    <ChevronLeft data-icon="inline-start" /> Prev
+                  </Link>
+                ) : (
+                  <span
+                    className={buttonVariants({ variant: "outline", size: "sm" })}
+                    aria-disabled
+                    style={{ opacity: 0.5, pointerEvents: "none" }}
+                  >
+                    <ChevronLeft data-icon="inline-start" /> Prev
+                  </span>
+                )}
+                <span className="tabular-nums text-muted-foreground">
+                  Page {page} of {totalPages}
+                </span>
+                {page < totalPages ? (
+                  <Link
+                    href={pageHref(sp, page + 1)}
+                    className={buttonVariants({ variant: "outline", size: "sm" })}
+                  >
+                    Next <ChevronRight data-icon="inline-end" />
+                  </Link>
+                ) : (
+                  <span
+                    className={buttonVariants({ variant: "outline", size: "sm" })}
+                    aria-disabled
+                    style={{ opacity: 0.5, pointerEvents: "none" }}
+                  >
+                    Next <ChevronRight data-icon="inline-end" />
+                  </span>
+                )}
+              </div>
+            </div>
+          ) : null}
         </Card>
       )}
     </>

@@ -116,6 +116,7 @@ export default async function WavePage({
     name: l.name,
     qty: l.qty,
     allocations: l.allocations.map((a) => ({
+      groupId: a.groupId,
       groupLabel: a.groupLabel,
       orderNumber: a.orderNumber,
       qty: a.qty,

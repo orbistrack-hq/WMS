@@ -27,6 +27,8 @@ export function OrdersFilters({ sites }: { sites: SiteOption[] }) {
     const next = new URLSearchParams(params.toString())
     if (value) next.set(key, value)
     else next.delete(key)
+    // Any filter/sort change resets to the first page of results.
+    next.delete("page")
     startTransition(() => {
       router.replace(`${pathname}?${next.toString()}`)
     })

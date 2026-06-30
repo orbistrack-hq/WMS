@@ -2,12 +2,13 @@
 
 import { useMemo, useState } from "react"
 import Link from "next/link"
-import { ArrowLeft, Check, Printer } from "lucide-react"
+import { ArrowLeft, Check, PackageCheck, Printer } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 
 export type WaveAlloc = {
+  groupId: string
   groupLabel: string
   orderNumber: string
   qty: number
@@ -73,12 +74,13 @@ export function WaveView({
   const byOrder = useMemo(() => {
     const map = new Map<
       string,
-      { orderNumber: string; groupLabel: string; items: { name: string; sku: string | null; bin: string | null; qty: number }[] }
+      { orderNumber: string; groupId: string; groupLabel: string; items: { name: string; sku: string | null; bin: string | null; qty: number }[] }
     >()
     for (const r of rows) {
       for (const a of r.allocations) {
         const entry = map.get(a.orderNumber) ?? {
           orderNumber: a.orderNumber,
+          groupId: a.groupId,
           groupLabel: a.groupLabel,
           items: [],
         }
@@ -247,6 +249,12 @@ export function WaveView({
                 <span className="truncate text-sm text-muted-foreground">
                   {o.groupLabel}
                 </span>
+                <Link
+                  href={`/packing/${o.groupId}`}
+                  className="no-print ml-auto inline-flex shrink-0 items-center gap-1 text-sm font-medium text-primary hover:underline"
+                >
+                  <PackageCheck className="size-4" /> Pack
+                </Link>
               </div>
               <ul className="flex flex-col gap-1 text-sm">
                 {o.items.map((it, j) => (
