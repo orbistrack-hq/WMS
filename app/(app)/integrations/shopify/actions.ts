@@ -360,9 +360,17 @@ export type RegisterResult =
 
 const WEBHOOK_TOPICS = [
   "orders/create",
+  // Lifecycle updates so order status keeps flowing after creation. "updated"
+  // is the catch-all; fulfilled/cancelled are explicit for promptness.
+  "orders/updated",
+  "orders/fulfilled",
+  "orders/cancelled",
   "products/create",
   "products/update",
   "products/delete",
+  // Inbound stock signal. Subscribed so deliveries arrive; the processor leaves
+  // the apply unwired until echo-loop protection lands (see process-event.ts).
+  "inventory_levels/update",
 ]
 
 /**

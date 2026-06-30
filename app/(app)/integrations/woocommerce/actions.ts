@@ -303,6 +303,10 @@ export type RegisterResult =
 
 const WEBHOOK_TOPICS = [
   "order.created",
+  // order.updated covers status changes (processing -> completed/cancelled);
+  // order.deleted lets a store-side delete cancel the WMS order.
+  "order.updated",
+  "order.deleted",
   "product.created",
   "product.updated",
   "product.deleted",

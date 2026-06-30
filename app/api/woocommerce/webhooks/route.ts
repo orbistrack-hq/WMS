@@ -1,31 +1,37 @@
+import crypto from "node:crypto"
 import { NextResponse } from "next/server"
-import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { createAdminClient } from "@/lib/supabase/admin"
+import { normalizeWooSource, verifyWooSignature } from "@/lib/woocommerce/types"
+import { processWooEvent } from "@/lib/woocommerce/process-event"
 import {
-  normalizeWooOrder,
-  normalizeWooSource,
-  verifyWooSignature,
-  type WooOrderPayload,
-  type WooProduct,
-} from "@/lib/woocommerce/types"
-import {
-  importWooProduct,
-  deactivateWooProduct,
-} from "@/lib/woocommerce/import-products"
-import { importWooOrder } from "@/lib/woocommerce/import-orders"
+  dedupeKey,
+  publishToQueue,
+  queueEnabled,
+  redisDedupe,
+  type StoreEventJob,
+} from "@/lib/store-sync/queue"
 
 // HMAC verification + the service-role client need the Node runtime.
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
+/**
+ * WooCommerce webhook receiver. Fast path only: authenticate (signature),
+ * dedupe, then hand off to the QStash queue, or process inline when no queue is
+ * configured. All heavy DB work lives in processWooEvent(), shared with the
+ * worker route.
+ *
+ * Dedupe id: Woo gives every RETRY a new delivery id, so a delivery id can't
+ * dedupe retries. Instead we key on a hash of the raw body — identical
+ * re-deliveries hash the same (deduped), while a genuinely different update
+ * hashes differently (processed). Durable correctness still rests on the DB.
+ */
 export async function POST(req: Request) {
   const raw = await req.text()
   const signature = req.headers.get("x-wc-webhook-signature")
   const topic = req.headers.get("x-wc-webhook-topic") ?? ""
-  const source = normalizeWooSource(
-    req.headers.get("x-wc-webhook-source") ?? "",
-  )
+  const source = normalizeWooSource(req.headers.get("x-wc-webhook-source") ?? "")
 
   const supabase = createAdminClient()
 
@@ -58,97 +64,31 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: true, ignored: "non-json ping" })
   }
 
-  switch (topic) {
-    case "order.created":
-    case "order.updated":
-      return handleOrderCreate(
-        supabase,
-        source,
-        topic,
-        payload as WooOrderPayload,
-      )
-    case "product.created":
-    case "product.updated":
-      return handleProductUpsert(supabase, source, payload as WooProduct)
-    case "product.deleted":
-      return handleProductDelete(supabase, source, payload as WooProduct)
-    default:
-      return NextResponse.json({ ok: true, ignored: topic }, { status: 200 })
-  }
-}
-
-/** The active WMS site a store feeds, or null if not connected. */
-async function siteForSource(
-  supabase: SupabaseClient,
-  source: string,
-): Promise<string | null> {
-  const { data } = await supabase
-    .from("store_connections")
-    .select("site_id")
-    .eq("channel", "woocommerce")
-    .eq("source", source)
-    .eq("is_active", true)
-    .maybeSingle()
-  return (data?.site_id as string) ?? null
-}
-
-// ---------------------------------------------------------------------------
-// Orders — delegates to the shared importWooOrder so the live webhook and the
-// past-orders backfill behave identically (idempotency, mapping, backdating,
-// completed/cancelled lifecycle).
-// ---------------------------------------------------------------------------
-async function handleOrderCreate(
-  supabase: SupabaseClient,
-  source: string,
-  topic: string,
-  payload: WooOrderPayload,
-) {
-  const order = normalizeWooOrder(payload)
-  if (!order.externalOrderId) {
-    return NextResponse.json({ error: "missing order id" }, { status: 400 })
-  }
-
-  const siteId = await siteForSource(supabase, source)
-  if (!siteId) {
-    return NextResponse.json({ ok: true, status: "no_connection" })
-  }
-
-  const outcome = await importWooOrder(
-    supabase,
-    siteId,
+  const bodyHash = crypto.createHash("sha256").update(raw).digest("hex").slice(0, 32)
+  const job: StoreEventJob = {
+    channel: "woocommerce",
     source,
-    order,
     topic,
+    webhookId: bodyHash,
     payload,
-  )
-  return NextResponse.json({ ok: true, ...outcome })
-}
-
-// ---------------------------------------------------------------------------
-// Products
-// ---------------------------------------------------------------------------
-async function handleProductUpsert(
-  supabase: SupabaseClient,
-  source: string,
-  product: WooProduct,
-) {
-  const siteId = await siteForSource(supabase, source)
-  if (!siteId) {
-    return NextResponse.json({ ok: true, status: "no_connection" })
   }
-  const result = await importWooProduct(supabase, siteId, product)
-  return NextResponse.json({ ok: true, status: "synced", ...result })
-}
 
-async function handleProductDelete(
-  supabase: SupabaseClient,
-  source: string,
-  product: WooProduct,
-) {
-  const siteId = await siteForSource(supabase, source)
-  if (!siteId) {
-    return NextResponse.json({ ok: true, status: "no_connection" })
+  // 1) Fast-path dedupe of identical re-deliveries.
+  if ((await redisDedupe(dedupeKey(job))) === "seen") {
+    return NextResponse.json({ ok: true, duplicate: true }, { status: 200 })
   }
-  const deactivated = await deactivateWooProduct(supabase, siteId, product)
-  return NextResponse.json({ ok: true, status: "deleted", deactivated })
+
+  // 2) Enqueue for async processing when the queue is configured.
+  if (queueEnabled() && (await publishToQueue(job))) {
+    return NextResponse.json({ ok: true, queued: true }, { status: 200 })
+  }
+
+  // 3) Fallback: process inline (local dev / Upstash not yet provisioned).
+  try {
+    const result = await processWooEvent(supabase, topic, source, payload)
+    return NextResponse.json({ ok: true, ...result }, { status: 200 })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "processing failed"
+    return NextResponse.json({ error: message }, { status: 500 })
+  }
 }

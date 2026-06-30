@@ -67,6 +67,80 @@ export async function applyShopifyOrderMeta(
   }
 }
 
+export type LifecycleUpdateOutcome =
+  | { status: "fulfilled"; wmsOrderId: string }
+  | { status: "cancelled"; wmsOrderId: string }
+  | { status: "noop"; reason: string }
+  | { status: "not_found" }
+  | { status: "error"; error: string }
+
+/**
+ * Reconcile an already-imported Shopify order's lifecycle from an
+ * orders/updated|cancelled|fulfilled webhook. The order-level idempotency key
+ * means importNormalizedOrder() refuses to CREATE a second time; this is the
+ * companion path that, for an order we already have, pushes a later
+ * fulfilled/cancelled state into WMS through the SAME guarded RPCs.
+ *
+ * Conflict rule (per the WMS spec): the STORE owns the order's own lifecycle, so
+ * a store-side fulfilled/cancelled wins here. We only ever move an order FORWARD
+ * (open -> fulfilled/cancelled); we never reopen a WMS order from a webhook,
+ * because WMS may have packed/shipped it locally and that must not be undone by
+ * a stale store event. Returns "not_found" when the order isn't in WMS yet so
+ * the caller can fall back to importing it (a create-or-update).
+ *
+ * Must be called with a service-role client.
+ */
+export async function applyShopifyLifecycleUpdate(
+  client: SupabaseClient,
+  shopDomain: string,
+  order: NormalizedShopifyOrder,
+): Promise<LifecycleUpdateOutcome> {
+  if (!order.shopifyOrderId) return { status: "error", error: "missing order id" }
+
+  // Find the WMS order this Shopify order was imported as.
+  const { data: imp } = await client
+    .from("store_order_imports")
+    .select("wms_order_id")
+    .eq("channel", "shopify")
+    .eq("source", shopDomain)
+    .eq("external_order_id", order.shopifyOrderId)
+    .not("wms_order_id", "is", null)
+    .maybeSingle()
+  const wmsOrderId = imp?.wms_order_id as string | undefined
+  if (!wmsOrderId) return { status: "not_found" }
+
+  if (order.lifecycle === "open") {
+    return { status: "noop", reason: "store order still open" }
+  }
+
+  const { data: current } = await client
+    .from("orders")
+    .select("status")
+    .eq("id", wmsOrderId)
+    .maybeSingle()
+  const status = current?.status as string | undefined
+  if (!status) return { status: "not_found" }
+  // Already in a terminal state — nothing to do (and the guarded RPCs would
+  // raise). This is what makes re-delivered update events a safe no-op.
+  if (status === "fulfilled" || status === "cancelled") {
+    return { status: "noop", reason: `already ${status}` }
+  }
+
+  if (order.lifecycle === "fulfilled") {
+    const { error } = await client.rpc("fulfill_order", {
+      p_order_id: wmsOrderId,
+      p_fulfilled_at: order.fulfilledAt ?? order.createdAt,
+    })
+    if (error) return { status: "error", error: error.message }
+    return { status: "fulfilled", wmsOrderId }
+  }
+
+  // cancelled
+  const { error } = await client.rpc("cancel_order", { p_order_id: wmsOrderId })
+  if (error) return { status: "error", error: error.message }
+  return { status: "cancelled", wmsOrderId }
+}
+
 /**
  * Import one normalized Shopify order into WMS. Shared by the orders/create
  * webhook and the past-orders backfill so both behave identically:

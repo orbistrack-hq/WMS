@@ -65,6 +65,74 @@ export async function applyWooOrderMeta(
   }
 }
 
+export type LifecycleUpdateOutcome =
+  | { status: "fulfilled"; wmsOrderId: string }
+  | { status: "cancelled"; wmsOrderId: string }
+  | { status: "noop"; reason: string }
+  | { status: "not_found" }
+  | { status: "error"; error: string }
+
+/**
+ * Reconcile an already-imported Woo order's lifecycle from an order.updated /
+ * order.deleted webhook. Companion to importWooOrder(): the order-level
+ * idempotency key blocks a second CREATE, so this pushes a later
+ * completed/cancelled state into WMS through the same guarded RPCs.
+ *
+ * Conflict rule (per the WMS spec): the STORE owns the order's own lifecycle, so
+ * a store-side completed/cancelled wins. We only ever move an order FORWARD
+ * (open -> fulfilled/cancelled) and never reopen a WMS order from a webhook,
+ * since WMS may have packed/shipped it locally. Returns "not_found" when the
+ * order isn't in WMS yet so the caller can fall back to importing it.
+ *
+ * Must be called with a service-role client.
+ */
+export async function applyWooLifecycleUpdate(
+  client: SupabaseClient,
+  source: string,
+  order: NormalizedStoreOrder,
+): Promise<LifecycleUpdateOutcome> {
+  if (!order.externalOrderId) return { status: "error", error: "missing order id" }
+
+  const { data: imp } = await client
+    .from("store_order_imports")
+    .select("wms_order_id")
+    .eq("channel", "woocommerce")
+    .eq("source", source)
+    .eq("external_order_id", order.externalOrderId)
+    .not("wms_order_id", "is", null)
+    .maybeSingle()
+  const wmsOrderId = imp?.wms_order_id as string | undefined
+  if (!wmsOrderId) return { status: "not_found" }
+
+  if (order.lifecycle === "open") {
+    return { status: "noop", reason: "store order still open" }
+  }
+
+  const { data: current } = await client
+    .from("orders")
+    .select("status")
+    .eq("id", wmsOrderId)
+    .maybeSingle()
+  const status = current?.status as string | undefined
+  if (!status) return { status: "not_found" }
+  if (status === "fulfilled" || status === "cancelled") {
+    return { status: "noop", reason: `already ${status}` }
+  }
+
+  if (order.lifecycle === "fulfilled") {
+    const { error } = await client.rpc("fulfill_order", {
+      p_order_id: wmsOrderId,
+      p_fulfilled_at: order.fulfilledAt ?? order.createdAt,
+    })
+    if (error) return { status: "error", error: error.message }
+    return { status: "fulfilled", wmsOrderId }
+  }
+
+  const { error } = await client.rpc("cancel_order", { p_order_id: wmsOrderId })
+  if (error) return { status: "error", error: error.message }
+  return { status: "cancelled", wmsOrderId }
+}
+
 /**
  * Import one normalized Woo order into WMS. Shared by the order webhook and the
  * past-orders backfill so both behave identically:
