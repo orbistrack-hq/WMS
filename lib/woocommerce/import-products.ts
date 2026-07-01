@@ -79,6 +79,10 @@ export async function importWooProduct(
     price: number,
     cost: number | null,
     invQty: number | null,
+    // Woo variations are addressed for OUTBOUND stock writes (migration 0026) as
+    // /products/{parent}/variations/{id}, so a variation needs its parent
+    // product id. Null for simple products (addressed by store_variant_id alone).
+    parentId: string | null = null,
   ) => {
     const { data, error } = await client.rpc("upsert_store_variant", {
       p_site_id: siteId,
@@ -100,6 +104,15 @@ export async function importWooProduct(
     else res.updated++
     if (row?.cost_seeded) res.costSeeded++
     if (invQty != null) res.stockSynced++
+
+    // Best-effort: record the parent id so outbound pushes can address the
+    // variation. A failure here must not fail the catalog import.
+    if (parentId && row?.child_sku_id) {
+      await client
+        .from("child_skus")
+        .update({ store_parent_id: parentId })
+        .eq("id", row.child_sku_id)
+    }
   }
 
   const isVariable =
@@ -143,6 +156,7 @@ export async function importWooProduct(
       priceOf(v.regular_price, v.price),
       wooCost(v.meta_data),
       stockOf(v.manage_stock, v.stock_quantity, opts.syncInventory),
+      product.id != null ? String(product.id) : null,
     )
   }
   return res

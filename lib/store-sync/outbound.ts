@@ -19,9 +19,9 @@ import { createAdminClient } from "@/lib/supabase/admin"
  * idempotent (we SET an absolute available, never a delta), so a re-run or an
  * at-least-once retry can never corrupt store stock.
  *
- * Channels: Shopify is wired here. WooCommerce jobs are skipped (with a clear
- * reason) until its adapter lands, so enabling Woo outbound early can't silently
- * drop stock — it parks visibly in the queue.
+ * Channels: Shopify and WooCommerce are both wired here. Any future channel
+ * parks visibly in the queue (skipped, with a clear reason) rather than silently
+ * dropping stock.
  */
 
 const SHOPIFY_API_VERSION = "2024-10"
@@ -80,13 +80,15 @@ export async function drainOutboundInventory(
   summary.claimed = jobs.length
   if (jobs.length === 0) return summary
 
-  // Resolve the access token once per source (avoid re-reading the sealed
-  // secrets table for every job of the same store).
+  // Resolve credentials once per source (avoid re-reading the sealed secrets
+  // table for every job of the same store). Shopify: an access token; Woo: a
+  // consumer key/secret pair.
   const tokenBySource = new Map<string, string | null>()
+  const wooCredsBySource = new Map<string, WooCreds | null>()
 
   for (let i = 0; i < jobs.length; i++) {
     const job = jobs[i]
-    const outcome = await pushJob(admin, job, tokenBySource)
+    const outcome = await pushJob(admin, job, tokenBySource, wooCredsBySource)
 
     if (outcome.ok) {
       summary.pushed++
@@ -113,18 +115,18 @@ async function pushJob(
   admin: SupabaseClient,
   job: ClaimedJob,
   tokenBySource: Map<string, string | null>,
+  wooCredsBySource: Map<string, WooCreds | null>,
 ): Promise<PushOutcome> {
   if (!job.channel || !job.source) {
     return { ok: false, skip: true, error: "No active outbound connection for this site." }
   }
-  if (job.channel !== "shopify") {
-    return {
-      ok: false,
-      skip: true,
-      error: `Outbound push for channel '${job.channel}' is not implemented yet.`,
-    }
+  if (job.channel === "shopify") return pushShopify(admin, job, tokenBySource)
+  if (job.channel === "woocommerce") return pushWoo(admin, job, wooCredsBySource)
+  return {
+    ok: false,
+    skip: true,
+    error: `Outbound push for channel '${job.channel}' is not implemented yet.`,
   }
-  return pushShopify(admin, job, tokenBySource)
 }
 
 // ---------------------------------------------------------------------------
@@ -197,6 +199,79 @@ async function pushShopify(
   } catch (e) {
     const msg = e instanceof Error ? e.message : "network error"
     return { ok: false, skip: false, error: `Could not reach Shopify: ${msg}` }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// WooCommerce adapter — set absolute stock_quantity on the product/variation.
+// ---------------------------------------------------------------------------
+type WooCreds = { key: string; secret: string }
+
+async function pushWoo(
+  admin: SupabaseClient,
+  job: ClaimedJob,
+  credsBySource: Map<string, WooCreds | null>,
+): Promise<PushOutcome> {
+  const source = job.source as string
+
+  if (!job.store_variant_id) {
+    return {
+      ok: false,
+      skip: true,
+      error: "Missing WooCommerce product/variation id — re-sync products.",
+    }
+  }
+
+  let creds = credsBySource.get(source)
+  if (creds === undefined) {
+    const { data } = await admin
+      .from("store_secrets")
+      .select("consumer_key, consumer_secret, store_connections!inner(channel, source)")
+      .eq("store_connections.channel", "woocommerce")
+      .eq("store_connections.source", source)
+      .maybeSingle()
+    creds =
+      data?.consumer_key && data?.consumer_secret
+        ? { key: data.consumer_key as string, secret: data.consumer_secret as string }
+        : null
+    credsBySource.set(source, creds)
+  }
+  if (!creds) {
+    // Transient from the queue's POV: once creds are set, a retry succeeds.
+    return { ok: false, skip: false, error: "Store API credentials not set." }
+  }
+
+  // Variable products are addressed via the parent; simple products directly.
+  const path = job.store_parent_id
+    ? `/products/${job.store_parent_id}/variations/${job.store_variant_id}`
+    : `/products/${job.store_variant_id}`
+  const url = `${source.replace(/\/+$/, "")}/wp-json/wc/v3${path}`
+  const auth = "Basic " + Buffer.from(`${creds.key}:${creds.secret}`).toString("base64")
+
+  try {
+    const r = await fetch(url, {
+      method: "PUT",
+      headers: { Authorization: auth, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        manage_stock: true,
+        stock_quantity: job.desired_available,
+      }),
+      signal: AbortSignal.timeout(10_000),
+    })
+
+    if (r.ok) return { ok: true }
+
+    const body = await r.text().catch(() => "")
+    const msg = `WooCommerce ${r.status}: ${body.slice(0, 300)}`
+    // 400/404 mean the product/variation id is wrong — retrying won't help.
+    if (r.status === 400 || r.status === 404) {
+      return { ok: false, skip: true, error: msg }
+    }
+    // 429 / 5xx / auth: transient or fixable — retry with backoff.
+    return { ok: false, skip: false, error: msg }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "network error"
+    return { ok: false, skip: false, error: `Could not reach WooCommerce: ${msg}` }
   }
 }
 

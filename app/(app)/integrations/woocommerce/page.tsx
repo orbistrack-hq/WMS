@@ -53,10 +53,13 @@ type ImportRow = {
 export default async function WooCommerceIntegrationPage() {
   const supabase = await createClient()
 
-  const [connRes, sitesRes, importsRes, secretsRes, hdrs] = await Promise.all([
+  const [connRes, sitesRes, importsRes, secretsRes, outboundRes, hdrs] =
+    await Promise.all([
     supabase
       .from("store_connections")
-      .select("id, source, is_active, last_synced_at, site:sites(name)")
+      .select(
+        "id, source, site_id, is_active, last_synced_at, sync_inventory_outbound, site:sites(name)",
+      )
       .eq("channel", "woocommerce")
       .order("source"),
     supabase
@@ -79,8 +82,23 @@ export default async function WooCommerceIntegrationPage() {
         "connection_id, has_consumer_key, has_consumer_secret, has_webhook_secret",
       )
       .eq("channel", "woocommerce"),
+    supabase
+      .from("store_outbound_sync_status")
+      .select("site_id, pending, processing, failed, skipped"),
     headers(),
   ])
+
+  const outboundBySite = new Map(
+    (
+      (outboundRes.data ?? []) as {
+        site_id: string
+        pending: number
+        processing: number
+        failed: number
+        skipped: number
+      }[]
+    ).map((o) => [o.site_id, o]),
+  )
 
   const canManage = true
   const credByConn = new Map(
@@ -101,12 +119,15 @@ export default async function WooCommerceIntegrationPage() {
     (connRes.data ?? []) as unknown as {
       id: string
       source: string
+      site_id: string
       is_active: boolean
       last_synced_at: string | null
+      sync_inventory_outbound: boolean
       site: { name: string | null } | null
     }[]
   ).map((c) => {
     const cred = credByConn.get(c.id)
+    const ob = outboundBySite.get(c.site_id)
     return {
       id: c.id,
       source: c.source,
@@ -116,6 +137,9 @@ export default async function WooCommerceIntegrationPage() {
       has_consumer_secret: cred?.has_consumer_secret ?? false,
       has_webhook_secret: cred?.has_webhook_secret ?? false,
       last_synced_at: c.last_synced_at,
+      sync_inventory_outbound: c.sync_inventory_outbound ?? false,
+      outbound_pending: (ob?.pending ?? 0) + (ob?.processing ?? 0),
+      outbound_failed: ob?.failed ?? 0,
     }
   })
 

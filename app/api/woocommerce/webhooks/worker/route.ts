@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 
 import { createAdminClient } from "@/lib/supabase/admin"
 import { processWooEvent } from "@/lib/woocommerce/process-event"
+import { kickOutboundDrain } from "@/lib/store-sync/outbound"
 import { verifyWorkerSecret, type StoreEventJob } from "@/lib/store-sync/queue"
 
 export const runtime = "nodejs"
@@ -36,6 +37,7 @@ export async function POST(req: Request) {
       job.source,
       job.payload,
     )
+    await kickOutboundDrain()
     return NextResponse.json({ ok: true, ...result }, { status: 200 })
   } catch (err) {
     const message = err instanceof Error ? err.message : "processing failed"

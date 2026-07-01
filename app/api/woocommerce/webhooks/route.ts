@@ -4,6 +4,7 @@ import { NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { normalizeWooSource, verifyWooSignature } from "@/lib/woocommerce/types"
 import { processWooEvent } from "@/lib/woocommerce/process-event"
+import { kickOutboundDrain } from "@/lib/store-sync/outbound"
 import {
   dedupeKey,
   publishToQueue,
@@ -86,6 +87,7 @@ export async function POST(req: Request) {
   // 3) Fallback: process inline (local dev / Upstash not yet provisioned).
   try {
     const result = await processWooEvent(supabase, topic, source, payload)
+    await kickOutboundDrain()
     return NextResponse.json({ ok: true, ...result }, { status: 200 })
   } catch (err) {
     const message = err instanceof Error ? err.message : "processing failed"

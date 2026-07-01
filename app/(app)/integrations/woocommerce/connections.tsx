@@ -5,6 +5,7 @@ import Link from "next/link"
 import { useRouter } from "next/navigation"
 import {
   AlertCircle,
+  ArrowUpFromLine,
   Check,
   KeyRound,
   Plus,
@@ -24,8 +25,10 @@ import {
   createConnection,
   deleteConnection,
   registerWebhooks,
+  runOutboundDrainNow,
   setConnectionActive,
   setCredentials,
+  setInventoryOutbound,
   startOrderImport,
   stepOrderImport,
   cancelOrderImport,
@@ -43,6 +46,9 @@ export type Connection = {
   has_consumer_secret: boolean
   has_webhook_secret: boolean
   last_synced_at: string | null
+  sync_inventory_outbound: boolean
+  outbound_pending: number
+  outbound_failed: number
 }
 
 export function Connections({
@@ -213,6 +219,24 @@ function ConnectionCard({
     })
   }
 
+  function syncInventory() {
+    setError(null)
+    setNote(null)
+    startTransition(async () => {
+      const res = await runOutboundDrainNow()
+      if (!res.ok) setError(res.error)
+      else {
+        setNote(
+          `Inventory pushed: ${res.pushed} sent` +
+            (res.skipped ? `, ${res.skipped} skipped` : "") +
+            (res.failed ? `, ${res.failed} failed` : "") +
+            ".",
+        )
+        router.refresh()
+      }
+    })
+  }
+
   return (
     <div className="flex flex-col gap-2 rounded-lg border border-border p-3">
       <div className="flex items-center justify-between gap-2">
@@ -299,6 +323,46 @@ function ConnectionCard({
             {conn.last_synced_at
               ? `Last synced ${formatDateTime(conn.last_synced_at)}`
               : "Never synced"}
+          </span>
+        </div>
+      ) : null}
+
+      {canManage ? (
+        <div className="flex flex-wrap items-center gap-2 border-t pt-2">
+          <span className="text-xs font-medium text-muted-foreground">
+            Outbound stock
+          </span>
+          <Badge variant={conn.sync_inventory_outbound ? "success" : "muted"}>
+            {conn.sync_inventory_outbound ? "On" : "Off"}
+          </Badge>
+          {conn.outbound_pending > 0 ? (
+            <Badge variant="secondary">{conn.outbound_pending} queued</Badge>
+          ) : null}
+          {conn.outbound_failed > 0 ? (
+            <Badge variant="destructive">{conn.outbound_failed} failed</Badge>
+          ) : null}
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={isPending || !hasApi}
+            onClick={() =>
+              run(() =>
+                setInventoryOutbound(conn.id, !conn.sync_inventory_outbound),
+              )
+            }
+          >
+            {conn.sync_inventory_outbound ? "Turn off" : "Turn on"}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={isPending || !conn.sync_inventory_outbound}
+            onClick={syncInventory}
+          >
+            <ArrowUpFromLine data-icon="inline-start" /> Sync inventory now
+          </Button>
+          <span className="text-xs text-muted-foreground">
+            Pushes available (on-hand − reserved) to this store.
           </span>
         </div>
       ) : null}
