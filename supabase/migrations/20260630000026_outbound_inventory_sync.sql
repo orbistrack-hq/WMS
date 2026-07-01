@@ -184,7 +184,7 @@ begin
     join public.child_skus cs on cs.id = c.child_sku_id
     left join public.inventory_levels il on il.child_sku_id = c.child_sku_id
     left join lateral (
-      select channel, source, inventory_location_id
+      select sc.channel, sc.source, sc.inventory_location_id
         from public.store_connections sc
        where sc.site_id = c.site_id and sc.is_active and sc.sync_inventory_outbound
        limit 1

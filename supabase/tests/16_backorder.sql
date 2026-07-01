@@ -2,7 +2,7 @@
 -- guard, auto-promote on restock, and cancel releasing only the reserved part.
 -- Uses seeded SKU WF-HONEY-MAIN (a0000000-...0001, 200 on hand) at site MAIN.
 begin;
-select plan(15);
+select plan(16);
 \set SKU '''a0000000-0000-0000-0000-000000000001'''
 
 -- ---- 1. Import-style order backorders the shortfall ------------------------

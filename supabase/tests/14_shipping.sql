@@ -2,7 +2,7 @@
 -- add_package / update_package. Operational only — never touches the order
 -- lifecycle. Uses seeded site MAIN.
 begin;
-select plan(14);
+select plan(15);
 \set MAIN '''11111111-1111-1111-1111-111111111111'''
 \set G    '''b0000000-0000-0000-0000-000000000050'''
 \set O    '''b0000000-1111-0000-0000-000000000050'''
