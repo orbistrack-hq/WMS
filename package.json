@@ -30,11 +30,17 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "postcss": "^8.5",
-    "supabase": "^2.107.0",
+    "supabase": "^2.109.0",
     "tailwindcss": "^4.2.0",
     "typescript": "5.7.3"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["sharp", "unrs-resolver"]
+    "onlyBuiltDependencies": [
+      "sharp",
+      "unrs-resolver"
+    ]
+  },
+  "allowScripts": {
+    "sharp@0.34.5": true
   }
 }

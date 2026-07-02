@@ -94,8 +94,11 @@ export async function updateProduct(
 }
 
 // ---------------------------------------------------------------------------
-// Child SKUs (one product at one site)
+// Child SKUs (one product at one site, per weight variant)
 // ---------------------------------------------------------------------------
+// A product can now have several child SKUs at the same site — one per weight
+// variant (e.g. 3.5g / 7g / 14g / 28g) plus at most one non-weight child. The
+// DB enforces uniqueness on (product_id, site_id, coalesce(grams_per_unit, -1)).
 export type ChildSkuInput = {
   product_id: string
   site_id: string
@@ -103,16 +106,36 @@ export type ChildSkuInput = {
   store_variant_id?: string | null
   bin_location?: string | null
   barcode?: string | null
+  /** Sellable weight per unit in grams (3.5, 7, …). Null = non-weight child. */
+  grams_per_unit?: number | null
+  /** Display label for the variant, e.g. "3.5g". Derived from grams if blank. */
+  variant_label?: string | null
   price: number
   cost: number
   is_active?: boolean
 }
 
 const SKU_CONFLICTS = {
-  child_skus_pkey: "This product already has a SKU at this site.",
-  child_skus_product_id_site_id_key:
-    "This product already has a SKU at this site.",
+  child_skus_pkey: "This product already has this SKU.",
+  child_skus_product_site_variant_key:
+    "This product already has a SKU of that weight at this site.",
   child_skus_site_sku_key: "That SKU code is already used at this site.",
+}
+
+/** Normalize an optional grams input; blank/invalid becomes null. */
+function normalizeGrams(g: number | null | undefined): number | null {
+  if (g == null || Number.isNaN(g) || g <= 0) return null
+  return g
+}
+
+/** Label a variant: explicit text wins, else derive "<grams>g", else null. */
+function weightLabel(
+  grams: number | null,
+  explicit?: string | null,
+): string | null {
+  const e = explicit?.trim()
+  if (e) return e
+  return grams == null ? null : `${grams}g`
 }
 
 export async function createChildSku(
@@ -122,6 +145,7 @@ export async function createChildSku(
   if (!(input.price >= 0) || !(input.cost >= 0))
     return { ok: false, error: "Price and cost must be zero or more." }
 
+  const grams = normalizeGrams(input.grams_per_unit)
   const supabase = await createClient()
   const { error } = await supabase.from("child_skus").insert({
     product_id: input.product_id,
@@ -130,6 +154,8 @@ export async function createChildSku(
     store_variant_id: input.store_variant_id?.trim() || null,
     bin_location: input.bin_location?.trim() || null,
     barcode: input.barcode?.trim() || null,
+    grams_per_unit: grams,
+    variant_label: weightLabel(grams, input.variant_label),
     price: input.price,
     cost: input.cost,
     is_active: input.is_active ?? true,
@@ -148,6 +174,7 @@ export async function updateChildSku(
   if (!(input.price >= 0) || !(input.cost >= 0))
     return { ok: false, error: "Price and cost must be zero or more." }
 
+  const grams = normalizeGrams(input.grams_per_unit)
   const supabase = await createClient()
   const { error } = await supabase
     .from("child_skus")
@@ -156,6 +183,8 @@ export async function updateChildSku(
       store_variant_id: input.store_variant_id?.trim() || null,
       bin_location: input.bin_location?.trim() || null,
       barcode: input.barcode?.trim() || null,
+      grams_per_unit: grams,
+      variant_label: weightLabel(grams, input.variant_label),
       price: input.price,
       cost: input.cost,
       is_active: input.is_active ?? true,
@@ -171,10 +200,10 @@ export async function updateChildSku(
 // Re-parenting a child SKU (manual product mapping)
 // ---------------------------------------------------------------------------
 // Moves a child SKU from one master product to another — the manual counterpart
-// to the SKU-based auto-attach the Shopify sync does. Guarded by the same
-// one-child-per-site rule the schema enforces (unique(product_id, site_id)):
-// if the destination already owns a SKU at this child's site, the two products
-// must be MERGED instead, so we stop with a clear message rather than erroring.
+// to the SKU-based auto-attach the Shopify sync does. Guarded by the schema's
+// uniqueness rule (product_id, site_id, coalesce(grams_per_unit, -1)): if the
+// destination already owns a SKU of the SAME weight at this child's site, the
+// two must be MERGED instead, so we stop with a clear message rather than erroring.
 
 export type ProductSearchResult = {
   id: string
@@ -241,10 +270,10 @@ export async function reparentChildSku(
 
   const supabase = await createClient()
 
-  // Read the child's site so we can give a precise conflict message.
+  // Read the child's site + weight so we can give a precise conflict message.
   const { data: child, error: childErr } = await supabase
     .from("child_skus")
-    .select("id, site_id, site:sites(name)")
+    .select("id, site_id, grams_per_unit, site:sites(name)")
     .eq("id", childSkuId)
     .maybeSingle()
   if (childErr) return { ok: false, error: dbError(childErr) }
@@ -259,24 +288,32 @@ export async function reparentChildSku(
   if (targetErr) return { ok: false, error: dbError(targetErr) }
   if (!target) return { ok: false, error: "That product no longer exists." }
 
-  // One-child-per-site guard: destination must not already own a SKU at this
-  // child's site. If it does, the right operation is a merge, not a move.
+  // Uniqueness guard: destination must not already own a SKU of the SAME weight
+  // at this child's site. If it does, the right operation is a merge, not a move.
   const childRow = child as unknown as {
     site_id: string
+    grams_per_unit: number | string | null
     site: { name: string | null } | null
   }
-  const { data: clash, error: clashErr } = await supabase
+  const childGrams =
+    childRow.grams_per_unit == null ? null : Number(childRow.grams_per_unit)
+  let clashQuery = supabase
     .from("child_skus")
     .select("id")
     .eq("product_id", toProductId)
     .eq("site_id", childRow.site_id)
-    .maybeSingle()
+  clashQuery =
+    childGrams == null
+      ? clashQuery.is("grams_per_unit", null)
+      : clashQuery.eq("grams_per_unit", childGrams)
+  const { data: clash, error: clashErr } = await clashQuery.maybeSingle()
   if (clashErr) return { ok: false, error: dbError(clashErr) }
   if (clash) {
     const siteName = childRow.site?.name ?? "this site"
+    const weight = childGrams == null ? "a SKU" : `a ${childGrams}g SKU`
     return {
       ok: false,
-      error: `"${target.name}" already has a SKU at ${siteName}. Merge the products instead of moving this SKU.`,
+      error: `"${target.name}" already has ${weight} at ${siteName}. Merge the products instead of moving this SKU.`,
     }
   }
 

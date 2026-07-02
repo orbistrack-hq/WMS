@@ -7,6 +7,11 @@ select plan(14);
 \set SKU2 '''a0000000-0000-0000-0000-000000000002'''
 \set MAIN '''11111111-1111-1111-1111-111111111111'''
 
+-- Neutralize the seed's opening stock (200) on this SKU so the assertions below
+-- reason from a clean zero base. Done BEFORE the store-variant mapping so this
+-- reset itself does not enqueue an outbound job.
+select adjust_stock(:SKU, -200, 'reset seed opening stock for a deterministic outbound test');
+
 -- Map SKU to a store variant and connect an outbound-enabled Shopify store.
 update child_skus
    set store_variant_id = 'shopvar-1', store_inventory_item_id = 'inv-1'

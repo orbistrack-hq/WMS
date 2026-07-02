@@ -30,6 +30,8 @@ type SkuQueryRow = {
   store_variant_id: string | null
   bin_location: string | null
   barcode: string | null
+  grams_per_unit: number | string | null
+  variant_label: string | null
   price: number | string
   cost: number | string
   is_active: boolean
@@ -62,7 +64,8 @@ export default async function ProductDetailPage({
       .from("products")
       .select(
         `id, name, description, category_id, is_active,
-         child_skus(id, site_id, sku, store_variant_id, bin_location, barcode, price, cost, is_active,
+         child_skus(id, site_id, sku, store_variant_id, bin_location, barcode,
+           grams_per_unit, variant_label, price, cost, is_active,
            site:sites(name),
            inventory_levels(on_hand, available))`,
       )
@@ -93,6 +96,8 @@ export default async function ProductDetailPage({
       store_variant_id: s.store_variant_id,
       bin_location: s.bin_location,
       barcode: s.barcode,
+      grams_per_unit: s.grams_per_unit == null ? null : Number(s.grams_per_unit),
+      variant_label: s.variant_label,
       price: Number(s.price),
       cost: Number(s.cost),
       is_active: s.is_active,
@@ -101,10 +106,9 @@ export default async function ProductDetailPage({
     }
   })
 
-  const usedSites = new Set(skus.map((s) => s.site_id))
-  const availableSites = (sitesRes.data ?? []).filter(
-    (s) => !usedSites.has(s.id),
-  )
+  // A product can hold several weight variants per site, so every active site is
+  // always available to add another variant to. The DB blocks true duplicates.
+  const availableSites = (sitesRes.data ?? []) as { id: string; name: string }[]
 
   return (
     <>

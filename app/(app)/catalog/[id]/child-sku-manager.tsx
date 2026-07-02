@@ -30,6 +30,8 @@ export type ChildSku = {
   store_variant_id: string | null
   bin_location: string | null
   barcode: string | null
+  grams_per_unit: number | null
+  variant_label: string | null
   price: number
   cost: number
   is_active: boolean
@@ -44,6 +46,7 @@ type Draft = {
   store_variant_id: string
   bin_location: string
   barcode: string
+  weight: string
   price: string
   cost: string
   is_active: boolean
@@ -54,10 +57,25 @@ const emptyDraft = (): Draft => ({
   store_variant_id: "",
   bin_location: "",
   barcode: "",
+  weight: "",
   price: "",
   cost: "",
   is_active: true,
 })
+
+/** Parse the weight (grams-per-unit) input; blank becomes null. */
+function parseWeight(v: string): number | null {
+  const t = v.trim()
+  if (t === "") return null
+  const n = Number(t)
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
+/** How a variant reads in the table: label, else "<grams>g", else a dash. */
+function weightText(s: Pick<ChildSku, "variant_label" | "grams_per_unit">): string {
+  if (s.variant_label) return s.variant_label
+  return s.grams_per_unit == null ? "—" : `${s.grams_per_unit}g`
+}
 
 export function ChildSkuManager({
   productId,
@@ -90,6 +108,7 @@ export function ChildSkuManager({
       store_variant_id: s.store_variant_id ?? "",
       bin_location: s.bin_location ?? "",
       barcode: s.barcode ?? "",
+      weight: s.grams_per_unit == null ? "" : String(s.grams_per_unit),
       price: String(s.price),
       cost: String(s.cost),
       is_active: s.is_active,
@@ -104,6 +123,7 @@ export function ChildSkuManager({
         store_variant_id: editDraft.store_variant_id || null,
         bin_location: editDraft.bin_location || null,
         barcode: editDraft.barcode || null,
+        grams_per_unit: parseWeight(editDraft.weight),
         price: Number(editDraft.price),
         cost: Number(editDraft.cost),
         is_active: editDraft.is_active,
@@ -130,6 +150,7 @@ export function ChildSkuManager({
         store_variant_id: addDraft.store_variant_id || null,
         bin_location: addDraft.bin_location || null,
         barcode: addDraft.barcode || null,
+        grams_per_unit: parseWeight(addDraft.weight),
         price: Number(addDraft.price || 0),
         cost: Number(addDraft.cost || 0),
         is_active: addDraft.is_active,
@@ -154,14 +175,16 @@ export function ChildSkuManager({
 
       {skus.length === 0 ? (
         <p className="text-sm text-muted-foreground">
-          No SKUs yet. Add one per site below — each carries its own price,
-          cost, and store variant ID.
+          No SKUs yet. Add one per weight variant below (e.g. 3.5g, 7g) for each
+          client site — each carries its own weight, price, cost, and store
+          variant ID.
         </p>
       ) : (
         <Table>
           <TableHeader>
             <TableRow>
               <TableHead>Site</TableHead>
+              <TableHead>Weight</TableHead>
               <TableHead>SKU</TableHead>
               <TableHead>Bin</TableHead>
               {SCANNING_ENABLED ? <TableHead>Barcode</TableHead> : null}
@@ -179,6 +202,19 @@ export function ChildSkuManager({
               editingId === s.id ? (
                 <TableRow key={s.id}>
                   <TableCell className="font-medium">{s.site_name}</TableCell>
+                  <TableCell>
+                    <Input
+                      type="number"
+                      step="0.5"
+                      min="0"
+                      value={editDraft.weight}
+                      onChange={(e) =>
+                        setEditDraft({ ...editDraft, weight: e.target.value })
+                      }
+                      className="w-20"
+                      placeholder="g"
+                    />
+                  </TableCell>
                   <TableCell>
                     <Input
                       value={editDraft.sku}
@@ -292,6 +328,9 @@ export function ChildSkuManager({
               ) : (
                 <TableRow key={s.id}>
                   <TableCell className="font-medium">{s.site_name}</TableCell>
+                  <TableCell className="tabular-nums">
+                    {weightText(s)}
+                  </TableCell>
                   <TableCell className="text-muted-foreground">
                     {s.sku ?? "—"}
                   </TableCell>
@@ -373,7 +412,7 @@ export function ChildSkuManager({
       {/* Add SKU */}
       {availableSites.length === 0 ? (
         <p className="text-xs text-muted-foreground">
-          Every site already has a SKU for this product.
+          No active sites yet — add a site before creating SKUs.
         </p>
       ) : adding ? (
         <div className="flex flex-col gap-2 rounded-lg border border-border p-3">
@@ -391,6 +430,20 @@ export function ChildSkuManager({
                   </option>
                 ))}
               </Select>
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label className="text-xs">Weight (g)</Label>
+              <Input
+                type="number"
+                step="0.5"
+                min="0"
+                value={addDraft.weight}
+                onChange={(e) =>
+                  setAddDraft({ ...addDraft, weight: e.target.value })
+                }
+                className="w-24"
+                placeholder="e.g. 3.5"
+              />
             </div>
             <div className="flex flex-col gap-1">
               <Label className="text-xs">SKU code</Label>
@@ -491,7 +544,7 @@ export function ChildSkuManager({
             setAdding(true)
           }}
         >
-          <Plus data-icon="inline-start" /> Add SKU
+          <Plus data-icon="inline-start" /> Add child SKU
         </Button>
       )}
     </div>
