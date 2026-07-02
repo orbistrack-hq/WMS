@@ -2,6 +2,7 @@ import type { ComponentType } from "react"
 import {
   LayoutDashboard,
   Boxes,
+  PackagePlus,
   ClipboardList,
   PackageCheck,
   FolderTree,
@@ -34,6 +35,12 @@ export const NAV_ITEMS: NavItem[] = [
     href: "/inventory",
     icon: Boxes,
     description: "On-hand, available, and reserved per SKU",
+  },
+  {
+    label: "Intake",
+    href: "/inventory/intake",
+    icon: PackagePlus,
+    description: "Receive bulk and allocate to client SKUs",
   },
   {
     label: "Orders",
