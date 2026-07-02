@@ -2,7 +2,7 @@
   "crons": [
     {
       "path": "/api/store-sync/outbound",
-      "schedule": "* * * * *"
+      "schedule": "0 0 * * *"
     }
   ]
 }
