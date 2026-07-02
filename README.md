@@ -466,7 +466,7 @@ Beyond the picking backlog, the schema already anticipates:
   constraints and guarded functions, so even a direct database connection cannot
   oversell stock or skip a transition guard.
 - **Secrets:** Shopify credentials are locked down at the database level
-  (migration `…_lock_shopify_secrets`) and never exposed to client roles. Test
+  (migration `…_lock_shopify_secrets`) and never exposed to client roles.
 - **Auditability:** the generic `audit_log` captures before/after snapshots of
   every operational mutation, and the inventory ledger records who moved what,
   when, why, and against which reference.
