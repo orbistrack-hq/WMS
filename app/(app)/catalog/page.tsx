@@ -1,5 +1,5 @@
 import Link from "next/link"
-import { Plus, FolderTree, Boxes, CopyCheck } from "lucide-react"
+import { Plus, FolderTree, Boxes, CopyCheck, Layers } from "lucide-react"
 
 import { createClient } from "@/lib/supabase/server"
 import { PageHeader } from "@/components/page-header"
@@ -83,6 +83,12 @@ export default async function CatalogPage({
         description="Master products, their child SKUs per location, and categories."
         action={
           <div className="flex gap-2">
+            <Link
+              href="/catalog/backfill"
+              className={buttonVariants({ variant: "outline" })}
+            >
+              <Layers data-icon="inline-start" /> Group weights
+            </Link>
             <Link
               href="/catalog/duplicates"
               className={buttonVariants({ variant: "outline" })}

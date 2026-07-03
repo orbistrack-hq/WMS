@@ -46,3 +46,24 @@ export function parseWeightGrams(
 export function weightLabel(grams: number): string {
   return `${Math.round(grams * 100) / 100}g`
 }
+
+/**
+ * Split a flattened product name of the form "Strain - 3.5g" into its strain
+ * base and grams. Only the " - <weight>" suffix our own sync produced is
+ * recognized (precise on purpose); anything else returns grams = null so it is
+ * left out of the backfill rather than mis-grouped.
+ */
+export function stripWeightSuffix(name: string): {
+  strain: string
+  grams: number | null
+} {
+  const parts = (name ?? "").split(/\s+-\s+/)
+  if (parts.length >= 2) {
+    const last = parts[parts.length - 1]
+    const g = parseWeightGrams(last)
+    if (g != null) {
+      return { strain: parts.slice(0, -1).join(" - ").trim(), grams: g }
+    }
+  }
+  return { strain: (name ?? "").trim(), grams: null }
+}

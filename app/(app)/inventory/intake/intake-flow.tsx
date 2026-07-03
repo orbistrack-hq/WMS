@@ -410,9 +410,27 @@ export function IntakeFlow({
           <div className="flex flex-col gap-4 lg:col-span-2">
             {clients.length === 0 ? (
               <Card>
-                <CardContent className="py-8 text-center text-sm text-muted-foreground">
-                  No client child SKUs with a weight are set up for{" "}
-                  {productName}. Add weight variants in the catalog first.
+                <CardContent className="flex flex-col items-center gap-3 py-8 text-center">
+                  <p className="max-w-md text-sm text-muted-foreground">
+                    {productName} has no weight-variant child SKUs yet, so
+                    there&apos;s nothing to allocate. If this strain was imported
+                    as separate per-weight products, group them into weight
+                    variants first.
+                  </p>
+                  <div className="flex flex-wrap justify-center gap-2">
+                    <Link
+                      href="/catalog/backfill"
+                      className={buttonVariants()}
+                    >
+                      Group weights
+                    </Link>
+                    <Link
+                      href="/catalog"
+                      className={buttonVariants({ variant: "outline" })}
+                    >
+                      Open catalog
+                    </Link>
+                  </div>
                 </CardContent>
               </Card>
             ) : (
