@@ -43,3 +43,11 @@ export function formatDateTime(value: string | null | undefined): string {
 export function todayISODate(): string {
   return new Date().toISOString().slice(0, 10)
 }
+
+/** Format a gram amount, e.g. 448 -> "448g", 3.5 -> "3.5g". */
+export function formatGrams(value: number | string | null | undefined): string {
+  const n = typeof value === "string" ? Number(value) : (value ?? 0)
+  if (!Number.isFinite(n)) return "0g"
+  const v = Math.round(n * 100) / 100
+  return `${Number.isInteger(v) ? v : v.toFixed(1)}g`
+}

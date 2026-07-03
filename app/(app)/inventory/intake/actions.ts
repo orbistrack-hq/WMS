@@ -179,3 +179,96 @@ export async function saveAllocation(input: {
   const r = data as AllocationResult
   return { ok: true, result: { ...r, total_grams: Number(r.total_grams), remaining_grams: Number(r.remaining_grams) } }
 }
+
+// ---- Step 6/7: per-child website sync status for a saved allocation --------
+export type SyncStatus =
+  | "done"
+  | "pending"
+  | "processing"
+  | "failed"
+  | "skipped"
+  | "unmapped" // child has no store_variant_id
+  | "off" // mapped, but its site's outbound sync is disabled (no job enqueued)
+
+export type SyncStatusRow = {
+  childId: string
+  label: string
+  siteName: string
+  units: number
+  status: SyncStatus
+  detail: string | null
+}
+
+type LineChild = {
+  id: string
+  variant_label: string | null
+  grams_per_unit: number | string
+  store_variant_id: string | null
+  site: { name: string | null } | null
+}
+type SyncLineRow = {
+  units: number
+  child: LineChild | LineChild[] | null
+}
+type JobRow = {
+  child_sku_id: string
+  status: string
+  last_error: string | null
+}
+
+export async function getAllocationSyncStatus(
+  allocationId: string,
+): Promise<Result<{ rows: SyncStatusRow[] }>> {
+  const supabase = await createClient()
+  const { data: lineData, error } = await supabase
+    .from("allocation_lines")
+    .select(
+      "units, child:child_skus(id, variant_label, grams_per_unit, store_variant_id, site:sites(name))",
+    )
+    .eq("allocation_id", allocationId)
+  if (error) return { ok: false, error: rpcError(error) }
+
+  const lines = (lineData ?? []) as unknown as SyncLineRow[]
+  const children = lines
+    .map((l) => (Array.isArray(l.child) ? l.child[0] : l.child))
+    .filter((c): c is LineChild => Boolean(c))
+  const ids = children.map((c) => c.id)
+
+  // Latest outbound job per child (jobs table is keyed per child SKU).
+  const latest = new Map<string, JobRow>()
+  if (ids.length) {
+    const { data: jobData } = await supabase
+      .from("store_outbound_inventory_jobs")
+      .select("child_sku_id, status, last_error, updated_at")
+      .in("child_sku_id", ids)
+      .order("updated_at", { ascending: false })
+    for (const j of (jobData ?? []) as unknown as (JobRow & {
+      updated_at: string
+    })[]) {
+      if (!latest.has(j.child_sku_id)) latest.set(j.child_sku_id, j)
+    }
+  }
+
+  const rows: SyncStatusRow[] = lines.map((l) => {
+    const c = Array.isArray(l.child) ? l.child[0] : l.child
+    const grams = Number(c?.grams_per_unit ?? 0)
+    const job = c ? latest.get(c.id) : undefined
+    let status: SyncStatus
+    let detail: string | null = null
+    if (!c?.store_variant_id) status = "unmapped"
+    else if (!job) status = "off"
+    else {
+      status = job.status as SyncStatus
+      detail = job.last_error ?? null
+    }
+    return {
+      childId: c?.id ?? "",
+      label: c?.variant_label ?? `${grams}g`,
+      siteName: c?.site?.name ?? "—",
+      units: l.units,
+      status,
+      detail,
+    }
+  })
+  return { ok: true, rows }
+}

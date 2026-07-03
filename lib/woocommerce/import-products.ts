@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 
+import { parseWeightGrams } from "../catalog/weight"
 import {
   wooCost,
   wooVariantName,
@@ -83,17 +84,34 @@ export async function importWooProduct(
     // /products/{parent}/variations/{id}, so a variation needs its parent
     // product id. Null for simple products (addressed by store_variant_id alone).
     parentId: string | null = null,
+    // When the variation is a recognized weight, attach it to this strain parent
+    // as a weight variant (grams) instead of a flattened "Strain - 3.5g" product.
+    grams: number | null = null,
+    strainName: string | null = null,
   ) => {
-    const { data, error } = await client.rpc("upsert_store_variant", {
-      p_site_id: siteId,
-      p_store_variant_id: storeVariantId,
-      p_name: name,
-      p_sku: sku,
-      p_price: price,
-      p_cost: cost,
-      p_inventory_qty: invQty,
-      p_channel: "woocommerce",
-    })
+    const { data, error } =
+      grams != null && strainName
+        ? await client.rpc("upsert_store_weight_variant", {
+            p_site_id: siteId,
+            p_store_variant_id: storeVariantId,
+            p_strain_name: strainName,
+            p_grams_per_unit: grams,
+            p_sku: sku,
+            p_price: price,
+            p_cost: cost,
+            p_inventory_qty: invQty,
+            p_channel: "woocommerce",
+          })
+        : await client.rpc("upsert_store_variant", {
+            p_site_id: siteId,
+            p_store_variant_id: storeVariantId,
+            p_name: name,
+            p_sku: sku,
+            p_price: price,
+            p_cost: cost,
+            p_inventory_qty: invQty,
+            p_channel: "woocommerce",
+          })
     if (error) {
       res.skipped++
       if (!res.firstError) res.firstError = error.message
@@ -149,6 +167,12 @@ export async function importWooProduct(
       res.skipped++
       continue
     }
+    const attrText = (v.attributes ?? [])
+      .map((a) => (a.option ?? "").trim())
+      .filter(Boolean)
+      .join(" ")
+    const grams = parseWeightGrams(attrText, v.sku)
+    const strainName = (product.name ?? "").trim() || "Untitled product"
     await upsert(
       variationId,
       wooVariantName(product.name, v.attributes),
@@ -157,6 +181,8 @@ export async function importWooProduct(
       wooCost(v.meta_data),
       stockOf(v.manage_stock, v.stock_quantity, opts.syncInventory),
       product.id != null ? String(product.id) : null,
+      grams,
+      strainName,
     )
   }
   return res

@@ -11,14 +11,31 @@ import { Select } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { Combobox } from "@/components/ui/combobox"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
 import {
   receiveIntake,
   loadAllocationTargets,
   saveAllocation,
+  getAllocationSyncStatus,
   type AllocationClient,
   type AllocationResult,
+  type SyncStatus,
+  type SyncStatusRow,
 } from "./actions"
+
+const SYNC_META: Record<
+  SyncStatus,
+  { label: string; variant: "success" | "info" | "warning" | "destructive" | "muted" | "outline" }
+> = {
+  done: { label: "Synced", variant: "success" },
+  processing: { label: "Syncing", variant: "info" },
+  pending: { label: "Queued", variant: "info" },
+  failed: { label: "Failed", variant: "destructive" },
+  skipped: { label: "Skipped", variant: "muted" },
+  off: { label: "Store sync off", variant: "muted" },
+  unmapped: { label: "No store mapping", variant: "outline" },
+}
 
 type Site = { id: string; name: string }
 type Product = { id: string; name: string }
@@ -79,6 +96,17 @@ export function IntakeFlow({
 
   // Step 4
   const [result, setResult] = useState<AllocationResult | null>(null)
+  const [syncRows, setSyncRows] = useState<SyncStatusRow[] | null>(null)
+  const [syncLoading, setSyncLoading] = useState(false)
+
+  function loadSync(allocationId: string) {
+    setSyncLoading(true)
+    getAllocationSyncStatus(allocationId)
+      .then((res) => {
+        if (res.ok) setSyncRows(res.rows)
+      })
+      .finally(() => setSyncLoading(false))
+  }
 
   const previewGrams = toGrams(Number(qty), uom)
   const productOptions = useMemo(
@@ -162,6 +190,8 @@ export function IntakeFlow({
       })
       if (!res.ok) return setError(res.error)
       setResult(res.result)
+      setSyncRows(null)
+      loadSync(res.result.allocation_id)
       setStep("done")
     })
   }
@@ -538,13 +568,71 @@ export function IntakeFlow({
                 label="Client SKUs updated"
                 value={String(result.child_count)}
               />
-              <Summary label="Website sync" value="Queued to each store" />
             </dl>
+
+            {/* Website sync status per child SKU */}
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-medium">Website sync</h3>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => loadSync(result.allocation_id)}
+                  disabled={syncLoading}
+                >
+                  {syncLoading ? "Refreshing…" : "Refresh"}
+                </Button>
+              </div>
+              {syncRows === null ? (
+                <p className="text-sm text-muted-foreground">
+                  Loading sync status…
+                </p>
+              ) : syncRows.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  No child SKUs to sync.
+                </p>
+              ) : (
+                <ul className="divide-y divide-border rounded-lg border border-border">
+                  {syncRows.map((r) => {
+                    const meta = SYNC_META[r.status]
+                    return (
+                      <li
+                        key={r.childId}
+                        className="flex items-center justify-between gap-3 px-3 py-2 text-sm"
+                      >
+                        <span>
+                          <span className="font-medium">{r.siteName}</span>{" "}
+                          <span className="text-muted-foreground">
+                            · {r.label} × {r.units}
+                          </span>
+                        </span>
+                        <Badge
+                          variant={meta.variant}
+                          title={r.detail ?? undefined}
+                        >
+                          {meta.label}
+                        </Badge>
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
+              <p className="text-xs text-muted-foreground">
+                Pushes run in the background — refresh to see them complete.
+              </p>
+            </div>
+
             <div className="flex flex-wrap items-center gap-2">
               <Link href="/inventory" className={buttonVariants()}>
                 Return to inventory
               </Link>
-              <Button variant="outline" onClick={reset}>
+              <Link
+                href="/inventory/intake/history"
+                className={buttonVariants({ variant: "outline" })}
+              >
+                View allocation history
+              </Link>
+              <Button variant="ghost" onClick={reset}>
                 Start another intake
               </Button>
             </div>

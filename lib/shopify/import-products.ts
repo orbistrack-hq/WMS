@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 
+import { parseWeightGrams } from "../catalog/weight"
 import { variantProductName, type ShopifyProduct } from "./types"
 
 export type ProductImportResult = {
@@ -67,16 +68,32 @@ export async function importShopifyProduct(
       invQty = Math.trunc(Number(v.inventory_quantity))
     }
 
-    const { data, error } = await client.rpc("upsert_store_variant", {
-      p_site_id: siteId,
-      p_store_variant_id: variantId,
-      p_name: variantProductName(product.title, v.title),
-      p_sku: v.sku ?? null,
-      p_price: Number.isFinite(price) ? price : 0,
-      p_cost: cost,
-      p_inventory_qty: invQty,
-      p_channel: "shopify",
-    })
+    // If the variant title (or SKU) names a known weight, attach it to the
+    // strain parent as a weight variant instead of a flattened "Strain - 3.5g".
+    const grams = parseWeightGrams(v.title, v.sku)
+    const { data, error } =
+      grams != null
+        ? await client.rpc("upsert_store_weight_variant", {
+            p_site_id: siteId,
+            p_store_variant_id: variantId,
+            p_strain_name: (product.title ?? "").trim() || "Untitled product",
+            p_grams_per_unit: grams,
+            p_sku: v.sku ?? null,
+            p_price: Number.isFinite(price) ? price : 0,
+            p_cost: cost,
+            p_inventory_qty: invQty,
+            p_channel: "shopify",
+          })
+        : await client.rpc("upsert_store_variant", {
+            p_site_id: siteId,
+            p_store_variant_id: variantId,
+            p_name: variantProductName(product.title, v.title),
+            p_sku: v.sku ?? null,
+            p_price: Number.isFinite(price) ? price : 0,
+            p_cost: cost,
+            p_inventory_qty: invQty,
+            p_channel: "shopify",
+          })
     if (error) {
       res.skipped++
       if (!res.firstError) res.firstError = error.message
