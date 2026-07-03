@@ -190,4 +190,15 @@
   html {
     @apply font-sans;
   }
+  /* Native <select> field inherits page colors; its OPEN option list does not,
+     so on some browsers/themes options render white-on-white. Force solid
+     popover colors on the options (and the field text) to fix legibility. */
+  select {
+    @apply text-foreground;
+  }
+  select option,
+  select optgroup {
+    background-color: var(--popover);
+    color: var(--popover-foreground);
+  }
 }

@@ -11,7 +11,7 @@ export default async function IntakePage() {
   const [productsRes, sitesRes] = await Promise.all([
     supabase
       .from("products")
-      .select("id, name")
+      .select("id, name, child_skus(site_id)")
       .eq("is_active", true)
       .order("name"),
     supabase
@@ -21,8 +21,27 @@ export default async function IntakePage() {
       .order("name"),
   ])
 
-  const products = (productsRes.data ?? []) as { id: string; name: string }[]
   const sites = (sitesRes.data ?? []) as { id: string; name: string }[]
+  const siteNameById = new Map(sites.map((s) => [s.id, s.name]))
+
+  // Which site(s) each parent actually has children in — so a parent with a
+  // duplicate name can be told apart by site when selecting it.
+  const rawProducts = (productsRes.data ?? []) as unknown as {
+    id: string
+    name: string
+    child_skus: { site_id: string }[] | null
+  }[]
+  const products = rawProducts.map((p) => ({
+    id: p.id,
+    name: p.name,
+    sites: [
+      ...new Set(
+        (p.child_skus ?? [])
+          .map((c) => siteNameById.get(c.site_id))
+          .filter((n): n is string => Boolean(n)),
+      ),
+    ].sort(),
+  }))
 
   return (
     <>

@@ -38,7 +38,7 @@ const SYNC_META: Record<
 }
 
 type Site = { id: string; name: string }
-type Product = { id: string; name: string }
+type Product = { id: string; name: string; sites?: string[] }
 
 const UOM_OPTIONS = ["lb", "oz", "g", "kg"]
 // Operational convention (matches the to_grams DB helper): 1 oz = 28 g, 1 lb = 448 g.
@@ -110,7 +110,15 @@ export function IntakeFlow({
 
   const previewGrams = toGrams(Number(qty), uom)
   const productOptions = useMemo(
-    () => products.map((p) => ({ value: p.id, label: p.name })),
+    () =>
+      products.map((p) => {
+        const sites = p.sites?.length ? p.sites.join(", ") : ""
+        return {
+          value: p.id,
+          label: sites ? `${p.name}  ·  ${sites}` : p.name,
+          keywords: sites,
+        }
+      }),
     [products],
   )
 

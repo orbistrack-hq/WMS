@@ -84,9 +84,8 @@ begin
        where id = v_child;
     end;
     update public.products set name = v_name, is_active = true where id = v_product;
-    return query select v_child, false, v_seeded;
-    return;
-  end if;
+    v_created := false;
+  else
 
   -- 2. Resolve the shared strain parent: an existing product with this exact
   --    name that already holds a weight child (any site). Else create it.
@@ -144,6 +143,7 @@ begin
       returning id into v_child;
     end;
     v_created := true;
+  end if;
   end if;
 
   -- Pull store stock into WMS on_hand (logged; reservations preserved).

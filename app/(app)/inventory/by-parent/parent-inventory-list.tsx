@@ -2,7 +2,7 @@
 
 import { useState } from "react"
 import Link from "next/link"
-import { ChevronDown, ChevronRight } from "lucide-react"
+import { ChevronDown, ChevronRight, MapPin } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Card } from "@/components/ui/card"
@@ -95,16 +95,16 @@ export function ParentInventoryList({ parents }: { parents: ParentGroup[] }) {
               )}
               <div className="min-w-0 flex-1">
                 <div className="truncate font-medium">{p.product_name}</div>
-                <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
+                <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                  {p.sites.map((site) => (
+                    <Badge key={site} variant="outline" className="gap-1">
+                      <MapPin className="size-3 text-muted-foreground" />
+                      {site}
+                    </Badge>
+                  ))}
                   <Badge variant="secondary">
                     {p.weightCount} weight{p.weightCount === 1 ? "" : "s"}
                   </Badge>
-                  <Badge variant="outline">
-                    {p.sites.length} site{p.sites.length === 1 ? "" : "s"}
-                  </Badge>
-                  <span className="text-xs text-muted-foreground">
-                    {p.sites.join(" · ")}
-                  </span>
                 </div>
               </div>
               <dl className="hidden shrink-0 gap-4 text-right text-sm sm:flex">

@@ -2,7 +2,7 @@
 -- Verifies admin gating, dry-run is a no-op, clean re-parenting + weight set,
 -- emptied-parent deactivation, and collision skip+report (numbers differ).
 begin;
-select plan(13);
+select plan(14);
 
 \set MAIN '''11111111-1111-1111-1111-111111111111'''
 \set PA '''f0000000-0000-0000-0000-00000000000a'''
