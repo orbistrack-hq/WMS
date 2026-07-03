@@ -1,9 +1,10 @@
 import Link from "next/link"
-import { Boxes } from "lucide-react"
+import { Boxes, Layers } from "lucide-react"
 
 import { createClient } from "@/lib/supabase/server"
 import { PageHeader } from "@/components/page-header"
 import { Badge } from "@/components/ui/badge"
+import { buttonVariants } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import {
   Table,
@@ -80,6 +81,14 @@ export default async function InventoryPage({
       <PageHeader
         title="Inventory"
         description="Real-time stock per child SKU per location — available vs. reserved."
+        action={
+          <Link
+            href="/inventory/by-parent"
+            className={buttonVariants({ variant: "outline", size: "sm" })}
+          >
+            <Layers /> Group by parent
+          </Link>
+        }
       />
 
       <InventoryFilters sites={sites ?? []} />
