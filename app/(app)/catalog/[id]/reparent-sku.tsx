@@ -39,13 +39,14 @@ export function ReparentSku({
 
   const [query, setQuery] = useState("")
   const [results, setResults] = useState<ProductSearchResult[]>([])
-  const [searching, setSearching] = useState(false)
+  // Starts true so the first (on-mount) load shows the searching state.
+  const [searching, setSearching] = useState(true)
   const [selected, setSelected] = useState<ProductSearchResult | null>(null)
 
   // Debounced search. Empty query lists the first products alphabetically.
+  // `selected`/`searching` are reset in the input handler (not here) to avoid a
+  // synchronous setState in the effect body (react-hooks/set-state-in-effect).
   useEffect(() => {
-    setSelected(null)
-    setSearching(true)
     const handle = setTimeout(async () => {
       const res = await searchProducts(query, productId)
       if (res.ok) setResults(res.products)
@@ -96,7 +97,11 @@ export function ReparentSku({
         <Input
           autoFocus
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => {
+            setSelected(null)
+            setSearching(true)
+            setQuery(e.target.value)
+          }}
           placeholder="Search products by name…"
           className="pl-8"
         />

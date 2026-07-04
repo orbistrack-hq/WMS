@@ -49,7 +49,6 @@ export default async function DashboardPage() {
     packingRes,
     awaitingRes,
     fulfilledRes,
-    holdRes,
     oosRes,
     invValueRes,
     shippingRes,
@@ -59,7 +58,6 @@ export default async function DashboardPage() {
     baseOrders().in("status", ["created", "picking"]),
     baseOrders().eq("status", "packed"),
     baseOrders().eq("status", "fulfilled").gte("fulfilled_at", today),
-    baseOrders().eq("on_hold", true).in("status", ["created", "picking", "packed"]),
     supabase
       .from("inventory_levels")
       .select("child_sku_id", { count: "exact", head: true })

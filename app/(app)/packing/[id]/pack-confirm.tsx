@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useRef, useState, useTransition } from "react"
+import { useEffect, useMemo, useRef, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
 import {
@@ -56,7 +56,11 @@ export function PackConfirm({
     text: string
   } | null>(null)
   const scannedRef = useRef(scanned)
-  scannedRef.current = scanned
+  // Mirror the latest scanned map into a ref for the scan handler, updated in an
+  // effect rather than during render (react-hooks/refs).
+  useEffect(() => {
+    scannedRef.current = scanned
+  }, [scanned])
 
   // Packing is gated first on picking, then on scanning every unit. With
   // scanning hidden, the scan gate drops away and packing is allowed once

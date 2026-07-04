@@ -80,7 +80,8 @@ function MergePanel({
 
   const [query, setQuery] = useState("")
   const [results, setResults] = useState<ProductSearchResult[]>([])
-  const [searching, setSearching] = useState(false)
+  // Starts true so the first (on-mount) load shows the searching state.
+  const [searching, setSearching] = useState(true)
 
   // Chosen losers, keyed by id so selection survives re-searches.
   const [selected, setSelected] = useState<Map<string, ProductSearchResult>>(
@@ -89,8 +90,9 @@ function MergePanel({
   const [preview, setPreview] = useState<MergePreview | null>(null)
 
   // Debounced search; selecting/searching invalidates any stale preview.
+  // `searching` is set in the input handler (not here) to avoid a synchronous
+  // setState in the effect body (react-hooks/set-state-in-effect).
   useEffect(() => {
-    setSearching(true)
     const handle = setTimeout(async () => {
       const res = await searchProducts(query, survivorId)
       if (res.ok) setResults(res.products)
@@ -175,7 +177,10 @@ function MergePanel({
         <Input
           autoFocus
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => {
+            setSearching(true)
+            setQuery(e.target.value)
+          }}
           placeholder="Search products to merge in…"
           className="pl-8"
         />

@@ -50,6 +50,29 @@ const num = (v: number | string | null | undefined) => Number(v ?? 0)
 const pct = (part: number, whole: number) =>
   whole === 0 ? "—" : `${((part / whole) * 100).toFixed(1)}%`
 
+// Declared at module scope (not inside ReportsPage) so it isn't re-created on
+// every render — react-hooks/static-components. Takes a ready-made href and
+// active flag instead of closing over qs()/bsort.
+function SortHead({
+  label,
+  href,
+  active,
+}: {
+  label: string
+  href: string
+  active: boolean
+}) {
+  return (
+    <Link
+      href={href}
+      className="inline-flex items-center justify-end gap-1 hover:text-foreground"
+    >
+      {label}
+      {active ? <ArrowDown className="size-3" /> : null}
+    </Link>
+  )
+}
+
 export default async function ReportsPage({
   searchParams,
 }: {
@@ -239,15 +262,6 @@ export default async function ReportsPage({
     next.set("bsort", key)
     return `?${next.toString()}`
   }
-  const SortHead = ({ label, sortKey }: { label: string; sortKey: string }) => (
-    <Link
-      href={qs(sortKey)}
-      className="inline-flex items-center justify-end gap-1 hover:text-foreground"
-    >
-      {label}
-      {bsort === sortKey ? <ArrowDown className="size-3" /> : null}
-    </Link>
-  )
 
   return (
     <>
@@ -327,16 +341,28 @@ export default async function ReportsPage({
                     <TableHead>{dim === "site" ? "Site" : "Channel"}</TableHead>
                     <TableHead className="text-right">Orders</TableHead>
                     <TableHead className="text-right">
-                      <SortHead label="Revenue" sortKey="revenue" />
+                      <SortHead
+                        label="Revenue"
+                        href={qs("revenue")}
+                        active={bsort === "revenue"}
+                      />
                     </TableHead>
                     <TableHead className="text-right">Product COGS</TableHead>
                     <TableHead className="text-right">Pkg + ship</TableHead>
                     <TableHead className="text-right">Landed cost</TableHead>
                     <TableHead className="text-right">
-                      <SortHead label="Net profit" sortKey="net_profit" />
+                      <SortHead
+                        label="Net profit"
+                        href={qs("net_profit")}
+                        active={bsort === "net_profit"}
+                      />
                     </TableHead>
                     <TableHead className="text-right">
-                      <SortHead label="Net margin" sortKey="margin" />
+                      <SortHead
+                        label="Net margin"
+                        href={qs("margin")}
+                        active={bsort === "margin"}
+                      />
                     </TableHead>
                   </TableRow>
                 </TableHeader>

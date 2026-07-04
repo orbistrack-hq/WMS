@@ -80,14 +80,19 @@ export function Combobox({
     return () => document.removeEventListener("mousedown", onDown)
   }, [open])
 
-  // Focus search on open; clear query on close.
+  // Focus search on open; clear query on close. The state updates run inside
+  // the timer (not synchronously in the effect body) to satisfy
+  // react-hooks/set-state-in-effect.
   React.useEffect(() => {
-    if (open) {
-      setActive(0)
-      const t = setTimeout(() => inputRef.current?.focus(), 0)
-      return () => clearTimeout(t)
-    }
-    setQuery("")
+    const t = setTimeout(() => {
+      if (open) {
+        setActive(0)
+        inputRef.current?.focus()
+      } else {
+        setQuery("")
+      }
+    }, 0)
+    return () => clearTimeout(t)
   }, [open])
 
   // Keep the highlighted row in view.
@@ -128,16 +133,20 @@ export function Combobox({
     }
   }
 
+  const listboxId = React.useId()
+
   return (
     <div ref={rootRef} className={cn("relative", className)}>
       <button
         type="button"
+        role="combobox"
         id={id}
         disabled={disabled}
         aria-label={ariaLabel}
         aria-invalid={ariaInvalid}
         aria-haspopup="listbox"
         aria-expanded={open}
+        aria-controls={listboxId}
         onClick={() => setOpen((o) => !o)}
         onKeyDown={onKeyDown}
         className="flex h-8 w-full min-w-0 items-center justify-between gap-2 rounded-lg border border-input bg-transparent py-1 pr-2.5 pl-2.5 text-base transition-colors outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:cursor-not-allowed disabled:bg-input/50 disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 md:text-sm dark:bg-input/30"
@@ -182,6 +191,7 @@ export function Combobox({
           ) : (
             <ul
               ref={listRef}
+              id={listboxId}
               role="listbox"
               className="max-h-60 overflow-y-auto p-1"
             >
