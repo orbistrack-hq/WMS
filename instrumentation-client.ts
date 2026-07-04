@@ -10,8 +10,11 @@ Sentry.init({
   // Add optional integrations for additional features
   integrations: [Sentry.replayIntegration()],
 
-  // Define how likely traces are sampled. Adjust this value in production, or use tracesSampler for greater control.
-  tracesSampleRate: 1,
+  // Distinguish production / preview / local in the Sentry UI. Vercel exposes NEXT_PUBLIC_VERCEL_ENV to the browser.
+  environment: process.env.NEXT_PUBLIC_VERCEL_ENV ?? process.env.NODE_ENV,
+
+  // Sample 10% of traces in production to conserve quota; full sampling locally.
+  tracesSampleRate: process.env.NODE_ENV === "production" ? 0.1 : 1,
   // Enable logs to be sent to Sentry
   enableLogs: true,
 
