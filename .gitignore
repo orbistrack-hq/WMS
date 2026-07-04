@@ -17,4 +17,11 @@ node_modules
 .temp
 # Sentry
 .env.sentry-build-plugin
-.sentry-build-plugin
+
+# Playwright / E2E
+/test-results/
+/playwright-report/
+/playwright/.cache/
+e2e/.auth/
+e2e/.data/
+.env.e2e
