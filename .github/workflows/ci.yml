@@ -63,9 +63,36 @@ jobs:
       - name: Run Vitest
         run: pnpm test
 
+  migration-roundtrip:
+    name: Migration round-trip (reversibility)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install psql client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Verify every migration reverses cleanly
+        env:
+          ROUNDTRIP_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+        run: python3 supabase/tests/roundtrip/roundtrip.py
+
   deploy-migrations:
     name: Deploy migrations to production
-    needs: [db-tests, unit-tests]
+    needs: [db-tests, unit-tests, migration-roundtrip]
     # Only on a real merge to main — never on PRs, and only if the tests passed.
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
