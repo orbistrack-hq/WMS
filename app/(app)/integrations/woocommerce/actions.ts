@@ -277,6 +277,12 @@ export async function syncProducts(connectionId: string): Promise<SyncResult> {
   const base = `${creds.source}/wp-json/wc/v3`
   const auth = { Authorization: authHeader(creds.key, creds.secret) }
   const supabase = await createClient()
+  // Catalog write goes through the service role (like the order-import path):
+  // the parent product is created before its child SKU exists, so under the
+  // site-scoped products_read policy a non-operator caller's user client would
+  // be rejected on the parent's RETURNING. loadCreds already authorized the
+  // caller for this connection's site via an RLS store_connections read.
+  const admin = createAdminClient()
 
   const totals = {
     products: 0,
@@ -319,7 +325,7 @@ export async function syncProducts(connectionId: string): Promise<SyncResult> {
           }
         }
 
-        const res = await importWooProduct(supabase, creds.site_id, product, {
+        const res = await importWooProduct(admin, creds.site_id, product, {
           variations,
           syncInventory: true,
         })

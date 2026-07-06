@@ -345,7 +345,8 @@ export async function syncProducts(connectionId: string): Promise<SyncResult> {
 
   // Secret read goes through the service role; the connection select above (user
   // client, RLS) is what authorizes the caller for this connection's site.
-  const { data: secret } = await createAdminClient()
+  const admin = createAdminClient()
+  const { data: secret } = await admin
     .from("store_secrets")
     .select("access_token")
     .eq("connection_id", connectionId)
@@ -419,8 +420,13 @@ export async function syncProducts(connectionId: string): Promise<SyncResult> {
   }
   let firstError: string | undefined
   for (const product of products) {
+    // Catalog write goes through the service role (like the order-import path):
+    // the parent product is created before its child SKU exists, so under the
+    // site-scoped products_read policy a non-operator caller's user client would
+    // be rejected on the parent's RETURNING. The caller was already authorized
+    // for this site by the RLS store_connections read above.
     const res = await importShopifyProduct(
-      supabase,
+      admin,
       conn.site_id as string,
       product,
       { costByInventoryItemId, syncInventory: true },
