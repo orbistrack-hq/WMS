@@ -1,11 +1,14 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useMemo, useState, useTransition } from "react"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
 import { ArrowLeft, Check, PackageCheck, Printer } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+
+import { packGroup } from "../actions"
 
 export type WaveAlloc = {
   groupId: string
@@ -52,6 +55,51 @@ export function WaveView({
 }) {
   const [mode, setMode] = useState<Mode>("route")
   const [gathered, setGathered] = useState<Set<string>>(new Set())
+
+  // Confirm-packed (status only): mark each group packed without leaving the
+  // wave. Packaging (box/label/jars) is still recorded per group on its pack
+  // screen. Packed groups drop out of the wave on the next server refresh.
+  const router = useRouter()
+  const [packed, setPacked] = useState<Set<string>>(new Set())
+  const [packingId, setPackingId] = useState<string | null>(null)
+  const [packError, setPackError] = useState<string | null>(null)
+  const [isPacking, startPacking] = useTransition()
+
+  function confirmPacked(groupId: string) {
+    setPackError(null)
+    setPackingId(groupId)
+    startPacking(async () => {
+      const res = await packGroup(groupId)
+      setPackingId(null)
+      if (!res.ok) {
+        setPackError(res.error)
+        return
+      }
+      setPacked((prev) => new Set(prev).add(groupId))
+    })
+  }
+
+  function confirmAllPacked() {
+    setPackError(null)
+    startPacking(async () => {
+      // Derive group ids from the `rows` prop (not the memoized byOrder) so this
+      // handler doesn't close over a memoized value.
+      const ids = [
+        ...new Set(rows.flatMap((r) => r.allocations.map((a) => a.groupId))),
+      ].filter((g) => !packed.has(g))
+      const next = new Set(packed)
+      for (const g of ids) {
+        const res = await packGroup(g)
+        if (!res.ok) {
+          setPackError(res.error)
+          break
+        }
+        next.add(g)
+      }
+      setPacked(next)
+      router.refresh()
+    })
+  }
 
   const keyOf = (r: WaveRow, i: number) => r.childSkuId ?? `row-${i}`
 
@@ -242,6 +290,26 @@ export function WaveView({
       {/* SORT: put-wall — what each order gets from the gathered stock. */}
       {mode === "sort" ? (
         <div className="flex flex-col gap-4">
+          {byOrder.length > 0 ? (
+            <div className="no-print flex items-center justify-between gap-2">
+              <p className="text-sm text-muted-foreground">
+                Confirm each group as you finish sorting it.
+              </p>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={isPacking}
+                onClick={confirmAllPacked}
+              >
+                Confirm all packed
+              </Button>
+            </div>
+          ) : null}
+          {packError ? (
+            <p className="no-print text-sm whitespace-pre-line text-destructive">
+              {packError}
+            </p>
+          ) : null}
           {byOrder.map((o) => (
             <div key={o.orderNumber} className="rounded-lg border p-3">
               <div className="mb-2 flex items-center gap-2">
@@ -249,12 +317,30 @@ export function WaveView({
                 <span className="truncate text-sm text-muted-foreground">
                   {o.groupLabel}
                 </span>
-                <Link
-                  href={`/packing/${o.groupId}`}
-                  className="no-print ml-auto inline-flex shrink-0 items-center gap-1 text-sm font-medium text-primary hover:underline"
-                >
-                  <PackageCheck className="size-4" /> Pack
-                </Link>
+                {packed.has(o.groupId) ? (
+                  <Badge variant="success" className="no-print ml-auto shrink-0">
+                    <Check className="size-3.5" /> Packed
+                  </Badge>
+                ) : (
+                  <div className="no-print ml-auto flex shrink-0 items-center gap-2">
+                    <Link
+                      href={`/packing/${o.groupId}`}
+                      className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+                    >
+                      <PackageCheck className="size-4" /> Pack
+                    </Link>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={isPacking && packingId === o.groupId}
+                      onClick={() => confirmPacked(o.groupId)}
+                    >
+                      {isPacking && packingId === o.groupId
+                        ? "Confirming…"
+                        : "Confirm packed"}
+                    </Button>
+                  </div>
+                )}
               </div>
               <ul className="flex flex-col gap-1 text-sm">
                 {o.items.map((it, j) => (

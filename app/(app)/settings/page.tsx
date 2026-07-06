@@ -1,5 +1,5 @@
 import Link from "next/link"
-import { Box, Building2, FolderTree, Store, UserCircle } from "lucide-react"
+import { Box, Building2, FolderTree, ShoppingCart, Store, UserCircle } from "lucide-react"
 
 import { createClient } from "@/lib/supabase/server"
 import { PageHeader } from "@/components/page-header"
@@ -61,6 +61,13 @@ export default async function SettingsPage() {
       description: "Connect stores, sync products, and import orders.",
       href: "/integrations/shopify",
       icon: Store,
+      adminOnly: false,
+    },
+    {
+      title: "WooCommerce",
+      description: "Connect WooCommerce stores and import their orders.",
+      href: "/integrations/woocommerce",
+      icon: ShoppingCart,
       adminOnly: false,
     },
   ]

@@ -85,10 +85,23 @@ def verify(psql, uri):
             if not missing: print("  OK all rollbacks applied cleanly")
 
     print("\nRESIDUE: public objects remaining after full rollback")
-    q = ("select 'table '||tablename from pg_tables where schemaname='public' "
-         "union all select 'view '||viewname from pg_views where schemaname='public' "
-         "union all select 'func '||p.proname from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' "
-         "union all select 'type '||t.typname from pg_type t join pg_namespace n on n.oid=t.typnamespace where n.nspname='public' and t.typtype='e'")
+    # Count only MIGRATION-created objects. Objects owned by an extension
+    # (pg_depend.deptype='e') — e.g. pgcrypto's functions from `create extension`
+    # in 0001, which no down-migration reverses by design — are not residue.
+    ext = "and not exists (select 1 from pg_depend d where d.objid = %s and d.deptype = 'e')"
+    q = (
+        "select 'table '||c.relname from pg_class c join pg_namespace n on n.oid=c.relnamespace "
+        "  where n.nspname='public' and c.relkind in ('r','p') " + (ext % "c.oid") +
+        " union all "
+        "select 'view '||c.relname from pg_class c join pg_namespace n on n.oid=c.relnamespace "
+        "  where n.nspname='public' and c.relkind='v' " + (ext % "c.oid") +
+        " union all "
+        "select 'func '||p.proname from pg_proc p join pg_namespace n on n.oid=p.pronamespace "
+        "  where n.nspname='public' " + (ext % "p.oid") +
+        " union all "
+        "select 'type '||t.typname from pg_type t join pg_namespace n on n.oid=t.typnamespace "
+        "  where n.nspname='public' and t.typtype='e' " + (ext % "t.oid")
+    )
     r = subprocess.run([psql, uri, "-tAc", q], capture_output=True, text=True)
     leftovers = [x for x in r.stdout.strip().splitlines() if x]
     if leftovers:

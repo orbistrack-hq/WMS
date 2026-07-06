@@ -272,3 +272,44 @@ export async function getAllocationSyncStatus(
   })
   return { ok: true, rows }
 }
+
+// ---- Undo: reverse an allocation or an intake (migration 0034) -------------
+// Both are admin/operator-guarded in the DB. A business-rule block (e.g. units
+// already reserved, or grams already allocated out) comes back as check_violation
+// (23514) carrying a friendly message, which rpcError() surfaces verbatim.
+
+export async function reverseAllocation(
+  allocationId: string,
+): Promise<Result<{ restoredGrams: number; childrenReversed: number }>> {
+  if (!allocationId) return { ok: false, error: "No allocation specified." }
+  const supabase = await createClient()
+  const { data, error } = await supabase.rpc("reverse_allocation", {
+    p_allocation_id: allocationId,
+  })
+  if (error) return { ok: false, error: rpcError(error) }
+  // Reversal lowered each child's available -> push the correction downstream.
+  await kickOutboundDrain()
+  const r = data as { restored_grams: number; children_reversed: number }
+  return {
+    ok: true,
+    restoredGrams: Number(r.restored_grams),
+    childrenReversed: Number(r.children_reversed),
+  }
+}
+
+export async function reverseIntake(
+  ledgerId: string,
+): Promise<Result<{ removedGrams: number; onHandGrams: number }>> {
+  if (!ledgerId) return { ok: false, error: "No intake entry specified." }
+  const supabase = await createClient()
+  const { data, error } = await supabase.rpc("reverse_intake", {
+    p_ledger_id: ledgerId,
+  })
+  if (error) return { ok: false, error: rpcError(error) }
+  const r = data as { removed_grams: number; on_hand_grams: number }
+  return {
+    ok: true,
+    removedGrams: Number(r.removed_grams),
+    onHandGrams: Number(r.on_hand_grams),
+  }
+}

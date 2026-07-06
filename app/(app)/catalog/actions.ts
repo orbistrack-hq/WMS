@@ -492,3 +492,34 @@ export async function deleteCategory(id: string): Promise<ActionResult> {
   revalidateCatalog()
   return { ok: true }
 }
+
+// ---- Admin-only catalog delete (migration 0035) ---------------------------
+// Hard delete for genuine mistakes; the DB blocks anything with history and
+// returns a clear message (check_violation) which dbError() surfaces. The admin
+// gate is enforced in the DB too — the UI only hides the button for non-admins.
+
+export async function deleteChildSku(
+  id: string,
+  productId: string,
+): Promise<ActionResult<{ sku: string | null }>> {
+  if (!id) return { ok: false, error: "No SKU specified." }
+  const supabase = await createClient()
+  const { data, error } = await supabase.rpc("delete_child_sku", { p_id: id })
+  if (error) return { ok: false, error: dbError(error) }
+  revalidatePath(`/catalog/${productId}`)
+  revalidatePath("/catalog")
+  const r = data as { sku: string | null }
+  return { ok: true, sku: r?.sku ?? null }
+}
+
+export async function deleteProduct(
+  id: string,
+): Promise<ActionResult<{ name: string | null }>> {
+  if (!id) return { ok: false, error: "No product specified." }
+  const supabase = await createClient()
+  const { data, error } = await supabase.rpc("delete_product", { p_id: id })
+  if (error) return { ok: false, error: dbError(error) }
+  revalidatePath("/catalog")
+  const r = data as { name: string | null }
+  return { ok: true, name: r?.name ?? null }
+}
