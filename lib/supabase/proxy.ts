@@ -31,15 +31,21 @@ export async function updateSession(request: NextRequest) {
     },
   )
 
-  // Do not run code between createServerClient and
-  // supabase.auth.getUser(). A simple mistake could make it very hard to debug
-  // issues with users being randomly logged out.
-
-  // IMPORTANT: If you remove getUser() and you use server-side rendering
-  // with the Supabase client, your users may be randomly logged out.
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
+  // Do not run code between createServerClient and this auth call. A simple
+  // mistake could make it very hard to debug issues with users being randomly
+  // logged out.
+  //
+  // getClaims() validates the session and refreshes an expired token (it reads
+  // the session internally, which single-flights a refresh and re-writes the
+  // cookies via setAll above) — so it preserves the session-refresh behaviour
+  // that getUser() provided, but verifies the JWT locally instead of making a
+  // network round-trip to the Auth server when asymmetric signing keys are
+  // enabled. It falls back to a network getUser() only for legacy HS256 tokens.
+  //
+  // IMPORTANT: If you remove this call and you use server-side rendering with
+  // the Supabase client, your users may be randomly logged out.
+  const { data: claimsData } = await supabase.auth.getClaims()
+  const user = claimsData?.claims ?? null
 
   // Authenticated app routes — redirect to login if there is no session.
   const protectedPrefixes = [

@@ -9,11 +9,16 @@ export default async function AppLayout({
   children: React.ReactNode
 }) {
   const supabase = await createClient()
-  const { data, error } = await supabase.auth.getUser()
+  // Verify the JWT locally (no Auth-server round-trip when asymmetric signing
+  // keys are enabled). Middleware has already gated this route, so this is the
+  // identity lookup for the shell, not a second network validation.
+  const { data, error } = await supabase.auth.getClaims()
 
-  if (error || !data?.user) {
+  if (error || !data?.claims) {
     redirect("/auth/login")
   }
 
-  return <AppShell userEmail={data.user.email ?? ""}>{children}</AppShell>
+  const email = typeof data.claims.email === "string" ? data.claims.email : ""
+
+  return <AppShell userEmail={email}>{children}</AppShell>
 }

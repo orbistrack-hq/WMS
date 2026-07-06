@@ -60,11 +60,10 @@ export default async function ProductDetailPage({
   const { id } = await params
   const supabase = await createClient()
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  const { data: me } = user
-    ? await supabase.from("profiles").select("role").eq("id", user.id).maybeSingle()
+  const { data: claimsData } = await supabase.auth.getClaims()
+  const userId = claimsData?.claims?.sub ?? null
+  const { data: me } = userId
+    ? await supabase.from("profiles").select("role").eq("id", userId).maybeSingle()
     : { data: null }
   const isAdmin = (me as { role?: string } | null)?.role === "admin"
 

@@ -44,7 +44,7 @@ export default async function PickPage({
       .select("picked_by, holder:profiles(full_name)")
       .eq("group_id", id)
       .maybeSingle(),
-    supabase.auth.getUser(),
+    supabase.auth.getClaims(),
   ])
 
   if (!data) notFound()
@@ -83,7 +83,7 @@ export default async function PickPage({
   const claim = claimRes.data as
     | { picked_by: string | null; holder: { full_name: string | null } | null }
     | null
-  const userId = userRes.data.user?.id ?? null
+  const userId = userRes.data?.claims?.sub ?? null
 
   return (
     <PickRunner

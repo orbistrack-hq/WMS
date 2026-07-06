@@ -23,13 +23,12 @@ const ROLE_LABEL: Record<string, string> = {
 export default async function SettingsPage() {
   const supabase = await createClient()
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
+  const { data: claimsData } = await supabase.auth.getClaims()
+  const claims = claimsData?.claims ?? null
   const { data: profile } = await supabase
     .from("profiles")
     .select("full_name, role")
-    .eq("id", user?.id ?? "")
+    .eq("id", claims?.sub ?? "")
     .maybeSingle()
 
   const role = (profile?.role as string) ?? "operator"
@@ -93,7 +92,7 @@ export default async function SettingsPage() {
             </div>
             <div className="flex items-center justify-between gap-2">
               <span className="text-muted-foreground">Email</span>
-              <span>{user?.email ?? "—"}</span>
+              <span>{(claims?.email as string) ?? "—"}</span>
             </div>
             <div className="flex items-center justify-between gap-2">
               <span className="text-muted-foreground">Role</span>
