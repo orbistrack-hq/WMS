@@ -201,7 +201,9 @@ export function OrderForm({
   return (
     <div className="grid gap-4 lg:grid-cols-3">
       <div className="flex flex-col gap-4 lg:col-span-2">
-        <Card>
+        {/* overflow-visible: let the SKU combobox popover escape the card
+            instead of being clipped by the card's default overflow-hidden. */}
+        <Card className="overflow-visible">
           <CardHeader>
             <CardTitle>Line items</CardTitle>
           </CardHeader>
@@ -339,7 +341,8 @@ export function OrderForm({
       </div>
 
       <div className="flex flex-col gap-4">
-        <Card>
+        {/* overflow-visible: same reason — this card holds a combobox too. */}
+        <Card className="overflow-visible">
           <CardHeader>
             <CardTitle>Order</CardTitle>
           </CardHeader>

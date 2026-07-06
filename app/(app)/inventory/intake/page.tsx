@@ -56,12 +56,20 @@ export default async function IntakePage() {
             automatically.
           </p>
         </div>
-        <Link
-          href="/inventory/intake/history"
-          className="shrink-0 text-sm font-medium text-primary hover:underline"
-        >
-          Allocation history
-        </Link>
+        <div className="flex shrink-0 flex-col items-end gap-1 text-sm font-medium">
+          <Link
+            href="/inventory/intake/receipts"
+            className="text-primary hover:underline"
+          >
+            Intake receipts
+          </Link>
+          <Link
+            href="/inventory/intake/history"
+            className="text-primary hover:underline"
+          >
+            Allocation history
+          </Link>
+        </div>
       </div>
       <IntakeFlow products={products} sites={sites} />
     </>

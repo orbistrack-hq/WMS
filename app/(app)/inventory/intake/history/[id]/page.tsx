@@ -13,6 +13,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { formatGrams, formatDateTime } from "@/lib/format"
+import { ReverseAllocationButton } from "./reverse-allocation-button"
 
 export const dynamic = "force-dynamic"
 
@@ -43,7 +44,7 @@ export default async function AllocationDetailPage({
     supabase
       .from("allocations")
       .select(
-        "id, total_grams, note, created_at, product:products(name), site:sites(name), actor:profiles(full_name)",
+        "id, total_grams, note, created_at, reversed_at, product:products(name), site:sites(name), actor:profiles(full_name)",
       )
       .eq("id", id)
       .maybeSingle(),
@@ -60,6 +61,7 @@ export default async function AllocationDetailPage({
     total_grams: number | string
     note: string | null
     created_at: string
+    reversed_at: string | null
     product: Named | Named[] | null
     site: Named | Named[] | null
     actor: { full_name: string | null } | { full_name: string | null }[] | null
@@ -147,6 +149,15 @@ export default async function AllocationDetailPage({
                   <span>{a.note}</span>
                 </div>
               ) : null}
+              <div className="border-t border-border pt-3">
+                {a.reversed_at ? (
+                  <p className="text-sm text-muted-foreground">
+                    Reversed on {formatDateTime(a.reversed_at)}
+                  </p>
+                ) : (
+                  <ReverseAllocationButton allocationId={id} />
+                )}
+              </div>
             </CardContent>
           </Card>
         </div>

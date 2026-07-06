@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
-import { AlertCircle, ArrowRightLeft, Pencil, Plus, X } from "lucide-react"
+import { AlertCircle, ArrowRightLeft, Pencil, Plus, Trash2, X } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -19,7 +19,7 @@ import {
 } from "@/components/ui/table"
 import { formatCurrency } from "@/lib/format"
 import { SCANNING_ENABLED } from "@/lib/flags"
-import { createChildSku, updateChildSku } from "../actions"
+import { createChildSku, deleteChildSku, updateChildSku } from "../actions"
 import { ReparentSku } from "./reparent-sku"
 
 export type ChildSku = {
@@ -81,10 +81,12 @@ export function ChildSkuManager({
   productId,
   skus,
   availableSites,
+  isAdmin = false,
 }: {
   productId: string
   skus: ChildSku[]
   availableSites: SiteOption[]
+  isAdmin?: boolean
 }) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
@@ -99,6 +101,25 @@ export function ChildSkuManager({
   const [adding, setAdding] = useState(false)
   const [addSite, setAddSite] = useState(availableSites[0]?.id ?? "")
   const [addDraft, setAddDraft] = useState<Draft>(emptyDraft())
+
+  function handleDelete(s: ChildSku) {
+    if (
+      !window.confirm(
+        `Delete SKU ${s.sku ?? s.id}? This permanently removes it from the catalog. ` +
+          `Blocked if it has any orders, stock movements, or allocations — deactivate those instead.`,
+      )
+    )
+      return
+    setError(null)
+    startTransition(async () => {
+      const res = await deleteChildSku(s.id, productId)
+      if (!res.ok) {
+        setError(res.error)
+        return
+      }
+      router.refresh()
+    })
+  }
 
   function beginEdit(s: ChildSku) {
     setError(null)
@@ -387,6 +408,19 @@ export function ChildSkuManager({
                       >
                         <ArrowRightLeft />
                       </Button>
+                      {isAdmin ? (
+                        <Button
+                          size="icon-sm"
+                          variant="ghost"
+                          aria-label="Delete SKU"
+                          title="Delete SKU (admin)"
+                          className="text-destructive hover:text-destructive"
+                          disabled={isPending}
+                          onClick={() => handleDelete(s)}
+                        >
+                          <Trash2 />
+                        </Button>
+                      ) : null}
                     </div>
                   </TableCell>
                 </TableRow>

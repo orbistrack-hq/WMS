@@ -19,6 +19,7 @@ import {
 } from "@/lib/catalog/types"
 import { ProductForm } from "../product-form"
 import { ChildSkuManager, type ChildSku } from "./child-sku-manager"
+import { DeleteProductButton } from "./delete-product-button"
 import { MergeProducts } from "./merge-products"
 
 export const dynamic = "force-dynamic"
@@ -58,6 +59,14 @@ export default async function ProductDetailPage({
 }) {
   const { id } = await params
   const supabase = await createClient()
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  const { data: me } = user
+    ? await supabase.from("profiles").select("role").eq("id", user.id).maybeSingle()
+    : { data: null }
+  const isAdmin = (me as { role?: string } | null)?.role === "admin"
 
   const [productRes, categoryRes, sitesRes] = await Promise.all([
     supabase
@@ -133,6 +142,7 @@ export default async function ProductDetailPage({
             {pathMap.get(product.category_id) ?? "—"}
           </Badge>
         ) : null}
+        {isAdmin ? <DeleteProductButton productId={product.id} /> : null}
       </div>
 
       <div className="grid gap-4 lg:grid-cols-3">
@@ -146,6 +156,7 @@ export default async function ProductDetailPage({
                 productId={product.id}
                 skus={skus}
                 availableSites={availableSites}
+                isAdmin={isAdmin}
               />
             </CardContent>
           </Card>
