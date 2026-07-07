@@ -9,6 +9,8 @@ import {
   Play,
   Merge,
   AlertCircle,
+  Undo2,
+  RotateCcw,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -17,6 +19,8 @@ import {
   cancelOrder,
   combineOrders,
   fulfillOrder,
+  reopenOrder,
+  returnOrder,
   setStatus,
   toggleHold,
 } from "../actions"
@@ -58,10 +62,43 @@ export function OrderActions({
 
   if (!active) {
     return (
-      <p className="text-sm text-muted-foreground">
-        This order is {STATUS_BADGE[status].label.toLowerCase()} and can no
-        longer change.
-      </p>
+      <div className="flex flex-col gap-3">
+        {error ? (
+          <div className="flex items-start gap-2 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            <AlertCircle className="mt-0.5 size-4 shrink-0" />
+            <span>{error}</span>
+          </div>
+        ) : null}
+        <p className="text-sm text-muted-foreground">
+          This order is {STATUS_BADGE[status].label.toLowerCase()}.
+          {status === "fulfilled"
+            ? " If it bounced back to us, mark it returned to restock it."
+            : status === "returned"
+              ? " Re-open it to ship again — this re-reserves its stock."
+              : " It can no longer change."}
+        </p>
+        {status === "fulfilled" ? (
+          <Button
+            size="sm"
+            variant="outline"
+            className="w-fit"
+            disabled={isPending}
+            onClick={() => run(() => returnOrder(orderId))}
+          >
+            <Undo2 data-icon="inline-start" /> Mark returned
+          </Button>
+        ) : null}
+        {status === "returned" ? (
+          <Button
+            size="sm"
+            className="w-fit"
+            disabled={isPending}
+            onClick={() => run(() => reopenOrder(orderId))}
+          >
+            <RotateCcw data-icon="inline-start" /> Re-open order
+          </Button>
+        ) : null}
+      </div>
     )
   }
 

@@ -118,6 +118,36 @@ export async function cancelOrder(orderId: string): Promise<ActionResult> {
   return { ok: true }
 }
 
+/**
+ * Mark a fulfilled order RETURNED (bounced back to us). Restocks each line to
+ * sellable on_hand; the pick fee/postage stand and consumables are written off
+ * (handled in return_order). Available rose, so push the new levels to stores.
+ */
+export async function returnOrder(orderId: string): Promise<ActionResult> {
+  const supabase = await createClient()
+  const { error } = await supabase.rpc("return_order", { p_order_id: orderId })
+  if (error) return { ok: false, error: rpcError(error) }
+
+  revalidatePath(`/orders/${orderId}`)
+  revalidatePath("/orders")
+  revalidatePath("/inventory")
+  await kickOutboundDrain()
+  return { ok: true }
+}
+
+/** Re-open a returned order (returned → created); re-reserves its stock. */
+export async function reopenOrder(orderId: string): Promise<ActionResult> {
+  const supabase = await createClient()
+  const { error } = await supabase.rpc("reopen_order", { p_order_id: orderId })
+  if (error) return { ok: false, error: rpcError(error) }
+
+  revalidatePath(`/orders/${orderId}`)
+  revalidatePath("/orders")
+  revalidatePath("/inventory")
+  await kickOutboundDrain()
+  return { ok: true }
+}
+
 export async function toggleHold(
   orderId: string,
   onHold: boolean,

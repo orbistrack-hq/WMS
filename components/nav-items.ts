@@ -7,6 +7,7 @@ import {
   PackageCheck,
   FolderTree,
   BarChart3,
+  Undo2,
   Store,
   ShoppingCart,
   Plug,
@@ -83,6 +84,12 @@ export const NAV_TREE: NavEntry[] = [
     href: "/reports",
     icon: BarChart3,
     description: "COGS, landed margin, and sales trends",
+  },
+  {
+    label: "Returns",
+    href: "/reports/returns",
+    icon: Undo2,
+    description: "Bounced orders, restocked and logged per site",
   },
   {
     label: "Integrations",
