@@ -2,21 +2,27 @@
 
 import { useState, type ReactNode } from "react"
 import Link from "next/link"
-import { Package, Menu, X } from "lucide-react"
+import Image from "next/image"
+import { Menu, X } from "lucide-react"
 
 import { SidebarNav } from "@/components/sidebar-nav"
 import { LogoutButton } from "@/components/logout-button"
 
 function Brand() {
   return (
-    <Link href="/dashboard" className="flex items-center gap-2.5 px-5 py-4">
-      <div className="flex size-8 items-center justify-center rounded-md bg-primary text-primary-foreground">
-        <Package className="size-4" />
-      </div>
-      <div className="flex flex-col leading-tight">
-        <span className="text-sm font-semibold">Warehouse</span>
-        <span className="text-xs text-muted-foreground">Management System</span>
-      </div>
+    <Link
+      href="/dashboard"
+      className="flex items-center px-5 py-4"
+      aria-label="OrbisTrack"
+    >
+      <Image
+        src="/orbistrack-wordmark.png"
+        alt="OrbisTrack"
+        width={560}
+        height={113}
+        priority
+        className="h-8 w-auto"
+      />
     </Link>
   )
 }
