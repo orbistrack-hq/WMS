@@ -14,6 +14,7 @@ const line = (over: Partial<PickLine>): PickLine => ({
   barcode: null,
   name: "—",
   qty: 1,
+  gramsPerUnit: null,
   ...over,
 })
 

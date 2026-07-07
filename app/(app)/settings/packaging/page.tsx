@@ -7,7 +7,9 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
+import { JAR_MAX_GRAMS } from "@/lib/packing/packaging-rules"
 import { PackagingManager, type PackagingType } from "./packaging-manager"
+import { PackagingRuleEditor } from "./packaging-rule-editor"
 import {
   PackagingStock,
   type StockLevel,
@@ -20,7 +22,7 @@ export const dynamic = "force-dynamic"
 export default async function PackagingSettingsPage() {
   const supabase = await createClient()
 
-  const [typesRes, sitesRes, levelsRes, adminRes] = await Promise.all([
+  const [typesRes, sitesRes, levelsRes, adminRes, ruleRes] = await Promise.all([
     supabase
       .from("packaging_types")
       // site_id + the owning site's name so each type can be shown as shared vs
@@ -34,7 +36,12 @@ export default async function PackagingSettingsPage() {
       .from("packaging_levels")
       .select("packaging_type_id, site_id, on_hand, reorder_point"),
     supabase.rpc("is_admin"),
+    supabase.from("packaging_rule").select("jar_max_grams").maybeSingle(),
   ])
+
+  const ruleGrams = Number(ruleRes.data?.jar_max_grams)
+  const jarMaxGrams =
+    Number.isFinite(ruleGrams) && ruleGrams > 0 ? ruleGrams : JAR_MAX_GRAMS
 
   const types = (typesRes.data ?? []).map((t) => {
     const site = Array.isArray(t.site) ? t.site[0] : t.site
@@ -75,6 +82,20 @@ export default async function PackagingSettingsPage() {
       />
 
       <div className="flex max-w-2xl flex-col gap-6">
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Packaging rule</CardTitle>
+            <CardDescription>
+              The weight cut-off that decides jar vs. bag when packaging is
+              auto-filled at packing. It only pre-fills the numbers — the packer
+              always confirms.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <PackagingRuleEditor jarMaxGrams={jarMaxGrams} isAdmin={isAdmin} />
+          </CardContent>
+        </Card>
+
         <Card>
           <CardHeader>
             <CardTitle className="text-base">Packaging types</CardTitle>

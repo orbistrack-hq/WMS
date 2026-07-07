@@ -21,6 +21,11 @@ import {
 } from "@/components/ui/table"
 import { STATUS_BADGE, type OrderStatus } from "@/lib/orders/types"
 import { aggregatePickLines, type PickOrderRow } from "@/lib/packing/aggregate"
+import {
+  JAR_MAX_GRAMS,
+  derivePackagingForGroup,
+  suggestedPackagingLines,
+} from "@/lib/packing/packaging-rules"
 import type { ShipmentRow, ShipmentStatus } from "@/lib/shipping/types"
 import { PackagingEditor, type UsageLine } from "./packaging-editor"
 import { PackConfirm, type PackScanItem } from "./pack-confirm"
@@ -46,6 +51,7 @@ type GroupDetail = {
         sku: string | null
         bin_location: string | null
         barcode: string | null
+        grams_per_unit: number | string | null
         product: { name: string | null } | null
       } | null
     }[]
@@ -82,7 +88,8 @@ export default async function PackDetailPage({
   const { id } = await params
   const supabase = await createClient()
 
-  const [groupRes, typesRes, pickCompleteRes, operatorRes] = await Promise.all([
+  const [groupRes, typesRes, pickCompleteRes, operatorRes, ruleRes] =
+    await Promise.all([
     supabase
       .from("fulfillment_groups")
       .select(
@@ -91,7 +98,7 @@ export default async function PackDetailPage({
          site:sites(name),
          orders(id, order_number, status,
            order_line_items(id, quantity,
-             child_sku:child_skus(id, sku, bin_location, barcode, product:products(name)))),
+             child_sku:child_skus(id, sku, bin_location, barcode, grams_per_unit, product:products(name)))),
          packaging_usage(id, quantity, unit_cost_snapshot,
            packaging_type:packaging_types(name, kind)),
          shipments(id, carrier, service_level, estimated_cost, actual_cost, status,
@@ -106,7 +113,12 @@ export default async function PackDetailPage({
       .order("kind"),
     supabase.rpc("pick_complete", { p_group_id: id }),
     supabase.rpc("is_operator"),
+    supabase.from("packaging_rule").select("jar_max_grams").maybeSingle(),
   ])
+
+  const ruleGrams = Number(ruleRes.data?.jar_max_grams)
+  const jarMaxGrams =
+    Number.isFinite(ruleGrams) && ruleGrams > 0 ? ruleGrams : JAR_MAX_GRAMS
 
   if (!groupRes.data) notFound()
   const group = groupRes.data as unknown as GroupDetail
@@ -143,6 +155,27 @@ export default async function PackDetailPage({
     kind: t.kind,
     unit_cost: Number(t.unit_cost),
   }))
+
+  // FB-3: seed packaging from the weight rule for a group with nothing recorded
+  // yet. Consumables sum across every order in the group; box + label are one
+  // per group (matching the combined-order "count once" rule). Only surfaced
+  // when no packaging exists, so applying it can never double-count.
+  const derivedPackaging = derivePackagingForGroup(
+    group.orders.flatMap((o) =>
+      o.order_line_items.map((li) => ({
+        gramsPerUnit:
+          li.child_sku?.grams_per_unit == null
+            ? null
+            : Number(li.child_sku.grams_per_unit),
+        qty: li.quantity,
+      })),
+    ),
+    jarMaxGrams,
+  )
+  const suggestedPackaging =
+    usageLines.length === 0
+      ? suggestedPackagingLines(derivedPackaging, packagingTypes)
+      : []
 
   const num = (v: number | string | null) =>
     v === null || v === "" ? null : Number(v)
@@ -265,6 +298,8 @@ export default async function PackDetailPage({
                 groupId={group.id}
                 lines={usageLines}
                 packagingTypes={packagingTypes}
+                suggested={suggestedPackaging}
+                unknownWeightUnits={derivedPackaging.unknownWeightUnits}
               />
             </CardContent>
           </Card>

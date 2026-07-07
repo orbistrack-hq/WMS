@@ -21,8 +21,17 @@ export type PickLineItemRow = {
     sku: string | null
     bin_location: string | null
     barcode: string | null
+    /** Per-unit weight; drives weight-based packaging (FB-3). May be absent. */
+    grams_per_unit?: number | string | null
     product: { name: string | null } | null
   } | null
+}
+
+/** Coerce a Supabase numeric (number | string | null) to a finite number or null. */
+function toGrams(v: number | string | null | undefined): number | null {
+  if (v == null) return null
+  const n = typeof v === "string" ? Number(v) : v
+  return Number.isFinite(n) ? n : null
 }
 
 /** One order within a group, shaped to match the pick-list Supabase select. */
@@ -45,6 +54,8 @@ export type PickLine = {
   barcode: string | null
   name: string
   qty: number
+  /** Per-unit weight in grams, or null when the SKU has no weight set. */
+  gramsPerUnit: number | null
 }
 
 export type AggregatedPick = {
@@ -100,6 +111,7 @@ export function aggregatePickLines(orders: PickOrderRow[]): AggregatedPick {
           barcode: li.child_sku?.barcode ?? null,
           name: li.child_sku?.product?.name ?? "—",
           qty: li.quantity,
+          gramsPerUnit: toGrams(li.child_sku?.grams_per_unit),
         })
       }
     }
@@ -206,6 +218,7 @@ export function aggregateWave(groups: WaveGroupInput[]): AggregatedWave {
             barcode: li.child_sku?.barcode ?? null,
             name: li.child_sku?.product?.name ?? "—",
             qty: li.quantity,
+            gramsPerUnit: toGrams(li.child_sku?.grams_per_unit),
             allocations: [alloc],
           })
         }

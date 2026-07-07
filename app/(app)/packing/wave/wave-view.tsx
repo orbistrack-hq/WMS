@@ -14,6 +14,16 @@ import { formatCurrency } from "@/lib/format"
 
 import { packGroup, recordPackaging, type ActionResult } from "../actions"
 import type { PackagingTypeOption } from "@/lib/packing/aggregate"
+import {
+  derivePackagingForGroup,
+  tallyByWeight,
+  type WeightedUnit,
+} from "@/lib/packing/packaging-rules"
+
+/** "3.5g", "28g" — trims trailing zeros from a numeric(8,2) weight. */
+function formatGrams(g: number | null): string {
+  return g == null ? "No weight" : `${Number(g)}g`
+}
 
 const PACK_KIND_LABEL: Record<string, string> = {
   box: "Box",
@@ -24,9 +34,7 @@ const PACK_KIND_LABEL: Record<string, string> = {
   custom: "Custom",
 }
 
-// Kinds get a qty box by default; box/shipping_label default to 1 per group
-// (never per order), everything else defaults to 0 since it varies per order.
-const DEFAULT_QTY_KINDS = new Set(["box", "shipping_label"])
+// Kind display order for the inline packaging entry (box/label first).
 const KIND_ORDER = [
   "box",
   "shipping_label",
@@ -49,6 +57,7 @@ export type WaveRow = {
   bin: string | null
   name: string
   qty: number
+  gramsPerUnit: number | null
   allocations: WaveAlloc[]
 }
 
@@ -78,6 +87,7 @@ export function WaveView({
   rows,
   packagingTypes,
   existingPackaging,
+  jarMaxGrams,
 }: {
   siteName: string | null
   groupCount: number
@@ -87,6 +97,7 @@ export function WaveView({
   rows: WaveRow[]
   packagingTypes: PackagingTypeOption[]
   existingPackaging: Record<string, number>
+  jarMaxGrams: number
 }) {
   const [mode, setMode] = useState<Mode>("route")
   const [gathered, setGathered] = useState<Set<string>>(new Set())
@@ -112,14 +123,43 @@ export function WaveView({
     [rows],
   )
 
+  // Per-group weighted unit lines, so packaging can be seeded from the weight
+  // rule (FB-3): each row contributes its allocated qty to every group it feeds.
+  const unitsByGroup = useMemo(() => {
+    const m = new Map<string, WeightedUnit[]>()
+    for (const r of rows) {
+      for (const a of r.allocations) {
+        const arr = m.get(a.groupId) ?? []
+        arr.push({ gramsPerUnit: r.gramsPerUnit, qty: a.qty })
+        m.set(a.groupId, arr)
+      }
+    }
+    return m
+  }, [rows])
+
+  // Seed packaging from the weight rule (3.5g → jar + jar label, heavier → bag;
+  // 1 box + 1 label per group). Numbers stay fully editable below. Groups that
+  // already have packaging recorded seed 0 so the wave never double-counts.
   function buildDefaultRow(groupId: string): Record<string, PackField> {
     const hasExisting = (existingPackaging[groupId] ?? 0) > 0
+    const d = derivePackagingForGroup(
+      unitsByGroup.get(groupId) ?? [],
+      jarMaxGrams,
+    )
+    const seed: Record<string, number> = {
+      box: d.box,
+      shipping_label: d.shipping_label,
+      jar: d.jar,
+      jar_label: d.jar_label,
+      vacuum_bag: d.vacuum_bag,
+      custom: 0,
+    }
     const row: Record<string, PackField> = {}
     for (const kind of KIND_ORDER) {
       const options = typesByKind.get(kind)
       if (!options || options.length === 0) continue
-      const useDefault = DEFAULT_QTY_KINDS.has(kind) && !hasExisting
-      row[kind] = { typeId: options[0].id, qty: useDefault ? "1" : "0" }
+      const qty = hasExisting ? 0 : (seed[kind] ?? 0)
+      row[kind] = { typeId: options[0].id, qty: String(qty) }
     }
     return row
   }
@@ -203,6 +243,26 @@ export function WaveView({
     })
   }
 
+  // Weight breakdown across the whole wave (printable). Counts units per weight
+  // and the packaging those weights imply: jars for 3.5g, bags for anything
+  // heavier, plus 1 box + 1 label per group.
+  const weightTally = useMemo(
+    () =>
+      tallyByWeight(
+        rows.map((r) => ({ gramsPerUnit: r.gramsPerUnit, qty: r.qty })),
+      ),
+    [rows],
+  )
+  const waveJars = weightTally
+    .filter((t) => t.grams != null && t.grams <= jarMaxGrams)
+    .reduce((n, t) => n + t.units, 0)
+  const waveBags = weightTally
+    .filter((t) => t.grams != null && t.grams > jarMaxGrams)
+    .reduce((n, t) => n + t.units, 0)
+  const waveUnknown = weightTally
+    .filter((t) => t.grams == null)
+    .reduce((n, t) => n + t.units, 0)
+
   const keyOf = (r: WaveRow, i: number) => r.childSkuId ?? `row-${i}`
 
   function toggle(key: string) {
@@ -277,6 +337,43 @@ export function WaveView({
         <div className="no-print rounded-lg bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">
           {droppedCount} selected group{droppedCount === 1 ? "" : "s"} dropped —
           no longer open for picking.
+        </div>
+      ) : null}
+
+      {/* Weight breakdown + implied packaging — printed with the wave sheet. */}
+      {weightTally.length > 0 ? (
+        <div className="rounded-lg border p-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold">Weight breakdown</h2>
+            <span className="text-xs text-muted-foreground">
+              {totalUnits} units
+            </span>
+          </div>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {weightTally.map((t) => (
+              <span
+                key={String(t.grams)}
+                className="rounded bg-muted px-2 py-0.5 text-sm tabular-nums"
+              >
+                {formatGrams(t.grams)} × {t.units}
+              </span>
+            ))}
+          </div>
+          <div className="mt-3 border-t pt-2 text-sm">
+            <span className="text-muted-foreground">Packaging needed: </span>
+            <span className="tabular-nums">
+              {waveJars} jar{waveJars === 1 ? "" : "s"} · {waveBags} bag
+              {waveBags === 1 ? "" : "s"} · {groupCount} box
+              {groupCount === 1 ? "" : "es"} · {groupCount} label
+              {groupCount === 1 ? "" : "s"}
+            </span>
+            {waveUnknown > 0 ? (
+              <span className="ml-1 text-amber-700 dark:text-amber-400">
+                · {waveUnknown} unit{waveUnknown === 1 ? "" : "s"} with no weight
+                (add packaging by hand)
+              </span>
+            ) : null}
+          </div>
         </div>
       ) : null}
 

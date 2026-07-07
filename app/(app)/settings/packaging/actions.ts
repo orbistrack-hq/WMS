@@ -118,6 +118,41 @@ export async function deletePackagingType(id: string): Promise<ActionResult> {
 }
 
 // ---------------------------------------------------------------------------
+// Weight→packaging rule (FB-3, migration 0040). One global threshold: units at
+// or below it are jarred, heavier ones bagged. Admin-only (enforced by RLS on
+// packaging_rule); a non-admin update simply affects no rows.
+// ---------------------------------------------------------------------------
+
+export async function updatePackagingRule(
+  jarMaxGrams: number,
+): Promise<ActionResult> {
+  if (!Number.isFinite(jarMaxGrams) || jarMaxGrams <= 0)
+    return { ok: false, error: "Threshold must be greater than zero." }
+
+  const supabase = await createClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+
+  // Single config row; update all (there is exactly one). RLS gates to admins.
+  const { data, error } = await supabase
+    .from("packaging_rule")
+    .update({ jar_max_grams: jarMaxGrams, updated_by: user?.id ?? null })
+    .eq("singleton", true)
+    .select("id")
+  if (error) return { ok: false, error: err(error) }
+  if (!data || data.length === 0)
+    return {
+      ok: false,
+      error: "Only an admin can change the packaging rule.",
+    }
+
+  revalidate()
+  revalidatePath("/packing")
+  return { ok: true }
+}
+
+// ---------------------------------------------------------------------------
 // Per-site packaging stock. All writes go through the SECURITY DEFINER guards
 // (receive_packaging / adjust_packaging / set_packaging_reorder_point); direct
 // table writes are revoked from the API role.

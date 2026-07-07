@@ -10,6 +10,7 @@ import {
   type PickOrderRow,
   type WaveGroupInput,
 } from "@/lib/packing/aggregate"
+import { JAR_MAX_GRAMS } from "@/lib/packing/packaging-rules"
 import { WaveView, type WaveRow } from "./wave-view"
 
 export const dynamic = "force-dynamic"
@@ -68,7 +69,7 @@ export default async function WavePage({
   }
 
   const supabase = await createClient()
-  const [groupsRes, typesRes] = await Promise.all([
+  const [groupsRes, typesRes, ruleRes] = await Promise.all([
     supabase
       .from("fulfillment_groups")
       .select(
@@ -77,7 +78,7 @@ export default async function WavePage({
          site:sites(name),
          orders(order_number, status,
            order_line_items(quantity,
-             child_sku:child_skus(id, sku, bin_location, barcode, product:products(name)))),
+             child_sku:child_skus(id, sku, bin_location, barcode, grams_per_unit, product:products(name)))),
          packaging_usage(quantity, unit_cost_snapshot, packaging_type_id)`,
       )
       .in("id", ids)
@@ -87,8 +88,14 @@ export default async function WavePage({
       .select("id, name, kind, unit_cost")
       .eq("is_active", true)
       .order("kind"),
+    supabase.from("packaging_rule").select("jar_max_grams").maybeSingle(),
   ])
   const { data, error } = groupsRes
+
+  // Live jar/bag threshold (FB-3, migration 0040); falls back to the constant.
+  const ruleGrams = Number(ruleRes.data?.jar_max_grams)
+  const jarMaxGrams =
+    Number.isFinite(ruleGrams) && ruleGrams > 0 ? ruleGrams : JAR_MAX_GRAMS
 
   if (error) {
     return <Shell>Could not load the wave: {error.message}</Shell>
@@ -139,6 +146,7 @@ export default async function WavePage({
     bin: l.bin,
     name: l.name,
     qty: l.qty,
+    gramsPerUnit: l.gramsPerUnit,
     allocations: l.allocations.map((a) => ({
       groupId: a.groupId,
       groupLabel: a.groupLabel,
@@ -171,6 +179,7 @@ export default async function WavePage({
       rows={viewRows}
       packagingTypes={packagingTypes}
       existingPackaging={existingPackaging}
+      jarMaxGrams={jarMaxGrams}
     />
   )
 }

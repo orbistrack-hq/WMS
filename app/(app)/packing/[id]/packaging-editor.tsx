@@ -2,7 +2,9 @@
 
 import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
-import { AlertCircle, Plus, Trash2 } from "lucide-react"
+import { AlertCircle, Plus, Trash2, Wand2 } from "lucide-react"
+
+import type { SuggestedPackagingLine } from "@/lib/packing/packaging-rules"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -48,10 +50,16 @@ export function PackagingEditor({
   groupId,
   lines,
   packagingTypes,
+  suggested = [],
+  unknownWeightUnits = 0,
 }: {
   groupId: string
   lines: UsageLine[]
   packagingTypes: PackagingType[]
+  /** Weight-rule seed (FB-3), only when nothing is recorded yet. */
+  suggested?: SuggestedPackagingLine[]
+  /** Units the rule couldn't classify (no weight) — flagged for manual entry. */
+  unknownWeightUnits?: number
 }) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
@@ -96,6 +104,24 @@ export function PackagingEditor({
     run(() => recordPackaging(groupId, addType, q))
   }
 
+  // Record every suggested line (weight rule), then refresh. Sequential so a
+  // failed write surfaces its error and stops rather than half-applying blind.
+  function applySuggested() {
+    setError(null)
+    startTransition(async () => {
+      for (const s of suggested) {
+        const res = await recordPackaging(groupId, s.typeId, s.qty)
+        if (!res.ok) {
+          setError(res.error ?? "Something went wrong.")
+          return
+        }
+      }
+      router.refresh()
+    })
+  }
+
+  const showSuggested = lines.length === 0 && suggested.length > 0
+
   return (
     <div className="flex flex-col gap-3">
       <p className="text-xs text-muted-foreground">
@@ -107,6 +133,35 @@ export function PackagingEditor({
         <div className="flex items-start gap-2 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
           <AlertCircle className="mt-0.5 size-4 shrink-0" />
           <span>{error}</span>
+        </div>
+      ) : null}
+
+      {showSuggested ? (
+        <div className="flex flex-col gap-2 rounded-lg border border-dashed border-primary/40 bg-primary/5 p-3">
+          <div className="flex items-center gap-1.5 text-sm font-medium">
+            <Wand2 className="size-4 text-primary" /> Suggested from weight
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {suggested.map((s) => (
+              <span
+                key={s.kind}
+                className="rounded bg-background px-2 py-0.5 text-sm tabular-nums"
+              >
+                {s.qty} × {KIND_LABEL[s.kind] ?? s.kind}
+              </span>
+            ))}
+          </div>
+          {unknownWeightUnits > 0 ? (
+            <p className="text-xs text-amber-700 dark:text-amber-400">
+              {unknownWeightUnits} unit{unknownWeightUnits === 1 ? "" : "s"} have
+              no weight set — add their jar/bag by hand.
+            </p>
+          ) : null}
+          <div>
+            <Button size="sm" onClick={applySuggested} disabled={isPending}>
+              <Plus data-icon="inline-start" /> Apply suggested
+            </Button>
+          </div>
         </div>
       ) : null}
 
