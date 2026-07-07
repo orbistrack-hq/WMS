@@ -33,7 +33,12 @@ export type PackagingType = {
   kind: string
   unit_cost: number
   is_active: boolean
+  // null = a shared default (admin-managed); non-null = owned by that site.
+  site_id: string | null
+  site_name: string | null
 }
+
+type Site = { id: string; name: string }
 
 const KIND_LABEL: Record<string, string> = {
   box: "Box",
@@ -46,10 +51,13 @@ const KIND_LABEL: Record<string, string> = {
 
 export function PackagingManager({
   types,
-  canManage,
+  isAdmin,
+  sites,
 }: {
   types: PackagingType[]
-  canManage: boolean
+  isAdmin: boolean
+  // Sites the current user can access (RLS-scoped). Drives the owner picker.
+  sites: Site[]
 }) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
@@ -63,6 +71,18 @@ export function PackagingManager({
   const [newName, setNewName] = useState("")
   const [newKind, setNewKind] = useState<string>("box")
   const [newCost, setNewCost] = useState("")
+  // Owner of a new type: "" = shared default (admin only), else a site id.
+  const [newSiteId, setNewSiteId] = useState<string>(
+    isAdmin ? "" : sites[0]?.id ?? "",
+  )
+
+  const accessibleSiteIds = new Set(sites.map((s) => s.id))
+  // A shared default is admin-only; an owned type is manageable by anyone who can
+  // access its site (which, per RLS, is the only reason it's on this list).
+  const canManageRow = (t: PackagingType) =>
+    isAdmin || (t.site_id != null && accessibleSiteIds.has(t.site_id))
+  // Non-admins can only add types they own, so they need at least one site.
+  const canAdd = isAdmin || sites.length > 0
 
   function run(fn: () => Promise<{ ok: boolean; error?: string }>) {
     setError(null)
@@ -107,18 +127,24 @@ export function PackagingManager({
       setError("Name is required.")
       return
     }
+    if (!isAdmin && !newSiteId) {
+      setError("Pick which site owns this type.")
+      return
+    }
     setError(null)
     startTransition(async () => {
       const res = await createPackagingType(
         newName,
         newKind,
         Number(newCost || 0),
+        newSiteId || null,
       )
       if (!res.ok) setError(res.error)
       else {
         setNewName("")
         setNewKind("box")
         setNewCost("")
+        setNewSiteId(isAdmin ? "" : sites[0]?.id ?? "")
         router.refresh()
       }
     })
@@ -207,12 +233,17 @@ export function PackagingManager({
                     </span>
                   </div>
                   <div className="flex items-center gap-1.5">
+                    {t.site_id ? (
+                      <Badge variant="outline">{t.site_name ?? "Site"}</Badge>
+                    ) : (
+                      <Badge variant="muted">Shared</Badge>
+                    )}
                     {t.is_active ? (
                       <Badge variant="success">Active</Badge>
                     ) : (
                       <Badge variant="muted">Inactive</Badge>
                     )}
-                    {canManage ? (
+                    {canManageRow(t) ? (
                       <>
                         <Button
                           size="icon-sm"
@@ -260,7 +291,7 @@ export function PackagingManager({
         </ul>
       )}
 
-      {canManage ? (
+      {canAdd ? (
         <div className="flex flex-wrap items-end gap-2 rounded-lg border border-border p-3">
           <div className="flex min-w-40 flex-1 flex-col gap-1">
             <Label className="text-xs">Name</Label>
@@ -269,6 +300,23 @@ export function PackagingManager({
               onChange={(e) => setNewName(e.target.value)}
               placeholder="e.g. 8oz Jar"
             />
+          </div>
+          <div className="flex flex-col gap-1">
+            <Label className="text-xs">Owner</Label>
+            <Select
+              value={newSiteId}
+              onChange={(e) => setNewSiteId(e.target.value)}
+              className="w-40"
+            >
+              {isAdmin ? (
+                <option value="">Shared (all sites)</option>
+              ) : null}
+              {sites.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </Select>
           </div>
           <div className="flex flex-col gap-1">
             <Label className="text-xs">Kind</Label>
@@ -302,7 +350,8 @@ export function PackagingManager({
         </div>
       ) : (
         <p className="text-sm text-muted-foreground">
-          Only an admin can add or edit packaging types.
+          You don&apos;t have a site assigned, so there&apos;s nothing you can add
+          here yet. Shared defaults are managed by an admin.
         </p>
       )}
     </div>

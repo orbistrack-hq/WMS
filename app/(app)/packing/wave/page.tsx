@@ -6,6 +6,7 @@ import { createClient } from "@/lib/supabase/server"
 import { Card, CardContent } from "@/components/ui/card"
 import {
   aggregateWave,
+  type PackagingTypeOption,
   type PickOrderRow,
   type WaveGroupInput,
 } from "@/lib/packing/aggregate"
@@ -20,6 +21,11 @@ type WaveGroupRow = {
   customer: { name: string | null } | null
   site: { name: string | null } | null
   orders: PickOrderRow[]
+  packaging_usage: {
+    quantity: number
+    unit_cost_snapshot: number | string
+    packaging_type_id: string
+  }[]
 }
 
 function parseIds(raw: string | undefined): string[] {
@@ -62,22 +68,40 @@ export default async function WavePage({
   }
 
   const supabase = await createClient()
-  const { data, error } = await supabase
-    .from("fulfillment_groups")
-    .select(
-      `id, status, site_id,
-       customer:customers(name),
-       site:sites(name),
-       orders(order_number, status,
-         order_line_items(quantity,
-           child_sku:child_skus(id, sku, bin_location, barcode, product:products(name))))`,
-    )
-    .in("id", ids)
-    .eq("status", "open")
+  const [groupsRes, typesRes] = await Promise.all([
+    supabase
+      .from("fulfillment_groups")
+      .select(
+        `id, status, site_id,
+         customer:customers(name),
+         site:sites(name),
+         orders(order_number, status,
+           order_line_items(quantity,
+             child_sku:child_skus(id, sku, bin_location, barcode, product:products(name)))),
+         packaging_usage(quantity, unit_cost_snapshot, packaging_type_id)`,
+      )
+      .in("id", ids)
+      .eq("status", "open"),
+    supabase
+      .from("packaging_types")
+      .select("id, name, kind, unit_cost")
+      .eq("is_active", true)
+      .order("kind"),
+  ])
+  const { data, error } = groupsRes
 
   if (error) {
     return <Shell>Could not load the wave: {error.message}</Shell>
   }
+
+  const packagingTypes: PackagingTypeOption[] = (typesRes.data ?? []).map(
+    (t) => ({
+      id: t.id,
+      name: t.name,
+      kind: t.kind,
+      unit_cost: Number(t.unit_cost),
+    }),
+  )
 
   const rows = (data ?? []) as unknown as WaveGroupRow[]
   if (rows.length === 0) {
@@ -126,6 +150,17 @@ export default async function WavePage({
   // Dropped groups: selected but no longer open (packed/fulfilled/RLS).
   const droppedCount = ids.length - rows.length
 
+  // Existing packaging cost per group — groups that already have lines
+  // (entered on their own pack screen) skip the mass-pack defaults so we
+  // never double-count a box/label that's already been recorded.
+  const existingPackaging: Record<string, number> = {}
+  for (const g of rows) {
+    existingPackaging[g.id] = g.packaging_usage.reduce(
+      (s, u) => s + u.quantity * Number(u.unit_cost_snapshot),
+      0,
+    )
+  }
+
   return (
     <WaveView
       siteName={rows[0]?.site?.name ?? null}
@@ -134,6 +169,8 @@ export default async function WavePage({
       totalUnits={totalUnits}
       droppedCount={droppedCount}
       rows={viewRows}
+      packagingTypes={packagingTypes}
+      existingPackaging={existingPackaging}
     />
   )
 }

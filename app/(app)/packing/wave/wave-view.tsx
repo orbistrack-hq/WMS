@@ -7,8 +7,34 @@ import { ArrowLeft, Check, PackageCheck, Printer } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Select } from "@/components/ui/select"
+import { formatCurrency } from "@/lib/format"
 
-import { packGroup } from "../actions"
+import { packGroup, recordPackaging, type ActionResult } from "../actions"
+import type { PackagingTypeOption } from "@/lib/packing/aggregate"
+
+const PACK_KIND_LABEL: Record<string, string> = {
+  box: "Box",
+  shipping_label: "Label",
+  jar: "Jar",
+  jar_label: "Jar label",
+  vacuum_bag: "Bag",
+  custom: "Custom",
+}
+
+// Kinds get a qty box by default; box/shipping_label default to 1 per group
+// (never per order), everything else defaults to 0 since it varies per order.
+const DEFAULT_QTY_KINDS = new Set(["box", "shipping_label"])
+const KIND_ORDER = [
+  "box",
+  "shipping_label",
+  "jar",
+  "jar_label",
+  "vacuum_bag",
+  "custom",
+]
 
 export type WaveAlloc = {
   groupId: string
@@ -28,15 +54,20 @@ export type WaveRow = {
 
 type Mode = "route" | "sort"
 
+type PackField = { typeId: string; qty: string }
+
 /**
- * Wave pick runner (v1). Shows the consolidated demand of several groups two
- * ways: "Route" — one bin-sorted pass to gather everything — and "Sort" — the
- * put-wall view that splits the gathered stock back out per order.
+ * Wave pick runner. Shows the consolidated demand of several groups two ways:
+ * "Route" — one bin-sorted pass to gather everything — and "Sort" — the
+ * put-wall view that splits the gathered stock back out per order. Sort mode
+ * also carries an inline packaging entry per group (box/label default to 1,
+ * jars/bags default to 0) so confirming a group records real packaging cost
+ * instead of only flipping status — mass packing without leaving the wave.
  *
  * Check-off is intentionally local/ephemeral: a wave isn't persisted yet, so
- * nothing here writes to pick_progress. Persisting wave progress is the v2 step
- * (add pick_progress.wave_id). Each order's own per-group pick screen remains
- * the system of record.
+ * nothing here writes to pick_progress. Persisting wave progress is a later
+ * step (add pick_progress.wave_id). Each order's own per-group pack screen
+ * remains the system of record and the place to edit/remove lines afterward.
  */
 export function WaveView({
   siteName,
@@ -45,6 +76,8 @@ export function WaveView({
   totalUnits,
   droppedCount,
   rows,
+  packagingTypes,
+  existingPackaging,
 }: {
   siteName: string | null
   groupCount: number
@@ -52,24 +85,93 @@ export function WaveView({
   totalUnits: number
   droppedCount: number
   rows: WaveRow[]
+  packagingTypes: PackagingTypeOption[]
+  existingPackaging: Record<string, number>
 }) {
   const [mode, setMode] = useState<Mode>("route")
   const [gathered, setGathered] = useState<Set<string>>(new Set())
 
-  // Confirm-packed (status only): mark each group packed without leaving the
-  // wave. Packaging (box/label/jars) is still recorded per group on its pack
-  // screen. Packed groups drop out of the wave on the next server refresh.
   const router = useRouter()
   const [packed, setPacked] = useState<Set<string>>(new Set())
   const [packingId, setPackingId] = useState<string | null>(null)
   const [packError, setPackError] = useState<string | null>(null)
   const [isPacking, startPacking] = useTransition()
 
+  const typesByKind = useMemo(() => {
+    const m = new Map<string, PackagingTypeOption[]>()
+    for (const t of packagingTypes) {
+      const arr = m.get(t.kind) ?? []
+      arr.push(t)
+      m.set(t.kind, arr)
+    }
+    return m
+  }, [packagingTypes])
+
+  const allGroupIds = useMemo(
+    () => [...new Set(rows.flatMap((r) => r.allocations.map((a) => a.groupId)))],
+    [rows],
+  )
+
+  function buildDefaultRow(groupId: string): Record<string, PackField> {
+    const hasExisting = (existingPackaging[groupId] ?? 0) > 0
+    const row: Record<string, PackField> = {}
+    for (const kind of KIND_ORDER) {
+      const options = typesByKind.get(kind)
+      if (!options || options.length === 0) continue
+      const useDefault = DEFAULT_QTY_KINDS.has(kind) && !hasExisting
+      row[kind] = { typeId: options[0].id, qty: useDefault ? "1" : "0" }
+    }
+    return row
+  }
+
+  // groupId -> kind -> { typeId, qty }. Seeded once from defaults; edits persist
+  // per group for the rest of this wave session.
+  const [packInputs, setPackInputs] = useState<
+    Record<string, Record<string, PackField>>
+  >(() =>
+    Object.fromEntries(allGroupIds.map((id) => [id, buildDefaultRow(id)])),
+  )
+
+  function setQty(groupId: string, kind: string, qty: string) {
+    setPackInputs((prev) => ({
+      ...prev,
+      [groupId]: {
+        ...prev[groupId],
+        [kind]: { ...prev[groupId]?.[kind], qty },
+      },
+    }))
+  }
+
+  function setPackType(groupId: string, kind: string, typeId: string) {
+    setPackInputs((prev) => ({
+      ...prev,
+      [groupId]: {
+        ...prev[groupId],
+        [kind]: { ...prev[groupId]?.[kind], typeId },
+      },
+    }))
+  }
+
+  // Record every positive-qty packaging line for a group, then flip its
+  // status. Packaging writes happen first so a failed write never leaves the
+  // group marked packed with missing cost.
+  async function packOneGroup(groupId: string): Promise<ActionResult> {
+    const row = packInputs[groupId] ?? {}
+    for (const kind of Object.keys(row)) {
+      const { typeId, qty } = row[kind]
+      const n = Number(qty)
+      if (!Number.isFinite(n) || n <= 0) continue
+      const res = await recordPackaging(groupId, typeId, n)
+      if (!res.ok) return res
+    }
+    return packGroup(groupId)
+  }
+
   function confirmPacked(groupId: string) {
     setPackError(null)
     setPackingId(groupId)
     startPacking(async () => {
-      const res = await packGroup(groupId)
+      const res = await packOneGroup(groupId)
       setPackingId(null)
       if (!res.ok) {
         setPackError(res.error)
@@ -89,9 +191,9 @@ export function WaveView({
       ].filter((g) => !packed.has(g))
       const next = new Set(packed)
       for (const g of ids) {
-        const res = await packGroup(g)
+        const res = await packOneGroup(g)
         if (!res.ok) {
-          setPackError(res.error)
+          setPackError(`Group ${g.slice(0, 8)}: ${res.error}`)
           break
         }
         next.add(g)
@@ -360,6 +462,69 @@ export function WaveView({
                   </li>
                 ))}
               </ul>
+
+              {!packed.has(o.groupId) ? (
+                <div className="no-print mt-2 flex flex-col gap-2 rounded-md border border-dashed border-border p-2">
+                  {(existingPackaging[o.groupId] ?? 0) > 0 ? (
+                    <p className="text-xs text-muted-foreground">
+                      {formatCurrency(existingPackaging[o.groupId])} already
+                      recorded for this group —{" "}
+                      <Link
+                        href={`/packing/${o.groupId}`}
+                        className="underline"
+                      >
+                        edit
+                      </Link>
+                      . Add more below only if needed.
+                    </p>
+                  ) : null}
+                  <div className="flex flex-wrap items-end gap-2">
+                    {Object.entries(packInputs[o.groupId] ?? {}).map(
+                      ([kind, field]) => {
+                        const options = typesByKind.get(kind) ?? []
+                        return (
+                          <div key={kind} className="flex flex-col gap-1">
+                            <Label className="text-[11px] text-muted-foreground">
+                              {PACK_KIND_LABEL[kind] ?? kind}
+                            </Label>
+                            <div className="flex items-center gap-1">
+                              {options.length > 1 ? (
+                                <Select
+                                  className="h-8 w-28 text-xs"
+                                  value={field.typeId}
+                                  onChange={(e) =>
+                                    setPackType(
+                                      o.groupId,
+                                      kind,
+                                      e.target.value,
+                                    )
+                                  }
+                                >
+                                  {options.map((t) => (
+                                    <option key={t.id} value={t.id}>
+                                      {t.name}
+                                    </option>
+                                  ))}
+                                </Select>
+                              ) : null}
+                              <Input
+                                type="number"
+                                min="0"
+                                step="1"
+                                value={field.qty}
+                                onChange={(e) =>
+                                  setQty(o.groupId, kind, e.target.value)
+                                }
+                                className="h-8 w-14 text-xs"
+                              />
+                            </div>
+                          </div>
+                        )
+                      },
+                    )}
+                  </div>
+                </div>
+              ) : null}
             </div>
           ))}
           {byOrder.length === 0 ? (

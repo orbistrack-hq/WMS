@@ -122,6 +122,14 @@ export function aggregatePickLines(orders: PickOrderRow[]): AggregatedPick {
 // the URL, derived on the fly. Persisted waves + cross-group progress tracking
 // (pick_progress.wave_id) are a v2 concern; nothing here writes to the database.
 
+/** An active packaging type available to record usage against (box/label/jar/…). */
+export type PackagingTypeOption = {
+  id: string
+  name: string
+  kind: string
+  unit_cost: number
+}
+
 /** One fulfillment group entering a wave, with a human label for the put-wall. */
 export type WaveGroupInput = {
   id: string

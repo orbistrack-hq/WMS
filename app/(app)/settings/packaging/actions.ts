@@ -23,7 +23,7 @@ type PgError = { message?: string; details?: string; code?: string } | null
 function err(error: PgError): string {
   if (!error) return "Something went wrong."
   if (error.code === "42501")
-    return "Only an admin can manage packaging types."
+    return "You can only manage packaging types for a site you have access to. Shared defaults are admin-only."
   if (error.code === "23503")
     return "This type is used in packing history — deactivate it instead of deleting."
   if (error.code === "23514") return "Pick a valid packaging kind."
@@ -52,6 +52,9 @@ export async function createPackagingType(
   name: string,
   kind: string,
   unitCost: number,
+  // Which site owns this type. null = a shared default (admin-only). A non-null
+  // site scopes the type to that site; RLS enforces the caller can access it.
+  siteId: string | null,
 ): Promise<ActionResult> {
   const v = validate(name, kind, unitCost)
   if (v) return { ok: false, error: v }
@@ -61,6 +64,7 @@ export async function createPackagingType(
     name: name.trim(),
     kind,
     unit_cost: unitCost,
+    site_id: siteId || null,
     is_active: true,
   })
   if (error) return { ok: false, error: err(error) }

@@ -3,6 +3,8 @@ import { Boxes, List } from "lucide-react"
 
 import { createClient } from "@/lib/supabase/server"
 import { PageHeader } from "@/components/page-header"
+import { Pagination } from "@/components/pagination"
+import { DEFAULT_PAGE_SIZE, parsePageParam } from "@/lib/pagination"
 import { buttonVariants } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { InventoryFilters } from "../inventory-filters"
@@ -10,7 +12,7 @@ import { ParentInventoryList, type ParentGroup } from "./parent-inventory-list"
 
 export const dynamic = "force-dynamic"
 
-type SearchParams = { q?: string; site?: string; hideZero?: string }
+type SearchParams = { q?: string; site?: string; hideZero?: string; page?: string }
 
 type ReportRow = {
   child_sku_id: string
@@ -118,6 +120,15 @@ export default async function InventoryByParentPage({
     })
   }
 
+  // Paginate at the PARENT level (never split a parent's child rows across
+  // pages). Parents are already fully grouped, so the total is exact and each
+  // parent's totals stay intact.
+  const page = parsePageParam(sp.page)
+  const totalParents = parents.length
+  const from = (page - 1) * DEFAULT_PAGE_SIZE
+  const pageParents = parents.slice(from, from + DEFAULT_PAGE_SIZE)
+  const hasMore = from + DEFAULT_PAGE_SIZE < totalParents
+
   return (
     <>
       <PageHeader
@@ -153,7 +164,17 @@ export default async function InventoryByParentPage({
           </CardContent>
         </Card>
       ) : (
-        <ParentInventoryList parents={parents} />
+        <>
+          <ParentInventoryList parents={pageParents} totalCount={totalParents} />
+          <Pagination
+            basePath="/inventory/by-parent"
+            params={sp}
+            page={page}
+            hasMore={hasMore}
+            pageRows={pageParents.length}
+            approxTotal={totalParents}
+          />
+        </>
       )}
     </>
   )

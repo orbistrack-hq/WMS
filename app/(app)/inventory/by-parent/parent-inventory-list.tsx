@@ -47,8 +47,16 @@ export type ParentGroup = {
   weightCount: number
 }
 
-export function ParentInventoryList({ parents }: { parents: ParentGroup[] }) {
+export function ParentInventoryList({
+  parents,
+  totalCount,
+}: {
+  parents: ParentGroup[]
+  /** Total parents across all pages (defaults to the visible count). */
+  totalCount?: number
+}) {
   const [open, setOpen] = useState<Set<string>>(new Set())
+  const parentTotal = totalCount ?? parents.length
 
   const allOpen = open.size === parents.length
   function toggle(id: string) {
@@ -67,7 +75,7 @@ export function ParentInventoryList({ parents }: { parents: ParentGroup[] }) {
     <div className="space-y-2">
       <div className="flex items-center justify-between px-1 text-sm text-muted-foreground">
         <span>
-          {parents.length} parent SKU{parents.length === 1 ? "" : "s"}
+          {parentTotal} parent SKU{parentTotal === 1 ? "" : "s"}
         </span>
         <button
           type="button"

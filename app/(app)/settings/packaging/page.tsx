@@ -23,7 +23,10 @@ export default async function PackagingSettingsPage() {
   const [typesRes, sitesRes, levelsRes, adminRes] = await Promise.all([
     supabase
       .from("packaging_types")
-      .select("id, name, kind, unit_cost, is_active")
+      // site_id + the owning site's name so each type can be shown as shared vs
+      // owned, and so the client can tell which ones it may manage. RLS already
+      // limits this to shared defaults + types at sites the user can access.
+      .select("id, name, kind, unit_cost, is_active, site_id, site:sites(name)")
       .order("kind")
       .order("name"),
     supabase.from("sites").select("id, name").eq("is_active", true).order("name"),
@@ -33,12 +36,22 @@ export default async function PackagingSettingsPage() {
     supabase.rpc("is_admin"),
   ])
 
-  const types = (typesRes.data ?? []).map((t) => ({
-    ...t,
-    unit_cost: Number(t.unit_cost),
-  })) as PackagingType[]
+  const types = (typesRes.data ?? []).map((t) => {
+    const site = Array.isArray(t.site) ? t.site[0] : t.site
+    return {
+      id: t.id,
+      name: t.name,
+      kind: t.kind,
+      unit_cost: Number(t.unit_cost),
+      is_active: t.is_active,
+      site_id: t.site_id ?? null,
+      site_name: (site as { name?: string } | null)?.name ?? null,
+    }
+  }) as PackagingType[]
   const isAdmin = adminRes.data === true
 
+  // sites is already RLS-scoped to what the user can access; it drives both the
+  // stock card and the "which site owns a new type" picker in the manager.
   const sites = (sitesRes.data ?? []) as StockSite[]
   const stockTypes = types
     .filter((t) => t.is_active)
@@ -68,11 +81,16 @@ export default async function PackagingSettingsPage() {
             <CardDescription>
               Each type carries a unit cost that is snapshotted when packing
               records consumption, so later price changes don&apos;t rewrite
-              historical packaging-cost reports.
+              historical packaging-cost reports. Shared defaults apply to every
+              site; you can also add types owned by your own site.
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <PackagingManager types={types} canManage={isAdmin} />
+            <PackagingManager
+              types={types}
+              isAdmin={isAdmin}
+              sites={sites}
+            />
           </CardContent>
         </Card>
 
