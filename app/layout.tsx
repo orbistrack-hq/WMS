@@ -9,8 +9,10 @@ const geistMono = Geist_Mono({
   subsets: ['latin'],
 })
 
+const THEME_INIT = `(function(){try{var t=localStorage.getItem('theme');var d=t?t==='dark':window.matchMedia('(prefers-color-scheme: dark)').matches;var c=document.documentElement.classList;c.remove('light','dark');c.add(d?'dark':'light');}catch(e){}})();`
+
 export const metadata: Metadata = {
-  title: 'Warehouse Management System',
+  title: 'OrbisTrack',
   description:
     'Multi-location warehouse management for orders, inventory, packing, and shipping.',
   icons: {
@@ -46,7 +48,14 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <html lang="en" className={`${geistSans.variable} ${geistMono.variable}`}>
+    <html
+      lang="en"
+      suppressHydrationWarning
+      className={`${geistSans.variable} ${geistMono.variable}`}
+    >
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT }} />
+      </head>
       <body className="font-sans antialiased">
         {children}
         {process.env.NODE_ENV === 'production' && <Analytics />}

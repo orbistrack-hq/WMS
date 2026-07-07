@@ -7,6 +7,7 @@ import { Menu, X } from "lucide-react"
 
 import { SidebarNav } from "@/components/sidebar-nav"
 import { LogoutButton } from "@/components/logout-button"
+import { ThemeToggle } from "@/components/theme-toggle"
 
 function Brand() {
   return (
@@ -84,6 +85,7 @@ export function AppShell({
           <span className="hidden truncate text-sm text-muted-foreground sm:inline">
             {userEmail}
           </span>
+          <ThemeToggle />
           <LogoutButton />
         </header>
         <main className="flex-1 p-4 md:p-8">
