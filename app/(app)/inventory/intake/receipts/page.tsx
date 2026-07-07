@@ -2,6 +2,12 @@ import Link from "next/link"
 import { ArrowLeft } from "lucide-react"
 
 import { createClient } from "@/lib/supabase/server"
+import { Pagination } from "@/components/pagination"
+import {
+  DEFAULT_PAGE_SIZE,
+  parsePageParam,
+  pageRangePlusOne,
+} from "@/lib/pagination"
 import { Card, CardContent } from "@/components/ui/card"
 import {
   Table,
@@ -34,19 +40,30 @@ type Row = {
   actor: { full_name: string | null } | { full_name: string | null }[] | null
 }
 
-export default async function IntakeReceiptsPage() {
+export default async function IntakeReceiptsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ page?: string }>
+}) {
+  const sp = await searchParams
+  const page = parsePageParam(sp.page)
+  const [from, to] = pageRangePlusOne(page)
+
   const supabase = await createClient()
   // Bulk intakes are parent_inventory_ledger rows with reason 'intake'.
-  const { data } = await supabase
+  const { data, count } = await supabase
     .from("parent_inventory_ledger")
     .select(
       "id, delta_grams, batch_no, note, created_at, reversed_at, product:products(name), site:sites(name), actor:profiles(full_name)",
+      { count: "estimated" },
     )
     .eq("reason", "intake")
     .order("created_at", { ascending: false })
-    .limit(200)
+    .range(from, to)
 
-  const rows = (data ?? []) as unknown as Row[]
+  const fetched = (data ?? []) as unknown as Row[]
+  const hasMore = fetched.length > DEFAULT_PAGE_SIZE
+  const rows = fetched.slice(0, DEFAULT_PAGE_SIZE)
 
   return (
     <>
@@ -109,6 +126,14 @@ export default async function IntakeReceiptsPage() {
               </TableBody>
             </Table>
           )}
+          <Pagination
+            basePath="/inventory/intake/receipts"
+            params={sp}
+            page={page}
+            hasMore={hasMore}
+            pageRows={rows.length}
+            approxTotal={count ?? null}
+          />
         </CardContent>
       </Card>
     </>

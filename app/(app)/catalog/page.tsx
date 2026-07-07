@@ -3,6 +3,12 @@ import { Plus, FolderTree, Boxes, CopyCheck, Layers } from "lucide-react"
 
 import { createClient } from "@/lib/supabase/server"
 import { PageHeader } from "@/components/page-header"
+import { Pagination } from "@/components/pagination"
+import {
+  DEFAULT_PAGE_SIZE,
+  parsePageParam,
+  pageRangePlusOne,
+} from "@/lib/pagination"
 import { buttonVariants } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent } from "@/components/ui/card"
@@ -25,7 +31,12 @@ import { CatalogFilters } from "./catalog-filters"
 
 export const dynamic = "force-dynamic"
 
-type SearchParams = { q?: string; category?: string; active?: string }
+type SearchParams = {
+  q?: string
+  category?: string
+  active?: string
+  page?: string
+}
 
 type ProductRow = {
   id: string
@@ -59,13 +70,17 @@ export default async function CatalogPage({
     (n) => ({ id: n.id, label: `${indent(n.depth)}${n.name}` }),
   )
 
+  const page = parsePageParam(sp.page)
+  const [from, to] = pageRangePlusOne(page)
+
   let query = supabase
     .from("products")
     .select(
       "id, name, description, category_id, is_active, child_skus(site_id, is_active)",
+      { count: "estimated" },
     )
     .order("name")
-    .limit(500)
+    .range(from, to)
 
   if (sp.active === "true") query = query.eq("is_active", true)
   if (sp.active === "false") query = query.eq("is_active", false)
@@ -73,8 +88,10 @@ export default async function CatalogPage({
   else if (sp.category) query = query.eq("category_id", sp.category)
   if (sp.q) query = query.ilike("name", `%${sp.q}%`)
 
-  const { data, error } = await query
-  const products = (data ?? []) as unknown as ProductRow[]
+  const { data, error, count } = await query
+  const fetched = (data ?? []) as unknown as ProductRow[]
+  const hasMore = fetched.length > DEFAULT_PAGE_SIZE
+  const products = fetched.slice(0, DEFAULT_PAGE_SIZE)
 
   return (
     <>
@@ -186,6 +203,14 @@ export default async function CatalogPage({
               })}
             </TableBody>
           </Table>
+          <Pagination
+            basePath="/catalog"
+            params={sp}
+            page={page}
+            hasMore={hasMore}
+            pageRows={products.length}
+            approxTotal={count ?? null}
+          />
         </Card>
       )}
     </>

@@ -1,8 +1,9 @@
 import Link from "next/link"
-import { Plus, ClipboardList, ChevronLeft, ChevronRight } from "lucide-react"
+import { Plus, ClipboardList } from "lucide-react"
 
 import { createClient } from "@/lib/supabase/server"
 import { PageHeader } from "@/components/page-header"
+import { Pagination } from "@/components/pagination"
 import { buttonVariants } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent } from "@/components/ui/card"
@@ -49,14 +50,6 @@ const ORDERS_SELECT = `id, order_number, status, on_hold, backordered, order_typ
    site:sites(name, code),
    order_line_items(quantity, unit_price, discount, tax)`
 
-function pageHref(sp: SearchParams, p: number): string {
-  const params = new URLSearchParams()
-  for (const [k, v] of Object.entries(sp)) {
-    if (k !== "page" && v) params.set(k, v)
-  }
-  params.set("page", String(p))
-  return `/orders?${params.toString()}`
-}
 
 // Columns Postgres can order directly. Computed columns (total/items) are
 // sorted in JS after the totals are derived, below.
@@ -110,7 +103,12 @@ export default async function OrdersPage({
   // Shared filters - applied identically whichever sort path we take.
   let base = supabase
     .from("orders")
-    .select(ORDERS_SELECT, isComputedSort ? undefined : { count: "exact" })
+    // Estimated count (planner estimate) instead of "exact": an exact count
+    // scans every matching row on each load, which — with the entered_at sort —
+    // was tipping the orders list over the statement_timeout. The page total
+    // becomes approximate; Prev/Next stay correct because navigation is gated by
+    // the range slice, not the count.
+    .select(ORDERS_SELECT, isComputedSort ? undefined : { count: "estimated" })
   if (sp.status) base = base.eq("status", sp.status)
   if (sp.site) base = base.eq("site_id", sp.site)
   if (sp.channel) base = base.eq("channel", sp.channel)
@@ -124,8 +122,10 @@ export default async function OrdersPage({
   })
 
   let orders: (OrderRow & ReturnType<typeof computeOrderTotals>)[] = []
-  let totalCount = 0
+  let approxTotal: number | null = null
+  let hasMore = false
   let error: { message: string } | null = null
+  const from = (page - 1) * PAGE_SIZE
 
   if (isComputedSort) {
     // Pull a capped window, attach totals, sort in JS, then slice the page.
@@ -137,27 +137,26 @@ export default async function OrdersPage({
     const sign = dir === "asc" ? 1 : -1
     const key = sort === "items" ? "itemCount" : "total"
     all.sort((a, b) => sign * (a[key] - b[key]))
-    totalCount = all.length
-    const from = (page - 1) * PAGE_SIZE
+    approxTotal = all.length
     orders = all.slice(from, from + PAGE_SIZE)
+    hasMore = from + PAGE_SIZE < all.length
   } else {
-    // DB-sortable column: order + range straight in Postgres with exact count.
-    const from = (page - 1) * PAGE_SIZE
+    // DB-sortable column: order + range straight in Postgres. Fetch one extra
+    // row to detect a next page — navigation must not depend on the estimated
+    // count, which can be stale.
     const {
       data,
       error: e,
       count,
     } = await base
       .order(dbSort, { ascending: dir === "asc" })
-      .range(from, from + PAGE_SIZE - 1)
+      .range(from, from + PAGE_SIZE)
     error = e
-    orders = ((data ?? []) as unknown as OrderRow[]).map(withTotals)
-    totalCount = count ?? 0
+    const rows = ((data ?? []) as unknown as OrderRow[]).map(withTotals)
+    hasMore = rows.length > PAGE_SIZE
+    orders = rows.slice(0, PAGE_SIZE)
+    approxTotal = count ?? null
   }
-
-  const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE))
-  const rangeStart = totalCount === 0 ? 0 : (page - 1) * PAGE_SIZE + 1
-  const rangeEnd = Math.min(page * PAGE_SIZE, totalCount)
 
   return (
     <>
@@ -262,51 +261,15 @@ export default async function OrdersPage({
               })}
             </TableBody>
           </Table>
-          {totalPages > 1 ? (
-            <div className="flex items-center justify-between border-t px-4 py-3 text-sm">
-              <span className="text-muted-foreground tabular-nums">
-                {rangeStart}-{rangeEnd} of {totalCount}
-                {isComputedSort && totalCount === COMPUTED_SORT_CAP ? "+" : ""}
-              </span>
-              <div className="flex items-center gap-2">
-                {page > 1 ? (
-                  <Link
-                    href={pageHref(sp, page - 1)}
-                    className={buttonVariants({ variant: "outline", size: "sm" })}
-                  >
-                    <ChevronLeft data-icon="inline-start" /> Prev
-                  </Link>
-                ) : (
-                  <span
-                    className={buttonVariants({ variant: "outline", size: "sm" })}
-                    aria-disabled
-                    style={{ opacity: 0.5, pointerEvents: "none" }}
-                  >
-                    <ChevronLeft data-icon="inline-start" /> Prev
-                  </span>
-                )}
-                <span className="tabular-nums text-muted-foreground">
-                  Page {page} of {totalPages}
-                </span>
-                {page < totalPages ? (
-                  <Link
-                    href={pageHref(sp, page + 1)}
-                    className={buttonVariants({ variant: "outline", size: "sm" })}
-                  >
-                    Next <ChevronRight data-icon="inline-end" />
-                  </Link>
-                ) : (
-                  <span
-                    className={buttonVariants({ variant: "outline", size: "sm" })}
-                    aria-disabled
-                    style={{ opacity: 0.5, pointerEvents: "none" }}
-                  >
-                    Next <ChevronRight data-icon="inline-end" />
-                  </span>
-                )}
-              </div>
-            </div>
-          ) : null}
+          <Pagination
+            basePath="/orders"
+            params={sp}
+            page={page}
+            hasMore={hasMore}
+            pageRows={orders.length}
+            pageSize={PAGE_SIZE}
+            approxTotal={approxTotal}
+          />
         </Card>
       )}
     </>

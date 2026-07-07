@@ -2,6 +2,12 @@ import Link from "next/link"
 import { ArrowLeft } from "lucide-react"
 
 import { createClient } from "@/lib/supabase/server"
+import { Pagination } from "@/components/pagination"
+import {
+  DEFAULT_PAGE_SIZE,
+  parsePageParam,
+  pageRangePlusOne,
+} from "@/lib/pagination"
 import { Card, CardContent } from "@/components/ui/card"
 import {
   Table,
@@ -28,17 +34,28 @@ function one<T>(v: T | T[] | null | undefined): T | null {
   return Array.isArray(v) ? (v[0] ?? null) : (v ?? null)
 }
 
-export default async function AllocationHistoryPage() {
+export default async function AllocationHistoryPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ page?: string }>
+}) {
+  const sp = await searchParams
+  const page = parsePageParam(sp.page)
+  const [from, to] = pageRangePlusOne(page)
+
   const supabase = await createClient()
-  const { data } = await supabase
+  const { data, count } = await supabase
     .from("allocations")
     .select(
       "id, total_grams, created_at, product:products(name), site:sites(name), actor:profiles(full_name)",
+      { count: "estimated" },
     )
     .order("created_at", { ascending: false })
-    .limit(200)
+    .range(from, to)
 
-  const rows = (data ?? []) as unknown as Row[]
+  const fetched = (data ?? []) as unknown as Row[]
+  const hasMore = fetched.length > DEFAULT_PAGE_SIZE
+  const rows = fetched.slice(0, DEFAULT_PAGE_SIZE)
 
   return (
     <>
@@ -100,6 +117,14 @@ export default async function AllocationHistoryPage() {
               </TableBody>
             </Table>
           )}
+          <Pagination
+            basePath="/inventory/intake/history"
+            params={sp}
+            page={page}
+            hasMore={hasMore}
+            pageRows={rows.length}
+            approxTotal={count ?? null}
+          />
         </CardContent>
       </Card>
     </>
