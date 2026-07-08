@@ -20,6 +20,11 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { formatDateTime } from "@/lib/format"
+import {
+  OutboundQueueCard,
+  OUTBOUND_QUEUE_SELECT,
+  mapOutboundJobs,
+} from "@/components/outbound-queue-card"
 import { Connections, type Connection } from "./connections"
 
 export const dynamic = "force-dynamic"
@@ -53,7 +58,7 @@ type ImportRow = {
 export default async function ShopifyIntegrationPage() {
   const supabase = await createClient()
 
-  const [connRes, sitesRes, importsRes, secretsRes, outboundRes, hdrs] =
+  const [connRes, sitesRes, importsRes, secretsRes, outboundRes, queueRes, hdrs] =
     await Promise.all([
     supabase
       .from("store_connections")
@@ -84,6 +89,13 @@ export default async function ShopifyIntegrationPage() {
     supabase
       .from("store_outbound_sync_status")
       .select("site_id, pending, processing, failed, skipped"),
+    supabase
+      .from("store_outbound_inventory_jobs")
+      .select(OUTBOUND_QUEUE_SELECT)
+      .in("status", ["pending", "processing", "failed"])
+      .order("status")
+      .order("next_attempt_at")
+      .limit(500),
     headers(),
   ])
 
@@ -147,6 +159,11 @@ export default async function ShopifyIntegrationPage() {
   })
 
   const imports = (importsRes.data ?? []) as unknown as ImportRow[]
+
+  const shopifySiteIds = new Set(
+    ((connRes.data ?? []) as { site_id: string }[]).map((c) => c.site_id),
+  )
+  const queueRows = mapOutboundJobs(queueRes.data, shopifySiteIds)
 
   return (
     <>
@@ -220,6 +237,8 @@ export default async function ShopifyIntegrationPage() {
             />
           </CardContent>
         </Card>
+
+        <OutboundQueueCard rows={queueRows} showSite={shopifySiteIds.size > 1} />
 
         <Card className="p-0">
           <CardHeader className="p-(--card-spacing)">

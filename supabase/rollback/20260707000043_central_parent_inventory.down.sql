@@ -1,5 +1,5 @@
 -- ============================================================================
--- Rollback 0042: restore the per-(product, site) parent pool.
+-- Rollback 0043: restore the per-(product, site) parent pool.
 --
 -- Reinstates the post-0034 structure and the 0028/0029/0034 function bodies:
 --   * parent_inventory regains site_id + the composite PK + site index;

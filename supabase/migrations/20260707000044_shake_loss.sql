@@ -1,9 +1,9 @@
 -- ============================================================================
--- WMS — Migration 0043: "Shake" loss on the central pool (FB-4)
+-- WMS — Migration 0044: "Shake" loss on the central pool (FB-4)
 --
 -- Shake = flower that falls off during packing and never reaches the customer.
 -- At allocation time the team records how much shake there was; it is a pure
--- LOSS out of the CENTRAL parent pool (migration 0042) — grams leave the pool
+-- LOSS out of the CENTRAL parent pool (migration 0043) — grams leave the pool
 -- and credit no child SKU. Recorded against the product + central pool, with an
 -- OPTIONAL site tag (which team's packing shed it, for analytics only — it does
 -- NOT re-introduce a pool site) and an OPTIONAL batch_no for traceability.
@@ -18,7 +18,7 @@
 --   shake_report — one row per shake event (product, site tag, batch, grams
 --     lost, reversed flag) for the loss analytics.
 --
--- Reverse with rollback/20260707000043_shake_loss.down.sql.
+-- Reverse with rollback/20260707000044_shake_loss.down.sql.
 -- ============================================================================
 
 begin;

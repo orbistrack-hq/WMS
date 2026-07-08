@@ -1,5 +1,5 @@
 -- ============================================================================
--- Rollback 0043: remove the "Shake" loss feature.
+-- Rollback 0044: remove the "Shake" loss feature.
 --
 -- Drops shake_report, record_shake / reverse_shake, the shake idempotency index,
 -- and restores the parent_inventory_ledger reason list to the post-0042 set

@@ -1,5 +1,5 @@
 -- ============================================================================
--- WMS — Migration 0042: central parent inventory (FB-1)
+-- WMS — Migration 0043: central parent inventory (FB-1)
 --
 -- The bulk parent pool stops being per-(product, site) and becomes CENTRAL:
 -- one pool per parent SKU. Intake credits the central pool with no receiving
@@ -23,7 +23,7 @@
 --     client, so internal team and client share the tenant). Writes stay sealed
 --     behind the SECURITY DEFINER functions.
 --
--- Reverse with rollback/20260707000042_central_parent_inventory.down.sql. The
+-- Reverse with rollback/20260707000043_central_parent_inventory.down.sql. The
 -- down restores the per-site structure + the 0028/0029/0034 function bodies;
 -- collapsing balances is one-way, so a real rollback starts pools at those sums.
 -- ============================================================================
