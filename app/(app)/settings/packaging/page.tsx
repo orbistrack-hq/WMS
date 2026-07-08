@@ -11,6 +11,12 @@ import { JAR_MAX_GRAMS } from "@/lib/packing/packaging-rules"
 import { PackagingManager, type PackagingType } from "./packaging-manager"
 import { PackagingRuleEditor } from "./packaging-rule-editor"
 import {
+  PackagingRulesMapEditor,
+  type OrderDefaultRow,
+  type PkgType,
+  type WeightRuleRow,
+} from "./packaging-rules-map-editor"
+import {
   PackagingStock,
   type StockLevel,
   type StockSite,
@@ -22,8 +28,16 @@ export const dynamic = "force-dynamic"
 export default async function PackagingSettingsPage() {
   const supabase = await createClient()
 
-  const [typesRes, sitesRes, levelsRes, adminRes, ruleRes, operatorRes] =
-    await Promise.all([
+  const [
+    typesRes,
+    sitesRes,
+    levelsRes,
+    adminRes,
+    ruleRes,
+    operatorRes,
+    weightRulesRes,
+    orderDefaultsRes,
+  ] = await Promise.all([
     supabase
       .from("packaging_types")
       // site_id + the owning site's name so each type can be shown as shared vs
@@ -39,6 +53,17 @@ export default async function PackagingSettingsPage() {
     supabase.rpc("is_admin"),
     supabase.from("packaging_rule").select("jar_max_grams").maybeSingle(),
     supabase.rpc("is_operator"),
+    supabase
+      .from("packaging_weight_rule")
+      .select(
+        "id, grams_per_unit, qty_per_unit, packaging_type:packaging_types(id, name, kind, unit_cost)",
+      )
+      .order("grams_per_unit"),
+    supabase
+      .from("packaging_order_default")
+      .select(
+        "id, qty, packaging_type:packaging_types(id, name, kind, unit_cost)",
+      ),
   ])
 
   const ruleGrams = Number(ruleRes.data?.jar_max_grams)
@@ -79,6 +104,28 @@ export default async function PackagingSettingsPage() {
     reorder_point: l.reorder_point === null ? null : Number(l.reorder_point),
   })) as StockLevel[]
 
+  // FB-6 weight→packaging map + per-order defaults (migration 0046).
+  const oneType = (v: unknown): PkgType | null => {
+    const t = (Array.isArray(v) ? v[0] : v) as
+      | { id: string; name: string; kind: string; unit_cost: number | string }
+      | null
+      | undefined
+    return t
+      ? { id: t.id, name: t.name, kind: t.kind, unit_cost: Number(t.unit_cost) }
+      : null
+  }
+  const weightRules = (weightRulesRes.data ?? []).map((r) => ({
+    id: r.id,
+    grams_per_unit: Number(r.grams_per_unit),
+    qty_per_unit: r.qty_per_unit,
+    type: oneType(r.packaging_type),
+  })) as WeightRuleRow[]
+  const orderDefaults = (orderDefaultsRes.data ?? []).map((d) => ({
+    id: d.id,
+    qty: d.qty,
+    type: oneType(d.packaging_type),
+  })) as OrderDefaultRow[]
+
   return (
     <>
       <PageHeader
@@ -98,6 +145,27 @@ export default async function PackagingSettingsPage() {
           </CardHeader>
           <CardContent>
             <PackagingRuleEditor jarMaxGrams={jarMaxGrams} canEdit={canManage} />
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">
+              Weight &rarr; packaging
+            </CardTitle>
+            <CardDescription>
+              What packaging each weight uses and what every order gets. The
+              packing screen fills this in automatically — different weights can
+              use different-sized (differently priced) bags.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <PackagingRulesMapEditor
+              weightRules={weightRules}
+              orderDefaults={orderDefaults}
+              packagingTypes={stockTypes}
+              canManage={canManage}
+            />
           </CardContent>
         </Card>
 

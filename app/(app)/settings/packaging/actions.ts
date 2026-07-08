@@ -245,3 +245,125 @@ export async function setPackagingReorderPoint(
   revalidate()
   return { ok: true }
 }
+
+// ---------------------------------------------------------------------------
+// Weight → packaging map + per-order defaults (FB-6, migration 0046). Managed
+// by the ops team (operator/admin) via RLS; the packing screens read them to
+// auto-fill packaging. Changing them re-drives the auto-calc, so revalidate
+// /packing too.
+// ---------------------------------------------------------------------------
+
+function ruleErr(error: PgError): string {
+  if (!error) return "Something went wrong."
+  if (error.code === "42501")
+    return "Only the ops team (operator/admin) can change packaging rules."
+  if (error.code === "23505")
+    return "That weight already maps to this packaging type."
+  if (error.code === "23503") return "Pick a valid packaging type."
+  return error.message || error.details || "Something went wrong."
+}
+
+function revalidateRules() {
+  revalidatePath("/settings/packaging")
+  revalidatePath("/packing")
+}
+
+export async function addWeightRule(
+  gramsPerUnit: number,
+  packagingTypeId: string,
+  qtyPerUnit: number,
+): Promise<ActionResult> {
+  if (!(gramsPerUnit > 0))
+    return { ok: false, error: "Weight must be greater than zero." }
+  if (!packagingTypeId) return { ok: false, error: "Pick a packaging type." }
+  if (!(qtyPerUnit > 0))
+    return { ok: false, error: "Quantity must be at least 1." }
+
+  const supabase = await createClient()
+  const { error } = await supabase.from("packaging_weight_rule").insert({
+    grams_per_unit: gramsPerUnit,
+    packaging_type_id: packagingTypeId,
+    qty_per_unit: Math.trunc(qtyPerUnit),
+  })
+  if (error) return { ok: false, error: ruleErr(error) }
+
+  revalidateRules()
+  return { ok: true }
+}
+
+export async function updateWeightRuleQty(
+  id: string,
+  qtyPerUnit: number,
+): Promise<ActionResult> {
+  if (!(qtyPerUnit > 0))
+    return { ok: false, error: "Quantity must be at least 1." }
+
+  const supabase = await createClient()
+  const { error } = await supabase
+    .from("packaging_weight_rule")
+    .update({ qty_per_unit: Math.trunc(qtyPerUnit) })
+    .eq("id", id)
+  if (error) return { ok: false, error: ruleErr(error) }
+
+  revalidateRules()
+  return { ok: true }
+}
+
+export async function deleteWeightRule(id: string): Promise<ActionResult> {
+  const supabase = await createClient()
+  const { error } = await supabase
+    .from("packaging_weight_rule")
+    .delete()
+    .eq("id", id)
+  if (error) return { ok: false, error: ruleErr(error) }
+
+  revalidateRules()
+  return { ok: true }
+}
+
+export async function addOrderDefault(
+  packagingTypeId: string,
+  qty: number,
+): Promise<ActionResult> {
+  if (!packagingTypeId) return { ok: false, error: "Pick a packaging type." }
+  if (!(qty > 0)) return { ok: false, error: "Quantity must be at least 1." }
+
+  const supabase = await createClient()
+  const { error } = await supabase.from("packaging_order_default").insert({
+    packaging_type_id: packagingTypeId,
+    qty: Math.trunc(qty),
+  })
+  if (error) return { ok: false, error: ruleErr(error) }
+
+  revalidateRules()
+  return { ok: true }
+}
+
+export async function updateOrderDefaultQty(
+  id: string,
+  qty: number,
+): Promise<ActionResult> {
+  if (!(qty > 0)) return { ok: false, error: "Quantity must be at least 1." }
+
+  const supabase = await createClient()
+  const { error } = await supabase
+    .from("packaging_order_default")
+    .update({ qty: Math.trunc(qty) })
+    .eq("id", id)
+  if (error) return { ok: false, error: ruleErr(error) }
+
+  revalidateRules()
+  return { ok: true }
+}
+
+export async function deleteOrderDefault(id: string): Promise<ActionResult> {
+  const supabase = await createClient()
+  const { error } = await supabase
+    .from("packaging_order_default")
+    .delete()
+    .eq("id", id)
+  if (error) return { ok: false, error: ruleErr(error) }
+
+  revalidateRules()
+  return { ok: true }
+}
