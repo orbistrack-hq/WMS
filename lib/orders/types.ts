@@ -13,12 +13,15 @@ export const ORDER_STATUSES = [
   "packed",
   "fulfilled",
   "cancelled",
+  "returned",
 ] as const
 export type OrderStatus = (typeof ORDER_STATUSES)[number]
 
 /** Label-only moves allowed via set_order_status (no inventory/billing effects). */
 export const LABEL_STATUSES = ["created", "picking", "packed"] as const
-export const TERMINAL_STATUSES = ["fulfilled", "cancelled"] as const
+// 'returned' is terminal but re-openable (reopen_order → created); it is not a
+// label-move target and is reached only via return_order() from 'fulfilled'.
+export const TERMINAL_STATUSES = ["fulfilled", "cancelled", "returned"] as const
 
 export const ORDER_TYPES = ["standard", "layaway"] as const
 export type OrderType = (typeof ORDER_TYPES)[number]
@@ -37,6 +40,7 @@ export const STATUS_BADGE: Record<
   packed: { label: "Packed", variant: "warning" },
   fulfilled: { label: "Fulfilled", variant: "success" },
   cancelled: { label: "Cancelled", variant: "muted" },
+  returned: { label: "Returned", variant: "warning" },
 }
 
 export const CHANNEL_LABEL: Record<OrderChannel, string> = {
@@ -52,7 +56,9 @@ export const ORDER_TYPE_LABEL: Record<OrderType, string> = {
 
 /** Can this order still take label-only status moves? */
 export function isActive(status: OrderStatus): boolean {
-  return status !== "fulfilled" && status !== "cancelled"
+  return (
+    status !== "fulfilled" && status !== "cancelled" && status !== "returned"
+  )
 }
 
 // ---------------------------------------------------------------------------

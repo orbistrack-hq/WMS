@@ -38,7 +38,7 @@ alter table public.inventory_ledger add constraint inventory_ledger_reason_check
     'layaway_remove','layaway_cancel','layaway_consume',
     'manual_adjustment','receipt','correction',
     'shopify_sync',   -- added in 0017; MUST be preserved (store-sync writes it
-                      -- and 0026's loop-suppression trigger keys off it)
+                      -- and the 0026 loop-suppression trigger keys off it)
     'order_return'));
 
 -- ---- 2. Inventory primitive: restock returned units ------------------------

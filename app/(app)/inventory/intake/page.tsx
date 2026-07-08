@@ -71,7 +71,7 @@ export default async function IntakePage() {
           </Link>
         </div>
       </div>
-      <IntakeFlow products={products} sites={sites} />
+      <IntakeFlow products={products} />
     </>
   )
 }

@@ -24,23 +24,20 @@ function rpcError(error: PgError): string {
   return error.message || error.details || "Something went wrong."
 }
 
-// ---- Step 2: receive bulk into the parent pool -----------------------------
+// ---- Step 2: receive bulk into the CENTRAL parent pool (no receiving site) --
 export async function receiveIntake(input: {
   productId: string
-  siteId: string
   qty: number
   uom: string
   batchNo?: string | null
   note?: string | null
 }): Promise<Result<{ onHandGrams: number; receivedGrams: number }>> {
   if (!input.productId) return { ok: false, error: "Pick a parent SKU." }
-  if (!input.siteId) return { ok: false, error: "Pick a receiving site." }
   if (!(input.qty > 0)) return { ok: false, error: "Quantity must be positive." }
 
   const supabase = await createClient()
   const { data, error } = await supabase.rpc("intake_receive", {
     p_product_id: input.productId,
-    p_site_id: input.siteId,
     p_qty: input.qty,
     p_uom: input.uom,
     p_batch_no: input.batchNo?.trim() || null,
@@ -83,7 +80,6 @@ type KidRow = {
 
 export async function loadAllocationTargets(
   productId: string,
-  poolSiteId: string,
 ): Promise<Result<{ parentAvailableGrams: number; clients: AllocationClient[] }>> {
   const supabase = await createClient()
   const [poolRes, kidsRes] = await Promise.all([
@@ -91,7 +87,6 @@ export async function loadAllocationTargets(
       .from("parent_inventory")
       .select("on_hand_grams")
       .eq("product_id", productId)
-      .eq("site_id", poolSiteId)
       .maybeSingle(),
     supabase
       .from("child_skus")
@@ -145,7 +140,6 @@ export async function loadAllocationTargets(
 export type AllocationResult = {
   allocation_id: string
   product_id: string
-  site_id: string
   total_grams: number
   remaining_grams: number
   child_count: number
@@ -154,11 +148,14 @@ export type AllocationResult = {
 
 export async function saveAllocation(input: {
   productId: string
-  poolSiteId: string
   lines: { child_sku_id: string; units: number }[]
   idempotencyKey: string
   note?: string | null
-}): Promise<Result<{ result: AllocationResult }>> {
+  // FB-4: optional packing shake recorded as a loss from the central pool.
+  shakeGrams?: number
+  shakeRef?: string
+  shakeBatch?: string | null
+}): Promise<Result<{ result: AllocationResult; shakeGrams: number }>> {
   const lines = input.lines.filter((l) => l.units > 0)
   if (lines.length === 0)
     return { ok: false, error: "Enter at least one quantity to allocate." }
@@ -166,18 +163,41 @@ export async function saveAllocation(input: {
   const supabase = await createClient()
   const { data, error } = await supabase.rpc("allocate_parent_stock", {
     p_product_id: input.productId,
-    p_site_id: input.poolSiteId,
     p_lines: lines,
     p_idempotency_key: input.idempotencyKey,
     p_note: input.note?.trim() || null,
   })
   if (error) return { ok: false, error: rpcError(error) }
 
+  // Record shake as a loss out of the central pool (idempotent on the ref, so a
+  // retry never double-debits). Done after the allocation so both draw from the
+  // same pool; the DB non-negative guard blocks a shake that would overdraw.
+  const shake = Number(input.shakeGrams ?? 0)
+  if (shake > 0 && input.shakeRef) {
+    const { error: shErr } = await supabase.rpc("record_shake", {
+      p_product_id: input.productId,
+      p_grams: shake,
+      p_ref_id: input.shakeRef,
+      p_site_id: null,
+      p_batch_no: input.shakeBatch?.trim() || null,
+      p_note: null,
+    })
+    if (shErr) return { ok: false, error: rpcError(shErr) }
+  }
+
   // Push each changed child's new available out to its client store (Step 6).
   await kickOutboundDrain()
 
   const r = data as AllocationResult
-  return { ok: true, result: { ...r, total_grams: Number(r.total_grams), remaining_grams: Number(r.remaining_grams) } }
+  return {
+    ok: true,
+    result: {
+      ...r,
+      total_grams: Number(r.total_grams),
+      remaining_grams: Number(r.remaining_grams),
+    },
+    shakeGrams: shake > 0 ? shake : 0,
+  }
 }
 
 // ---- Step 6/7: per-child website sync status for a saved allocation --------

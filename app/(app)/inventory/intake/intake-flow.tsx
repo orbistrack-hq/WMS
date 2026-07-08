@@ -37,7 +37,6 @@ const SYNC_META: Record<
   unmapped: { label: "No store mapping", variant: "outline" },
 }
 
-type Site = { id: string; name: string }
 type Product = { id: string; name: string; sites?: string[] }
 
 const UOM_OPTIONS = ["lb", "oz", "g", "kg"]
@@ -62,27 +61,19 @@ const STEPS: { key: Step; label: string }[] = [
   { key: "done", label: "Done" },
 ]
 
-export function IntakeFlow({
-  products,
-  sites,
-}: {
-  products: Product[]
-  sites: Site[]
-}) {
+export function IntakeFlow({ products }: { products: Product[] }) {
   const [step, setStep] = useState<Step>("select")
   const [isPending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
 
   // Step 1 fields
   const [productId, setProductId] = useState("")
-  const [siteId, setSiteId] = useState(sites[0]?.id ?? "")
   const [qty, setQty] = useState("")
   const [uom, setUom] = useState("lb")
   const [batchNo, setBatchNo] = useState("")
   const [intakeNote, setIntakeNote] = useState("")
 
   const productName = products.find((p) => p.id === productId)?.name ?? ""
-  const siteName = sites.find((s) => s.id === siteId)?.name ?? ""
 
   // Carried forward
   const [receivedGrams, setReceivedGrams] = useState(0)
@@ -93,6 +84,10 @@ export function IntakeFlow({
   const [units, setUnits] = useState<Record<string, string>>({})
   const [idemKey, setIdemKey] = useState("")
   const [allocNote, setAllocNote] = useState("")
+  // FB-4: shake (packing loss) grams + a stable ref for idempotency.
+  const [shakeGrams, setShakeGrams] = useState("")
+  const [shakeRef, setShakeRef] = useState("")
+  const [savedShake, setSavedShake] = useState(0)
 
   // Step 4
   const [result, setResult] = useState<AllocationResult | null>(null)
@@ -129,8 +124,10 @@ export function IntakeFlow({
         sum += (parseInt(units[ch.id] || "0", 10) || 0) * ch.gramsPerUnit
     return sum
   }, [clients, units])
-  const remaining = poolAvailable - allocatedGrams
-  const isOver = allocatedGrams > poolAvailable
+  const shakeNum = Math.max(0, parseFloat(shakeGrams) || 0)
+  const committed = allocatedGrams + shakeNum
+  const remaining = poolAvailable - committed
+  const isOver = committed > poolAvailable
   const nearly = !isOver && poolAvailable > 0 && remaining <= poolAvailable * 0.1
   const tone: "ok" | "nearly" | "over" = isOver
     ? "over"
@@ -143,12 +140,10 @@ export function IntakeFlow({
     setError(null)
     const q = Number(qty)
     if (!productId) return setError("Pick a parent SKU.")
-    if (!siteId) return setError("Pick a receiving site.")
     if (!(q > 0)) return setError("Enter a quantity greater than zero.")
     startTransition(async () => {
       const res = await receiveIntake({
         productId,
-        siteId,
         qty: q,
         uom,
         batchNo,
@@ -164,12 +159,14 @@ export function IntakeFlow({
   function doLoadAllocation() {
     setError(null)
     startTransition(async () => {
-      const res = await loadAllocationTargets(productId, siteId)
+      const res = await loadAllocationTargets(productId)
       if (!res.ok) return setError(res.error)
       setClients(res.clients)
       setPoolAvailable(res.parentAvailableGrams)
       setUnits({})
+      setShakeGrams("")
       setIdemKey(crypto.randomUUID())
+      setShakeRef(crypto.randomUUID())
       setStep("allocate")
     })
   }
@@ -191,13 +188,16 @@ export function IntakeFlow({
     startTransition(async () => {
       const res = await saveAllocation({
         productId,
-        poolSiteId: siteId,
         lines,
         idempotencyKey: idemKey,
         note: allocNote,
+        shakeGrams: shakeNum,
+        shakeRef,
+        shakeBatch: batchNo,
       })
       if (!res.ok) return setError(res.error)
       setResult(res.result)
+      setSavedShake(res.shakeGrams)
       setSyncRows(null)
       loadSync(res.result.allocation_id)
       setStep("done")
@@ -217,6 +217,8 @@ export function IntakeFlow({
     setUnits({})
     setResult(null)
     setAllocNote("")
+    setShakeGrams("")
+    setSavedShake(0)
   }
 
   const toneClasses: Record<typeof tone, string> = {
@@ -276,31 +278,19 @@ export function IntakeFlow({
             <CardTitle>Select parent SKU</CardTitle>
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="flex flex-col gap-1.5">
-                <Label>Parent SKU</Label>
-                <Combobox
-                  value={productId}
-                  onValueChange={setProductId}
-                  options={productOptions}
-                  placeholder="Choose a product / strain…"
-                  searchPlaceholder="Search products…"
-                />
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor="site">Receiving site</Label>
-                <Select
-                  id="site"
-                  value={siteId}
-                  onChange={(e) => setSiteId(e.target.value)}
-                >
-                  {sites.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.name}
-                    </option>
-                  ))}
-                </Select>
-              </div>
+            <div className="flex flex-col gap-1.5">
+              <Label>Parent SKU</Label>
+              <Combobox
+                value={productId}
+                onValueChange={setProductId}
+                options={productOptions}
+                placeholder="Choose a product / strain…"
+                searchPlaceholder="Search products…"
+              />
+              <p className="text-xs text-muted-foreground">
+                Received into central inventory — you delegate it to stores in
+                the next step.
+              </p>
             </div>
 
             <div className="grid gap-4 sm:grid-cols-3">
@@ -347,7 +337,7 @@ export function IntakeFlow({
                 <span className="font-medium text-foreground">
                   {fmtGrams(previewGrams)}
                 </span>{" "}
-                into the {siteName || "site"} pool.
+                into central inventory.
               </p>
             ) : null}
 
@@ -390,7 +380,7 @@ export function IntakeFlow({
                 {fmtGrams(receivedGrams)}
               </span>{" "}
               of <span className="font-medium text-foreground">{productName}</span>{" "}
-              at {siteName}.
+              into central inventory.
             </p>
             <div className="rounded-lg border border-border p-4">
               <p className="text-xs text-muted-foreground">
@@ -518,6 +508,14 @@ export function IntakeFlow({
                     {fmtGrams(allocatedGrams)}
                   </span>
                 </div>
+                {shakeNum > 0 ? (
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-muted-foreground">Shake (loss)</span>
+                    <span className="font-medium tabular-nums">
+                      {fmtGrams(shakeNum)}
+                    </span>
+                  </div>
+                ) : null}
                 <div
                   className={cn(
                     "flex items-center justify-between rounded-lg border px-3 py-2 text-sm",
@@ -539,6 +537,25 @@ export function IntakeFlow({
                     Parent inventory nearly exhausted.
                   </p>
                 ) : null}
+
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="shake">Shake / loss (grams)</Label>
+                  <Input
+                    id="shake"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    inputMode="decimal"
+                    value={shakeGrams}
+                    onChange={(e) => setShakeGrams(e.target.value)}
+                    placeholder="0"
+                    className="tabular-nums"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Flower lost during packing — counted as a loss out of central
+                    inventory, not sent to any store.
+                  </p>
+                </div>
 
                 <div className="flex flex-col gap-1.5">
                   <Label htmlFor="anote">Note (optional)</Label>
@@ -594,6 +611,9 @@ export function IntakeFlow({
                 label="Client SKUs updated"
                 value={String(result.child_count)}
               />
+              {savedShake > 0 ? (
+                <Summary label="Shake (loss)" value={fmtGrams(savedShake)} />
+              ) : null}
             </dl>
 
             {/* Website sync status per child SKU */}
