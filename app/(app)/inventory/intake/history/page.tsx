@@ -51,7 +51,9 @@ export default async function AllocationHistoryPage({
   const { data, count, error } = await supabase
     .from("allocations")
     .select(
-      "id, total_grams, created_at, product:products(name), actor:profiles(full_name)",
+      // Disambiguate profiles: allocations has two FKs to profiles (actor +
+      // reversed_by since migration 0034), so hint the actor FK column.
+      "id, total_grams, created_at, product:products(name), actor:profiles!actor(full_name)",
       { count: "estimated" },
     )
     .order("created_at", { ascending: false })

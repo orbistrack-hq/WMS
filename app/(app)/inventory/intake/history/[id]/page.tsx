@@ -46,7 +46,9 @@ export default async function AllocationDetailPage({
       .select(
         // No header site since FB-1 (central pool); the per-child "Client site"
         // below still carries the real site each child SKU was delegated to.
-        "id, total_grams, note, created_at, reversed_at, product:products(name), actor:profiles(full_name)",
+        // Disambiguate profiles (actor + reversed_by both FK to profiles since
+        // migration 0034) by hinting the actor FK column.
+        "id, total_grams, note, created_at, reversed_at, product:products(name), actor:profiles!actor(full_name)",
       )
       .eq("id", id)
       .maybeSingle(),

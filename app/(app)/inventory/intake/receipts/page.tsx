@@ -56,7 +56,10 @@ export default async function IntakeReceiptsPage({
   const { data, count, error } = await supabase
     .from("parent_inventory_ledger")
     .select(
-      "id, delta_grams, batch_no, note, created_at, reversed_at, product:products(name), actor:profiles(full_name)",
+      // Disambiguate profiles: parent_inventory_ledger has two FKs to profiles
+      // (actor + reversed_by since migration 0034), so the bare embed is
+      // ambiguous and errors — hint the actor FK column explicitly.
+      "id, delta_grams, batch_no, note, created_at, reversed_at, product:products(name), actor:profiles!actor(full_name)",
       { count: "estimated" },
     )
     .eq("reason", "intake")
