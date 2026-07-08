@@ -16,10 +16,10 @@ import { updatePackagingRule } from "./actions"
  */
 export function PackagingRuleEditor({
   jarMaxGrams,
-  isAdmin,
+  canEdit,
 }: {
   jarMaxGrams: number
-  isAdmin: boolean
+  canEdit: boolean
 }) {
   const router = useRouter()
   const [value, setValue] = useState(String(jarMaxGrams))
@@ -77,7 +77,7 @@ export function PackagingRuleEditor({
             min="0"
             step="0.5"
             value={value}
-            disabled={!isAdmin || isPending}
+            disabled={!canEdit || isPending}
             onChange={(e) => {
               setValue(e.target.value)
               setSaved(false)
@@ -85,7 +85,7 @@ export function PackagingRuleEditor({
             className="w-28"
           />
         </div>
-        {isAdmin ? (
+        {canEdit ? (
           <Button onClick={save} disabled={isPending || !dirty}>
             {isPending ? "Saving…" : "Save"}
           </Button>
@@ -97,9 +97,9 @@ export function PackagingRuleEditor({
         ) : null}
       </div>
 
-      {!isAdmin ? (
+      {!canEdit ? (
         <p className="text-xs text-muted-foreground">
-          Only an admin can change this rule.
+          You don&apos;t have permission to change this rule.
         </p>
       ) : null}
     </div>

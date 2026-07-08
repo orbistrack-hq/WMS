@@ -22,7 +22,8 @@ export const dynamic = "force-dynamic"
 export default async function PackagingSettingsPage() {
   const supabase = await createClient()
 
-  const [typesRes, sitesRes, levelsRes, adminRes, ruleRes] = await Promise.all([
+  const [typesRes, sitesRes, levelsRes, adminRes, ruleRes, operatorRes] =
+    await Promise.all([
     supabase
       .from("packaging_types")
       // site_id + the owning site's name so each type can be shown as shared vs
@@ -37,6 +38,7 @@ export default async function PackagingSettingsPage() {
       .select("packaging_type_id, site_id, on_hand, reorder_point"),
     supabase.rpc("is_admin"),
     supabase.from("packaging_rule").select("jar_max_grams").maybeSingle(),
+    supabase.rpc("is_operator"),
   ])
 
   const ruleGrams = Number(ruleRes.data?.jar_max_grams)
@@ -56,6 +58,9 @@ export default async function PackagingSettingsPage() {
     }
   }) as PackagingType[]
   const isAdmin = adminRes.data === true
+  // Single Supabase per client: the internal ops team (admin OR operator) manages
+  // the shared packaging config, not just admins (FB-7 / migration 0045).
+  const canManage = isAdmin || operatorRes.data === true
 
   // sites is already RLS-scoped to what the user can access; it drives both the
   // stock card and the "which site owns a new type" picker in the manager.
@@ -92,7 +97,7 @@ export default async function PackagingSettingsPage() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <PackagingRuleEditor jarMaxGrams={jarMaxGrams} isAdmin={isAdmin} />
+            <PackagingRuleEditor jarMaxGrams={jarMaxGrams} canEdit={canManage} />
           </CardContent>
         </Card>
 
@@ -109,7 +114,7 @@ export default async function PackagingSettingsPage() {
           <CardContent>
             <PackagingManager
               types={types}
-              isAdmin={isAdmin}
+              canManageShared={canManage}
               sites={sites}
             />
           </CardContent>

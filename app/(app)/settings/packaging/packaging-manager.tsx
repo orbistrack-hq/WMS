@@ -51,11 +51,11 @@ const KIND_LABEL: Record<string, string> = {
 
 export function PackagingManager({
   types,
-  isAdmin,
+  canManageShared,
   sites,
 }: {
   types: PackagingType[]
-  isAdmin: boolean
+  canManageShared: boolean
   // Sites the current user can access (RLS-scoped). Drives the owner picker.
   sites: Site[]
 }) {
@@ -73,16 +73,16 @@ export function PackagingManager({
   const [newCost, setNewCost] = useState("")
   // Owner of a new type: "" = shared default (admin only), else a site id.
   const [newSiteId, setNewSiteId] = useState<string>(
-    isAdmin ? "" : sites[0]?.id ?? "",
+    canManageShared ? "" : sites[0]?.id ?? "",
   )
 
   const accessibleSiteIds = new Set(sites.map((s) => s.id))
   // A shared default is admin-only; an owned type is manageable by anyone who can
   // access its site (which, per RLS, is the only reason it's on this list).
   const canManageRow = (t: PackagingType) =>
-    isAdmin || (t.site_id != null && accessibleSiteIds.has(t.site_id))
+    canManageShared || (t.site_id != null && accessibleSiteIds.has(t.site_id))
   // Non-admins can only add types they own, so they need at least one site.
-  const canAdd = isAdmin || sites.length > 0
+  const canAdd = canManageShared || sites.length > 0
 
   function run(fn: () => Promise<{ ok: boolean; error?: string }>) {
     setError(null)
@@ -127,7 +127,7 @@ export function PackagingManager({
       setError("Name is required.")
       return
     }
-    if (!isAdmin && !newSiteId) {
+    if (!canManageShared && !newSiteId) {
       setError("Pick which site owns this type.")
       return
     }
@@ -144,7 +144,7 @@ export function PackagingManager({
         setNewName("")
         setNewKind("box")
         setNewCost("")
-        setNewSiteId(isAdmin ? "" : sites[0]?.id ?? "")
+        setNewSiteId(canManageShared ? "" : sites[0]?.id ?? "")
         router.refresh()
       }
     })
@@ -308,7 +308,7 @@ export function PackagingManager({
               onChange={(e) => setNewSiteId(e.target.value)}
               className="w-40"
             >
-              {isAdmin ? (
+              {canManageShared ? (
                 <option value="">Shared (all sites)</option>
               ) : null}
               {sites.map((s) => (
