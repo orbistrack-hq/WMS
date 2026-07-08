@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useEffect, useRef, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { AlertCircle, Plus, Trash2, Wand2 } from "lucide-react"
 
@@ -27,7 +27,8 @@ export const KIND_LABEL: Record<string, string> = {
   shipping_label: "Label",
   jar: "Jar",
   jar_label: "Jar label",
-  vacuum_bag: "Bag",
+  vacuum_bag: "Vacuum bag",
+  mylar_bag: "Mylar bag",
   custom: "Custom",
 }
 
@@ -52,14 +53,17 @@ export function PackagingEditor({
   packagingTypes,
   suggested = [],
   unknownWeightUnits = 0,
+  autoApply = false,
 }: {
   groupId: string
   lines: UsageLine[]
   packagingTypes: PackagingType[]
-  /** Weight-rule seed (FB-3), only when nothing is recorded yet. */
+  /** Weight-config seed (FB-6), only when nothing is recorded yet. */
   suggested?: SuggestedPackagingLine[]
   /** Units the rule couldn't classify (no weight) — flagged for manual entry. */
   unknownWeightUnits?: number
+  /** FB-6: record the suggested packaging automatically on load (no button). */
+  autoApply?: boolean
 }) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
@@ -122,6 +126,19 @@ export function PackagingEditor({
 
   const showSuggested = lines.length === 0 && suggested.length > 0
 
+  // FB-6: apply the computed packaging automatically once, on load, when nothing
+  // is recorded yet — no button. The ref guards against re-firing; after it
+  // records, the refresh reloads with lines so it won't run again.
+  const autoFired = useRef(false)
+  useEffect(() => {
+    if (autoApply && !autoFired.current && showSuggested) {
+      autoFired.current = true
+      applySuggested()
+    }
+    // applySuggested is stable enough for this one-shot; the ref prevents re-runs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoApply, showSuggested])
+
   return (
     <div className="flex flex-col gap-3">
       <p className="text-xs text-muted-foreground">
@@ -139,29 +156,41 @@ export function PackagingEditor({
       {showSuggested ? (
         <div className="flex flex-col gap-2 rounded-lg border border-dashed border-primary/40 bg-primary/5 p-3">
           <div className="flex items-center gap-1.5 text-sm font-medium">
-            <Wand2 className="size-4 text-primary" /> Suggested from weight
+            <Wand2 className="size-4 text-primary" />{" "}
+            {autoApply
+              ? isPending
+                ? "Auto-filling packaging from weight…"
+                : "Auto-filled from weight"
+              : "Suggested from weight"}
           </div>
           <div className="flex flex-wrap gap-1.5">
             {suggested.map((s) => (
               <span
-                key={s.kind}
+                key={s.typeId}
                 className="rounded bg-background px-2 py-0.5 text-sm tabular-nums"
               >
-                {s.qty} × {KIND_LABEL[s.kind] ?? s.kind}
+                {s.qty} × {s.typeName}
               </span>
             ))}
           </div>
           {unknownWeightUnits > 0 ? (
             <p className="text-xs text-amber-700 dark:text-amber-400">
               {unknownWeightUnits} unit{unknownWeightUnits === 1 ? "" : "s"} have
-              no weight set — add their jar/bag by hand.
+              no weight set — add their packaging by hand.
             </p>
           ) : null}
-          <div>
-            <Button size="sm" onClick={applySuggested} disabled={isPending}>
-              <Plus data-icon="inline-start" /> Apply suggested
-            </Button>
-          </div>
+          {autoApply ? (
+            <p className="text-xs text-muted-foreground">
+              Filled automatically — adjust any line below (e.g. the box) before
+              confirming.
+            </p>
+          ) : (
+            <div>
+              <Button size="sm" onClick={applySuggested} disabled={isPending}>
+                <Plus data-icon="inline-start" /> Apply suggested
+              </Button>
+            </div>
+          )}
         </div>
       ) : null}
 

@@ -21,11 +21,8 @@ import {
 } from "@/components/ui/table"
 import { STATUS_BADGE, type OrderStatus } from "@/lib/orders/types"
 import { aggregatePickLines, type PickOrderRow } from "@/lib/packing/aggregate"
-import {
-  JAR_MAX_GRAMS,
-  derivePackagingForGroup,
-  suggestedPackagingLines,
-} from "@/lib/packing/packaging-rules"
+import { computeOrderPackaging } from "@/lib/packing/packaging-rules"
+import { loadPackagingConfig } from "@/lib/packing/load-packaging-config"
 import type { ShipmentRow, ShipmentStatus } from "@/lib/shipping/types"
 import { PackagingEditor, type UsageLine } from "./packaging-editor"
 import { PackConfirm, type PackScanItem } from "./pack-confirm"
@@ -88,7 +85,7 @@ export default async function PackDetailPage({
   const { id } = await params
   const supabase = await createClient()
 
-  const [groupRes, typesRes, pickCompleteRes, operatorRes, ruleRes] =
+  const [groupRes, typesRes, pickCompleteRes, operatorRes] =
     await Promise.all([
     supabase
       .from("fulfillment_groups")
@@ -113,12 +110,7 @@ export default async function PackDetailPage({
       .order("kind"),
     supabase.rpc("pick_complete", { p_group_id: id }),
     supabase.rpc("is_operator"),
-    supabase.from("packaging_rule").select("jar_max_grams").maybeSingle(),
   ])
-
-  const ruleGrams = Number(ruleRes.data?.jar_max_grams)
-  const jarMaxGrams =
-    Number.isFinite(ruleGrams) && ruleGrams > 0 ? ruleGrams : JAR_MAX_GRAMS
 
   if (!groupRes.data) notFound()
   const group = groupRes.data as unknown as GroupDetail
@@ -156,11 +148,12 @@ export default async function PackDetailPage({
     unit_cost: Number(t.unit_cost),
   }))
 
-  // FB-3: seed packaging from the weight rule for a group with nothing recorded
-  // yet. Consumables sum across every order in the group; box + label are one
-  // per group (matching the combined-order "count once" rule). Only surfaced
-  // when no packaging exists, so applying it can never double-count.
-  const derivedPackaging = derivePackagingForGroup(
+  // FB-6: compute packaging from the weight→type map + per-order defaults
+  // (migration 0046). Each unit maps to its exact-weight packaging; box, label,
+  // and the vacuum bag are added once per group. Auto-applied when the group has
+  // nothing recorded yet, so it can never double-count.
+  const packagingConfig = await loadPackagingConfig(supabase)
+  const computedPackaging = computeOrderPackaging(
     group.orders.flatMap((o) =>
       o.order_line_items.map((li) => ({
         gramsPerUnit:
@@ -170,11 +163,17 @@ export default async function PackDetailPage({
         qty: li.quantity,
       })),
     ),
-    jarMaxGrams,
+    packagingConfig.weightRules,
+    packagingConfig.orderDefaults,
   )
   const suggestedPackaging =
     usageLines.length === 0
-      ? suggestedPackagingLines(derivedPackaging, packagingTypes)
+      ? computedPackaging.lines.map((l) => ({
+          typeId: l.typeId,
+          typeName: l.typeName,
+          kind: l.kind,
+          qty: l.qty,
+        }))
       : []
 
   const num = (v: number | string | null) =>
@@ -299,7 +298,8 @@ export default async function PackDetailPage({
                 lines={usageLines}
                 packagingTypes={packagingTypes}
                 suggested={suggestedPackaging}
-                unknownWeightUnits={derivedPackaging.unknownWeightUnits}
+                unknownWeightUnits={computedPackaging.unknownWeightUnits}
+                autoApply
               />
             </CardContent>
           </Card>
