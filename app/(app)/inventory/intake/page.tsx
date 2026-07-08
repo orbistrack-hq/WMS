@@ -19,7 +19,7 @@ export default async function IntakePage({
   const [productsRes, sitesRes, poolRes] = await Promise.all([
     supabase
       .from("products")
-      .select("id, name, child_skus(site_id)")
+      .select("id, name, sku, child_skus(site_id)")
       .eq("is_active", true)
       .order("name"),
     supabase
@@ -46,11 +46,13 @@ export default async function IntakePage({
   const rawProducts = (productsRes.data ?? []) as unknown as {
     id: string
     name: string
+    sku: string | null
     child_skus: { site_id: string }[] | null
   }[]
   const products = rawProducts.map((p) => ({
     id: p.id,
     name: p.name,
+    sku: p.sku,
     centralGrams: centralById.get(p.id) ?? 0,
     sites: [
       ...new Set(

@@ -44,6 +44,8 @@ function revalidateCatalog(productId?: string) {
 // ---------------------------------------------------------------------------
 export type ProductInput = {
   name: string
+  /** WMS-only parent SKU code (e.g. "AF"), shown alongside the name (FB-8). */
+  sku?: string | null
   description?: string | null
   category_id?: string | null
   is_active?: boolean
@@ -59,6 +61,7 @@ export async function createProduct(
     .from("products")
     .insert({
       name: input.name.trim(),
+      sku: input.sku?.trim() || null,
       description: input.description?.trim() || null,
       category_id: input.category_id || null,
       is_active: input.is_active ?? true,
@@ -82,6 +85,7 @@ export async function updateProduct(
     .from("products")
     .update({
       name: input.name.trim(),
+      sku: input.sku?.trim() || null,
       description: input.description?.trim() || null,
       category_id: input.category_id || null,
       is_active: input.is_active ?? true,
@@ -90,6 +94,29 @@ export async function updateProduct(
 
   if (error) return { ok: false, error: dbError(error) }
   revalidateCatalog(id)
+  return { ok: true }
+}
+
+/**
+ * Update only the parent SKU code (FB-8) — used by the inline editor on
+ * /inventory/by-parent, where renaming/other product fields aren't in play.
+ * Empty string clears the code. WMS-only; store sync never touches this column.
+ */
+export async function updateProductSku(
+  id: string,
+  sku: string | null,
+): Promise<ActionResult> {
+  if (!id) return { ok: false, error: "No product specified." }
+
+  const supabase = await createClient()
+  const { error } = await supabase
+    .from("products")
+    .update({ sku: sku?.trim() || null })
+    .eq("id", id)
+
+  if (error) return { ok: false, error: dbError(error) }
+  revalidateCatalog(id)
+  revalidatePath("/inventory/by-parent")
   return { ok: true }
 }
 

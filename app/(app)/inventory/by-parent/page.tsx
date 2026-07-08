@@ -46,6 +46,19 @@ export default async function InventoryByParentPage({
     .select("id, name")
     .order("name")
 
+  // Parent SKU codes (FB-8) live on products, not the inventory_report view, so
+  // fetch them separately and join in memory (keeps the view untouched). Also
+  // powers searching by parent code below.
+  const { data: productSkuRows } = await supabase
+    .from("products")
+    .select("id, sku")
+  const parentSkuById = new Map<string, string | null>(
+    ((productSkuRows ?? []) as { id: string; sku: string | null }[]).map((p) => [
+      p.id,
+      p.sku,
+    ]),
+  )
+
   let query = supabase
     .from("inventory_report")
     .select(
@@ -58,7 +71,20 @@ export default async function InventoryByParentPage({
 
   if (sp.site) query = query.eq("site_id", sp.site)
   if (sp.hideZero === "1") query = query.gt("on_hand", 0)
-  if (sp.q) query = query.or(`product_name.ilike.%${sp.q}%,sku.ilike.%${sp.q}%`)
+  if (sp.q) {
+    // Match product name or child SKU (via the view) plus parent SKU code
+    // (resolved from the products fetch above, since the view lacks it).
+    const needle = sp.q.toLowerCase()
+    const filters = [
+      `product_name.ilike.%${sp.q}%`,
+      `sku.ilike.%${sp.q}%`,
+    ]
+    const skuMatchIds = [...parentSkuById.entries()]
+      .filter(([, sku]) => sku && sku.toLowerCase().includes(needle))
+      .map(([id]) => id)
+    if (skuMatchIds.length) filters.push(`product_id.in.(${skuMatchIds.join(",")})`)
+    query = query.or(filters.join(","))
+  }
 
   const { data, error } = await query
   const rows = (data ?? []) as unknown as ReportRow[]
@@ -72,6 +98,7 @@ export default async function InventoryByParentPage({
       g = {
         product_id: r.product_id,
         product_name: r.product_name ?? "—",
+        parent_sku: parentSkuById.get(r.product_id) ?? null,
         sites: [],
         children: [],
         totals: { on_hand: 0, available: 0, reserved: 0, layby: 0, value: 0 },

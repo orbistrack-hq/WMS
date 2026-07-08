@@ -20,6 +20,7 @@ export type CategoryOption = { id: string; label: string }
 type ProductValue = {
   id?: string
   name: string
+  sku: string | null
   description: string | null
   category_id: string | null
   is_active: boolean
@@ -40,6 +41,7 @@ export function ProductForm({
   const [saved, setSaved] = useState(false)
 
   const [name, setName] = useState(product?.name ?? "")
+  const [sku, setSku] = useState(product?.sku ?? "")
   const [description, setDescription] = useState(product?.description ?? "")
   const [categoryId, setCategoryId] = useState(product?.category_id ?? "")
   const [isActive, setIsActive] = useState(product?.is_active ?? true)
@@ -53,6 +55,7 @@ export function ProductForm({
     }
     const input: ProductInput = {
       name,
+      sku: sku || null,
       description: description || null,
       category_id: categoryId || null,
       is_active: isActive,
@@ -87,6 +90,21 @@ export function ProductForm({
         />
         <p className="text-xs text-muted-foreground">
           Duplicate names are allowed — products are identified by ID, not name.
+        </p>
+      </div>
+
+      <div className="flex flex-col gap-1">
+        <Label htmlFor="prod-sku">Parent SKU</Label>
+        <Input
+          id="prod-sku"
+          value={sku}
+          onChange={(e) => setSku(e.target.value)}
+          placeholder="e.g. AF"
+          className="font-mono"
+        />
+        <p className="text-xs text-muted-foreground">
+          Optional short code for this parent, for management inside WMS. Store
+          sync never changes it.
         </p>
       </div>
 

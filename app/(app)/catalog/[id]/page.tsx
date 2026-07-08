@@ -46,6 +46,7 @@ type SkuQueryRow = {
 type ProductDetail = {
   id: string
   name: string
+  sku: string | null
   description: string | null
   category_id: string | null
   is_active: boolean
@@ -71,7 +72,7 @@ export default async function ProductDetailPage({
     supabase
       .from("products")
       .select(
-        `id, name, description, category_id, is_active,
+        `id, name, sku, description, category_id, is_active,
          child_skus(id, site_id, sku, store_variant_id, bin_location, barcode,
            grams_per_unit, variant_label, price, cost, is_active,
            site:sites(name),
@@ -131,6 +132,11 @@ export default async function ProductDetailPage({
         <h1 className="text-2xl font-semibold tracking-tight">
           {product.name}
         </h1>
+        {product.sku ? (
+          <Badge variant="outline" className="font-mono">
+            {product.sku}
+          </Badge>
+        ) : null}
         {product.is_active ? (
           <Badge variant="success">Active</Badge>
         ) : (
@@ -173,6 +179,7 @@ export default async function ProductDetailPage({
                 product={{
                   id: product.id,
                   name: product.name,
+                  sku: product.sku,
                   description: product.description,
                   category_id: product.category_id,
                   is_active: product.is_active,

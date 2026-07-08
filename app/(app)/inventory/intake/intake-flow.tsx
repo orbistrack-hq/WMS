@@ -40,6 +40,8 @@ const SYNC_META: Record<
 type Product = {
   id: string
   name: string
+  // FB-8: WMS-only parent SKU code, shown in the picker to disambiguate.
+  sku?: string | null
   sites?: string[]
   // FB-5: central (undelegated) grams already on hand for this parent SKU.
   centralGrams?: number
@@ -126,10 +128,12 @@ export function IntakeFlow({
     () =>
       products.map((p) => {
         const sites = p.sites?.length ? p.sites.join(", ") : ""
+        const code = p.sku?.trim() || ""
+        const base = code ? `${code} · ${p.name}` : p.name
         return {
           value: p.id,
-          label: sites ? `${p.name}  ·  ${sites}` : p.name,
-          keywords: sites,
+          label: sites ? `${base}  ·  ${sites}` : base,
+          keywords: [code, sites].filter(Boolean).join(" "),
         }
       }),
     [products],

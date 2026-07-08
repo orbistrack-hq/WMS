@@ -1,11 +1,13 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useTransition } from "react"
 import Link from "next/link"
-import { ChevronDown, ChevronRight, MapPin } from "lucide-react"
+import { ChevronDown, ChevronRight, MapPin, Check, X, Pencil } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
+import { Input } from "@/components/ui/input"
 import {
   Table,
   TableBody,
@@ -15,6 +17,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { formatCurrency } from "@/lib/format"
+import { updateProductSku } from "@/app/(app)/catalog/actions"
 
 export type ParentChild = {
   child_sku_id: string
@@ -35,6 +38,8 @@ export type ParentChild = {
 export type ParentGroup = {
   product_id: string
   product_name: string
+  /** WMS-only parent SKU code (FB-8); null when unset. */
+  parent_sku: string | null
   sites: string[]
   children: ParentChild[]
   totals: {
@@ -102,7 +107,14 @@ export function ParentInventoryList({
                 <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
               )}
               <div className="min-w-0 flex-1">
-                <div className="truncate font-medium">{p.product_name}</div>
+                <div className="flex items-center gap-2">
+                  <span className="truncate font-medium">{p.product_name}</span>
+                  {p.parent_sku ? (
+                    <Badge variant="outline" className="shrink-0 font-mono">
+                      {p.parent_sku}
+                    </Badge>
+                  ) : null}
+                </div>
                 <div className="mt-1 flex flex-wrap items-center gap-1.5">
                   {p.sites.map((site) => (
                     <Badge key={site} variant="outline" className="gap-1">
@@ -195,7 +207,11 @@ export function ParentInventoryList({
                     })}
                   </TableBody>
                 </Table>
-                <div className="flex justify-end px-4 py-2">
+                <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2">
+                  <ParentSkuEditor
+                    productId={p.product_id}
+                    initial={p.parent_sku}
+                  />
                   <Link
                     href={`/catalog/${p.product_id}`}
                     className="text-xs font-medium text-muted-foreground hover:text-foreground hover:underline"
@@ -208,6 +224,95 @@ export function ParentInventoryList({
           </Card>
         )
       })}
+    </div>
+  )
+}
+
+/** Inline edit of the WMS-only parent SKU code (FB-8). */
+function ParentSkuEditor({
+  productId,
+  initial,
+}: {
+  productId: string
+  initial: string | null
+}) {
+  const [editing, setEditing] = useState(false)
+  const [value, setValue] = useState(initial ?? "")
+  const [current, setCurrent] = useState(initial)
+  const [error, setError] = useState<string | null>(null)
+  const [isPending, startTransition] = useTransition()
+
+  function save() {
+    setError(null)
+    const next = value.trim()
+    startTransition(async () => {
+      const res = await updateProductSku(productId, next || null)
+      if (!res.ok) {
+        setError(res.error)
+        return
+      }
+      setCurrent(next || null)
+      setEditing(false)
+    })
+  }
+
+  function cancel() {
+    setValue(current ?? "")
+    setError(null)
+    setEditing(false)
+  }
+
+  if (!editing) {
+    return (
+      <div className="flex items-center gap-2 text-xs">
+        <span className="text-muted-foreground">Parent SKU</span>
+        {current ? (
+          <Badge variant="outline" className="font-mono">
+            {current}
+          </Badge>
+        ) : (
+          <span className="text-muted-foreground/60">— none</span>
+        )}
+        <button
+          type="button"
+          onClick={() => setEditing(true)}
+          className="inline-flex items-center gap-1 font-medium text-muted-foreground hover:text-foreground hover:underline"
+        >
+          <Pencil className="size-3" />
+          {current ? "Edit" : "Add"}
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center gap-2">
+        <Input
+          autoFocus
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") save()
+            if (e.key === "Escape") cancel()
+          }}
+          placeholder="e.g. AF"
+          className="h-8 w-32 font-mono"
+        />
+        <Button size="sm" onClick={save} disabled={isPending} className="h-8">
+          <Check className="size-4" /> Save
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={cancel}
+          disabled={isPending}
+          className="h-8"
+        >
+          <X className="size-4" />
+        </Button>
+      </div>
+      {error ? <span className="text-xs text-destructive">{error}</span> : null}
     </div>
   )
 }
