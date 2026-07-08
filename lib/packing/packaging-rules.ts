@@ -139,3 +139,137 @@ export function tallyByWeight(units: WeightedUnit[]): WeightTally[] {
       return a.grams - b.grams
     })
 }
+
+// ---------------------------------------------------------------------------
+// Weight → packaging config engine (FB-6, migration 0046)
+// ---------------------------------------------------------------------------
+// Supersedes the single jar/bag threshold: packaging cost now varies by weight
+// AND dimension (7g and 14g use different-sized/cost Mylar bags), plus a set of
+// per-ORDER defaults (box, label, vacuum sealed bag) applied once per group.
+// `computeOrderPackaging` is a pure function over config loaded from the DB, so
+// it's fully testable and the server just feeds it rows.
+
+/** A row of packaging_weight_rule joined to its type's cost. */
+export type PackagingWeightRule = {
+  gramsPerUnit: number
+  typeId: string
+  typeName: string
+  kind: string
+  unitCost: number
+  qtyPerUnit: number
+}
+
+/** A row of packaging_order_default joined to its type's cost. */
+export type PackagingOrderDefault = {
+  typeId: string
+  typeName: string
+  kind: string
+  unitCost: number
+  qty: number
+}
+
+export type ComputedPackagingLine = {
+  typeId: string
+  typeName: string
+  kind: string
+  qty: number
+  unitCost: number
+  lineCost: number
+}
+
+export type ComputedPackaging = {
+  lines: ComputedPackagingLine[]
+  totalCost: number
+  /** Units whose weight matched no rule (or had no weight) — flagged, not guessed. */
+  unknownWeightUnits: number
+}
+
+const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100
+
+// Stable display/aggregation order for packaging lines.
+const KIND_SORT: Record<string, number> = {
+  box: 0,
+  shipping_label: 1,
+  jar: 2,
+  jar_label: 3,
+  vacuum_bag: 4,
+  mylar_bag: 5,
+  custom: 6,
+}
+
+/**
+ * Compute the packaging (and cost) for one order/group from the weight map +
+ * per-order defaults. Each unit line is matched to weight rules by EXACT
+ * grams_per_unit; per-order defaults are added once. Lines are aggregated by
+ * packaging type. Units with no matching rule (or no weight) are surfaced in
+ * `unknownWeightUnits` rather than silently mis-packed.
+ */
+export function computeOrderPackaging(
+  units: WeightedUnit[],
+  weightRules: PackagingWeightRule[],
+  orderDefaults: PackagingOrderDefault[],
+): ComputedPackaging {
+  const byType = new Map<
+    string,
+    { typeName: string; kind: string; unitCost: number; qty: number }
+  >()
+  const add = (
+    typeId: string,
+    typeName: string,
+    kind: string,
+    unitCost: number,
+    qty: number,
+  ) => {
+    if (qty <= 0) return
+    const e = byType.get(typeId) ?? { typeName, kind, unitCost, qty: 0 }
+    e.qty += qty
+    byType.set(typeId, e)
+  }
+
+  const rulesByGrams = new Map<number, PackagingWeightRule[]>()
+  for (const r of weightRules) {
+    const arr = rulesByGrams.get(r.gramsPerUnit) ?? []
+    arr.push(r)
+    rulesByGrams.set(r.gramsPerUnit, arr)
+  }
+
+  let unknown = 0
+  for (const u of units) {
+    if (u.qty <= 0) continue
+    if (u.gramsPerUnit == null) {
+      unknown += u.qty
+      continue
+    }
+    const rules = rulesByGrams.get(u.gramsPerUnit)
+    if (!rules || rules.length === 0) {
+      unknown += u.qty
+      continue
+    }
+    for (const r of rules) {
+      add(r.typeId, r.typeName, r.kind, r.unitCost, r.qtyPerUnit * u.qty)
+    }
+  }
+
+  // Per-order defaults: once per order/group.
+  for (const d of orderDefaults) {
+    add(d.typeId, d.typeName, d.kind, d.unitCost, d.qty)
+  }
+
+  const lines: ComputedPackagingLine[] = [...byType.entries()]
+    .map(([typeId, e]) => ({
+      typeId,
+      typeName: e.typeName,
+      kind: e.kind,
+      qty: e.qty,
+      unitCost: e.unitCost,
+      lineCost: round2(e.qty * e.unitCost),
+    }))
+    .sort(
+      (a, b) =>
+        (KIND_SORT[a.kind] ?? 99) - (KIND_SORT[b.kind] ?? 99) ||
+        a.typeName.localeCompare(b.typeName),
+    )
+
+  const totalCost = round2(lines.reduce((s, l) => s + l.lineCost, 0))
+  return { lines, totalCost, unknownWeightUnits: unknown }
+}
