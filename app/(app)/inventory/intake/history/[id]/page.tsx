@@ -44,7 +44,9 @@ export default async function AllocationDetailPage({
     supabase
       .from("allocations")
       .select(
-        "id, total_grams, note, created_at, reversed_at, product:products(name), site:sites(name), actor:profiles(full_name)",
+        // No header site since FB-1 (central pool); the per-child "Client site"
+        // below still carries the real site each child SKU was delegated to.
+        "id, total_grams, note, created_at, reversed_at, product:products(name), actor:profiles(full_name)",
       )
       .eq("id", id)
       .maybeSingle(),
@@ -63,7 +65,6 @@ export default async function AllocationDetailPage({
     created_at: string
     reversed_at: string | null
     product: Named | Named[] | null
-    site: Named | Named[] | null
     actor: { full_name: string | null } | { full_name: string | null }[] | null
   }
   const lines = (linesRes.data ?? []) as unknown as LineRow[]
@@ -81,8 +82,7 @@ export default async function AllocationDetailPage({
         {one(a.product)?.name ?? "—"}
       </h1>
       <p className="mb-6 text-sm text-muted-foreground">
-        {formatDateTime(a.created_at)} · {one(a.site)?.name ?? "—"} ·{" "}
-        {one(a.actor)?.full_name ?? "—"}
+        {formatDateTime(a.created_at)} · {one(a.actor)?.full_name ?? "—"}
       </p>
 
       <div className="grid gap-4 lg:grid-cols-3">

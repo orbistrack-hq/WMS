@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState, useTransition } from "react"
+import { useEffect, useMemo, useRef, useState, useTransition } from "react"
 import Link from "next/link"
 import { AlertCircle, ArrowLeft, Check, PackageCheck } from "lucide-react"
 
@@ -37,7 +37,13 @@ const SYNC_META: Record<
   unmapped: { label: "No store mapping", variant: "outline" },
 }
 
-type Product = { id: string; name: string; sites?: string[] }
+type Product = {
+  id: string
+  name: string
+  sites?: string[]
+  // FB-5: central (undelegated) grams already on hand for this parent SKU.
+  centralGrams?: number
+}
 
 const UOM_OPTIONS = ["lb", "oz", "g", "kg"]
 // Operational convention (matches the to_grams DB helper): 1 oz = 28 g, 1 lb = 448 g.
@@ -61,7 +67,14 @@ const STEPS: { key: Step; label: string }[] = [
   { key: "done", label: "Done" },
 ]
 
-export function IntakeFlow({ products }: { products: Product[] }) {
+export function IntakeFlow({
+  products,
+  initialAllocateProductId = null,
+}: {
+  products: Product[]
+  /** FB-5: when set, jump straight to the allocate step for this product. */
+  initialAllocateProductId?: string | null
+}) {
   const [step, setStep] = useState<Step>("select")
   const [isPending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
@@ -72,8 +85,13 @@ export function IntakeFlow({ products }: { products: Product[] }) {
   const [uom, setUom] = useState("lb")
   const [batchNo, setBatchNo] = useState("")
   const [intakeNote, setIntakeNote] = useState("")
+  // FB-5: true when we entered allocation without a preceding receive (skip-to-
+  // allocate). Used to hide the "Received" figure and route Back to Select.
+  const [allocateOnly, setAllocateOnly] = useState(false)
 
-  const productName = products.find((p) => p.id === productId)?.name ?? ""
+  const selectedProduct = products.find((p) => p.id === productId)
+  const productName = selectedProduct?.name ?? ""
+  const selectedCentralGrams = selectedProduct?.centralGrams ?? 0
 
   // Carried forward
   const [receivedGrams, setReceivedGrams] = useState(0)
@@ -156,10 +174,10 @@ export function IntakeFlow({ products }: { products: Product[] }) {
     })
   }
 
-  function doLoadAllocation() {
+  function doLoadAllocation(pid: string = productId, asAllocateOnly = false) {
     setError(null)
     startTransition(async () => {
-      const res = await loadAllocationTargets(productId)
+      const res = await loadAllocationTargets(pid)
       if (!res.ok) return setError(res.error)
       setClients(res.clients)
       setPoolAvailable(res.parentAvailableGrams)
@@ -167,9 +185,22 @@ export function IntakeFlow({ products }: { products: Product[] }) {
       setShakeGrams("")
       setIdemKey(crypto.randomUUID())
       setShakeRef(crypto.randomUUID())
+      setAllocateOnly(asAllocateOnly)
       setStep("allocate")
     })
   }
+
+  // FB-5: deep-link — ?allocate=<productId> lands straight on the allocate step
+  // (from the Awaiting-allocation list). Runs once on mount.
+  const didInitAllocate = useRef(false)
+  useEffect(() => {
+    if (didInitAllocate.current) return
+    if (!initialAllocateProductId) return
+    didInitAllocate.current = true
+    setProductId(initialAllocateProductId)
+    doLoadAllocation(initialAllocateProductId, true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialAllocateProductId])
 
   function doSave() {
     setError(null)
@@ -219,6 +250,7 @@ export function IntakeFlow({ products }: { products: Product[] }) {
     setAllocNote("")
     setShakeGrams("")
     setSavedShake(0)
+    setAllocateOnly(false)
   }
 
   const toneClasses: Record<typeof tone, string> = {
@@ -228,13 +260,15 @@ export function IntakeFlow({ products }: { products: Product[] }) {
     over: "border-destructive/40 bg-destructive/10 text-destructive",
   }
 
-  const currentIndex = STEPS.findIndex((s) => s.key === step)
+  // Skip-to-allocate flows never touch Receive, so drop it from the stepper.
+  const steps = allocateOnly ? STEPS.filter((s) => s.key !== "receive") : STEPS
+  const currentIndex = steps.findIndex((s) => s.key === step)
 
   return (
     <div className="flex flex-col gap-4">
       {/* Stepper */}
       <ol className="flex flex-wrap items-center gap-2 text-sm">
-        {STEPS.map((s, i) => (
+        {steps.map((s, i) => (
           <li key={s.key} className="flex items-center gap-2">
             <span
               className={cn(
@@ -257,7 +291,7 @@ export function IntakeFlow({ products }: { products: Product[] }) {
             >
               {s.label}
             </span>
-            {i < STEPS.length - 1 ? (
+            {i < steps.length - 1 ? (
               <span className="mx-1 text-muted-foreground/40">→</span>
             ) : null}
           </li>
@@ -292,6 +326,28 @@ export function IntakeFlow({ products }: { products: Product[] }) {
                 the next step.
               </p>
             </div>
+
+            {/* FB-5: skip-to-allocate — this parent already has central stock,
+                so you can go straight to delegation without a fresh receive. */}
+            {selectedCentralGrams > 0 ? (
+              <div className="flex flex-col gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-sm">
+                  <span className="font-medium">
+                    {fmtGrams(selectedCentralGrams)}
+                  </span>{" "}
+                  already in central inventory. Allocate it now, or receive more
+                  below first.
+                </p>
+                <Button
+                  variant="outline"
+                  className="shrink-0"
+                  onClick={() => doLoadAllocation(productId, true)}
+                  disabled={isPending}
+                >
+                  Allocate now
+                </Button>
+              </div>
+            ) : null}
 
             <div className="grid gap-4 sm:grid-cols-3">
               <div className="flex flex-col gap-1.5">
@@ -391,7 +447,7 @@ export function IntakeFlow({ products }: { products: Product[] }) {
               </p>
             </div>
             <div className="flex items-center gap-2">
-              <Button onClick={doLoadAllocation} disabled={isPending}>
+              <Button onClick={() => doLoadAllocation()} disabled={isPending}>
                 Allocate inventory
               </Button>
               <Button variant="ghost" onClick={reset} disabled={isPending}>
@@ -575,7 +631,7 @@ export function IntakeFlow({ products }: { products: Product[] }) {
                 </Button>
                 <Button
                   variant="ghost"
-                  onClick={() => setStep("receive")}
+                  onClick={() => setStep(allocateOnly ? "select" : "receive")}
                   disabled={isPending}
                 >
                   <ArrowLeft data-icon="inline-start" /> Back
@@ -592,13 +648,15 @@ export function IntakeFlow({ products }: { products: Product[] }) {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <PackageCheck className="size-5 text-emerald-600 dark:text-emerald-400" />
-              Intake complete
+              {allocateOnly ? "Allocation complete" : "Intake complete"}
             </CardTitle>
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
             <dl className="grid gap-3 sm:grid-cols-2">
               <Summary label="Parent SKU" value={productName} />
-              <Summary label="Received" value={fmtGrams(receivedGrams)} />
+              {receivedGrams > 0 ? (
+                <Summary label="Received" value={fmtGrams(receivedGrams)} />
+              ) : null}
               <Summary
                 label="Total allocated"
                 value={fmtGrams(result.total_grams)}

@@ -13,7 +13,7 @@ Add new items at the top of "Open items". Status: 🆕 new · 🔍 needs decisio
 
 ## Open items
 
-### FB-5 — Intake flow: allocate-later, skip-to-allocate, fix history display 🔍
+### FB-5 — Intake flow: allocate-later, skip-to-allocate, fix history display ✅
 **Feedback (J, 2026-07-08):** After intaking, let the team either (a) go **straight to allocation** when a product already has central inventory, or (b) go to an **intake history page** and **allocate later**. Also: the **intake / allocation history isn't displaying properly**.
 
 **Current behaviour**
@@ -25,7 +25,15 @@ Add new items at the top of "Open items". Status: 🆕 new · 🔍 needs decisio
 2. **Allocate-later from history:** an intake history/receipts row (or a "central stock on hand" list) gets an **Allocate** action that opens the allocate step for that product later.
 3. **Fix history display:** investigate the "not displaying properly" report — most likely the `sites` join now yields "—" for central rows (cosmetic) but confirm it isn't returning empty/erroring. Drop the Site column on the central intake receipts + allocation-history *list* pages (it's meaningless post-central; the allocation *detail* page keeps per-child "Client site"), and verify RLS/paging still returns rows. (This absorbs the FB-1 cosmetic follow-up.)
 
-**Open questions:** where should "central stock on hand + Allocate later" live — a new list on `/inventory` (by product, central grams), or fold into `/inventory/by-parent`? What exactly is broken on the history page (empty list, error, or just the "—")? — get a screenshot.
+**Decisions (J, 2026-07-08):** "central stock on hand + Allocate later" lives in a **dedicated "Awaiting allocation" list** (not folded into by-parent). History symptom confirmed: **both the receipts and allocation-history lists show "no rows"** (not just the "—") — i.e. the lists came back empty, so this was a real regression, not cosmetic.
+
+**Build log — 2026-07-08 — shipped ✅ (code only, no migration)**
+- **Fix history display (empty lists):** dropped the `site:sites(name)` embed + Site column from the intake-receipts (`receipts/page.tsx`) and allocation-history (`history/page.tsx`) *list* pages, and from the allocation-*detail* header (`history/[id]/page.tsx` keeps the per-child "Client site"). Post-[[FB-1]] the site is always NULL there, and the sites embed is the most likely cause of the empty result. **Also stopped swallowing the query error**: both list pages now read `error` and render a visible message instead of silently showing "No rows." So if anything still errors (e.g. a stale **PostgREST schema cache** after migration 0043 — reload with `notify pgrst, 'reload schema';` or restart the API), the real message now shows instead of a misleading empty state.
+- **Skip-to-allocate:** the intake landing now loads each parent's central `on_hand_grams` (`page.tsx`); the Select step shows a **"X g already in central inventory · Allocate now"** panel when the chosen parent has undelegated stock, jumping straight to the Allocate step with no receive (`intake-flow.tsx`, new `allocateOnly` flow — stepper drops "Receive", Back returns to Select, the done screen hides "Received" and reads "Allocation complete"). Also supports **`?allocate=<productId>`** deep-linking straight to the allocate step (runs once on mount).
+- **Awaiting-allocation list:** new page `/inventory/intake/awaiting` — reads `parent_inventory_report` (central per-product view from 0043) where `available_grams > 0`, one row per parent SKU with central-available / allocated-to-date / last-movement + an **Allocate** button → `/inventory/intake?allocate=<product_id>`. Linked from the intake landing header alongside Intake receipts / Allocation history.
+- **Files:** `app/(app)/inventory/intake/{page,intake-flow}.tsx`, `.../receipts/page.tsx`, `.../history/page.tsx`, `.../history/[id]/page.tsx`, new `.../awaiting/page.tsx`.
+- **Verification:** TSX syntax-checked per-file with `tsc` transpile-only (no repo `node_modules` in the Linux sandbox — Windows install). **Run `pnpm typecheck && pnpm test` locally before merge.** The empty-list fix should be confirmed on the running app: open Intake receipts / Allocation history — rows should appear; if not, the now-visible error message will name the cause (likely a PostgREST schema-cache reload).
+- **Remaining / optional:** no DB migration was needed. If the lists are *still* empty after a schema-cache reload, send the on-screen error text.
 
 ---
 

@@ -26,7 +26,6 @@ type Row = {
   total_grams: number | string
   created_at: string
   product: { name: string | null } | { name: string | null }[] | null
-  site: { name: string | null } | { name: string | null }[] | null
   actor: { full_name: string | null } | { full_name: string | null }[] | null
 }
 
@@ -44,10 +43,15 @@ export default async function AllocationHistoryPage({
   const [from, to] = pageRangePlusOne(page)
 
   const supabase = await createClient()
-  const { data, count } = await supabase
+  // Since FB-1 (central pool) an allocation's site is always NULL — the pool is
+  // per parent SKU, not per site — so we no longer join or show it (the per-child
+  // "Client site" lives on the detail page). Dropping the sites embed also clears
+  // the likely cause of this list coming back empty; surface any error so a real
+  // failure is visible instead of a misleading "no allocations yet".
+  const { data, count, error } = await supabase
     .from("allocations")
     .select(
-      "id, total_grams, created_at, product:products(name), site:sites(name), actor:profiles(full_name)",
+      "id, total_grams, created_at, product:products(name), actor:profiles(full_name)",
       { count: "estimated" },
     )
     .order("created_at", { ascending: false })
@@ -72,7 +76,11 @@ export default async function AllocationHistoryPage({
 
       <Card>
         <CardContent className="p-0">
-          {rows.length === 0 ? (
+          {error ? (
+            <p className="p-6 text-sm text-destructive">
+              Could not load allocation history: {error.message}
+            </p>
+          ) : rows.length === 0 ? (
             <p className="p-6 text-sm text-muted-foreground">
               No allocations yet.
             </p>
@@ -82,7 +90,6 @@ export default async function AllocationHistoryPage({
                 <TableRow>
                   <TableHead>When</TableHead>
                   <TableHead>Parent SKU</TableHead>
-                  <TableHead>Site</TableHead>
                   <TableHead className="text-right">Allocated</TableHead>
                   <TableHead>By</TableHead>
                   <TableHead className="w-px" />
@@ -97,7 +104,6 @@ export default async function AllocationHistoryPage({
                     <TableCell className="font-medium">
                       {one(r.product)?.name ?? "—"}
                     </TableCell>
-                    <TableCell>{one(r.site)?.name ?? "—"}</TableCell>
                     <TableCell className="text-right tabular-nums">
                       {formatGrams(r.total_grams)}
                     </TableCell>

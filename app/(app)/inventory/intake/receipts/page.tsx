@@ -36,7 +36,6 @@ type Row = {
   created_at: string
   reversed_at: string | null
   product: Named | Named[] | null
-  site: Named | Named[] | null
   actor: { full_name: string | null } | { full_name: string | null }[] | null
 }
 
@@ -50,11 +49,14 @@ export default async function IntakeReceiptsPage({
   const [from, to] = pageRangePlusOne(page)
 
   const supabase = await createClient()
-  // Bulk intakes are parent_inventory_ledger rows with reason 'intake'.
-  const { data, count } = await supabase
+  // Bulk intakes are parent_inventory_ledger rows with reason 'intake'. Since
+  // FB-1 (central pool) the site is always NULL here, so we no longer join or
+  // show it — the old sites embed was also the likely cause of the list coming
+  // back empty. Surface any query error instead of silently rendering "no rows".
+  const { data, count, error } = await supabase
     .from("parent_inventory_ledger")
     .select(
-      "id, delta_grams, batch_no, note, created_at, reversed_at, product:products(name), site:sites(name), actor:profiles(full_name)",
+      "id, delta_grams, batch_no, note, created_at, reversed_at, product:products(name), actor:profiles(full_name)",
       { count: "estimated" },
     )
     .eq("reason", "intake")
@@ -80,7 +82,11 @@ export default async function IntakeReceiptsPage({
 
       <Card>
         <CardContent className="p-0">
-          {rows.length === 0 ? (
+          {error ? (
+            <p className="p-6 text-sm text-destructive">
+              Could not load intake receipts: {error.message}
+            </p>
+          ) : rows.length === 0 ? (
             <p className="p-6 text-sm text-muted-foreground">No intakes yet.</p>
           ) : (
             <Table>
@@ -88,7 +94,6 @@ export default async function IntakeReceiptsPage({
                 <TableRow>
                   <TableHead>Date</TableHead>
                   <TableHead>Parent SKU</TableHead>
-                  <TableHead>Site</TableHead>
                   <TableHead>Batch</TableHead>
                   <TableHead className="text-right">Grams</TableHead>
                   <TableHead>By</TableHead>
@@ -102,7 +107,6 @@ export default async function IntakeReceiptsPage({
                       {formatDateTime(r.created_at)}
                     </TableCell>
                     <TableCell>{one(r.product)?.name ?? "—"}</TableCell>
-                    <TableCell>{one(r.site)?.name ?? "—"}</TableCell>
                     <TableCell className="text-muted-foreground">
                       {r.batch_no ?? "—"}
                     </TableCell>
