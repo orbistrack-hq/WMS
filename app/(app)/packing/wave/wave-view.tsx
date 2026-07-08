@@ -3,20 +3,21 @@
 import { useMemo, useState, useTransition } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { ArrowLeft, Check, PackageCheck, Printer } from "lucide-react"
+import { ArrowLeft, Check, PackageCheck, Plus, Printer, Trash2 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
 import { Select } from "@/components/ui/select"
 import { formatCurrency } from "@/lib/format"
 
 import { packGroup, recordPackaging, type ActionResult } from "../actions"
 import type { PackagingTypeOption } from "@/lib/packing/aggregate"
 import {
-  derivePackagingForGroup,
+  computeOrderPackaging,
   tallyByWeight,
+  type PackagingOrderDefault,
+  type PackagingWeightRule,
   type WeightedUnit,
 } from "@/lib/packing/packaging-rules"
 
@@ -30,19 +31,19 @@ const PACK_KIND_LABEL: Record<string, string> = {
   shipping_label: "Label",
   jar: "Jar",
   jar_label: "Jar label",
-  vacuum_bag: "Bag",
+  vacuum_bag: "Vacuum bag",
+  mylar_bag: "Mylar bag",
   custom: "Custom",
 }
 
-// Kind display order for the inline packaging entry (box/label first).
-const KIND_ORDER = [
-  "box",
-  "shipping_label",
-  "jar",
-  "jar_label",
-  "vacuum_bag",
-  "custom",
-]
+/** One editable packaging line in the wave's inline entry, keyed by type. */
+type PackLine = {
+  typeId: string
+  typeName: string
+  kind: string
+  unitCost: number
+  qty: string
+}
 
 export type WaveAlloc = {
   groupId: string
@@ -63,15 +64,15 @@ export type WaveRow = {
 
 type Mode = "route" | "sort"
 
-type PackField = { typeId: string; qty: string }
-
 /**
  * Wave pick runner. Shows the consolidated demand of several groups two ways:
  * "Route" — one bin-sorted pass to gather everything — and "Sort" — the
  * put-wall view that splits the gathered stock back out per order. Sort mode
- * also carries an inline packaging entry per group (box/label default to 1,
- * jars/bags default to 0) so confirming a group records real packaging cost
- * instead of only flipping status — mass packing without leaving the wave.
+ * also carries an inline packaging entry per group, auto-seeded from the
+ * weight→packaging config (FB-6): each unit maps to its exact-weight packaging
+ * (jar / Mylar size), plus one vacuum bag / box / label per order. Confirming a
+ * group records that real packaging cost instead of only flipping status — mass
+ * packing without leaving the wave. Every seeded line stays editable.
  *
  * Check-off is intentionally local/ephemeral: a wave isn't persisted yet, so
  * nothing here writes to pick_progress. Persisting wave progress is a later
@@ -87,7 +88,8 @@ export function WaveView({
   rows,
   packagingTypes,
   existingPackaging,
-  jarMaxGrams,
+  weightRules,
+  orderDefaults,
 }: {
   siteName: string | null
   groupCount: number
@@ -97,7 +99,8 @@ export function WaveView({
   rows: WaveRow[]
   packagingTypes: PackagingTypeOption[]
   existingPackaging: Record<string, number>
-  jarMaxGrams: number
+  weightRules: PackagingWeightRule[]
+  orderDefaults: PackagingOrderDefault[]
 }) {
   const [mode, setMode] = useState<Mode>("route")
   const [gathered, setGathered] = useState<Set<string>>(new Set())
@@ -108,15 +111,7 @@ export function WaveView({
   const [packError, setPackError] = useState<string | null>(null)
   const [isPacking, startPacking] = useTransition()
 
-  const typesByKind = useMemo(() => {
-    const m = new Map<string, PackagingTypeOption[]>()
-    for (const t of packagingTypes) {
-      const arr = m.get(t.kind) ?? []
-      arr.push(t)
-      m.set(t.kind, arr)
-    }
-    return m
-  }, [packagingTypes])
+  const [addType, setAddType] = useState(packagingTypes[0]?.id ?? "")
 
   const allGroupIds = useMemo(
     () => [...new Set(rows.flatMap((r) => r.allocations.map((a) => a.groupId)))],
@@ -124,7 +119,7 @@ export function WaveView({
   )
 
   // Per-group weighted unit lines, so packaging can be seeded from the weight
-  // rule (FB-3): each row contributes its allocated qty to every group it feeds.
+  // config (FB-6): each row contributes its allocated qty to every group it feeds.
   const unitsByGroup = useMemo(() => {
     const m = new Map<string, WeightedUnit[]>()
     for (const r of rows) {
@@ -137,68 +132,90 @@ export function WaveView({
     return m
   }, [rows])
 
-  // Seed packaging from the weight rule (3.5g → jar + jar label, heavier → bag;
-  // 1 box + 1 label per group). Numbers stay fully editable below. Groups that
-  // already have packaging recorded seed 0 so the wave never double-counts.
-  function buildDefaultRow(groupId: string): Record<string, PackField> {
-    const hasExisting = (existingPackaging[groupId] ?? 0) > 0
-    const d = derivePackagingForGroup(
-      unitsByGroup.get(groupId) ?? [],
-      jarMaxGrams,
-    )
-    const seed: Record<string, number> = {
-      box: d.box,
-      shipping_label: d.shipping_label,
-      jar: d.jar,
-      jar_label: d.jar_label,
-      vacuum_bag: d.vacuum_bag,
-      custom: 0,
+  // Seed packaging from the weight→packaging config (FB-6, migration 0046): each
+  // unit maps to its exact-weight packaging type (jar / Mylar size), plus the
+  // per-order defaults (vacuum bag + box + label) once per group. Lines stay
+  // fully editable below. Groups that already have packaging recorded seed 0 so
+  // the wave never double-counts.
+  const buildDefaultRow = useMemo(() => {
+    return (groupId: string): PackLine[] => {
+      const hasExisting = (existingPackaging[groupId] ?? 0) > 0
+      const computed = computeOrderPackaging(
+        unitsByGroup.get(groupId) ?? [],
+        weightRules,
+        orderDefaults,
+      )
+      return computed.lines.map((l) => ({
+        typeId: l.typeId,
+        typeName: l.typeName,
+        kind: l.kind,
+        unitCost: l.unitCost,
+        qty: String(hasExisting ? 0 : l.qty),
+      }))
     }
-    const row: Record<string, PackField> = {}
-    for (const kind of KIND_ORDER) {
-      const options = typesByKind.get(kind)
-      if (!options || options.length === 0) continue
-      const qty = hasExisting ? 0 : (seed[kind] ?? 0)
-      row[kind] = { typeId: options[0].id, qty: String(qty) }
-    }
-    return row
-  }
+  }, [unitsByGroup, weightRules, orderDefaults, existingPackaging])
 
-  // groupId -> kind -> { typeId, qty }. Seeded once from defaults; edits persist
-  // per group for the rest of this wave session.
-  const [packInputs, setPackInputs] = useState<
-    Record<string, Record<string, PackField>>
-  >(() =>
+  // groupId -> ordered packaging lines (keyed by type). Seeded once from the
+  // config; edits persist per group for the rest of this wave session.
+  const [packInputs, setPackInputs] = useState<Record<string, PackLine[]>>(() =>
     Object.fromEntries(allGroupIds.map((id) => [id, buildDefaultRow(id)])),
   )
 
-  function setQty(groupId: string, kind: string, qty: string) {
+  function setQty(groupId: string, typeId: string, qty: string) {
     setPackInputs((prev) => ({
       ...prev,
-      [groupId]: {
-        ...prev[groupId],
-        [kind]: { ...prev[groupId]?.[kind], qty },
-      },
+      [groupId]: (prev[groupId] ?? []).map((l) =>
+        l.typeId === typeId ? { ...l, qty } : l,
+      ),
     }))
   }
 
-  function setPackType(groupId: string, kind: string, typeId: string) {
+  function removeLine(groupId: string, typeId: string) {
     setPackInputs((prev) => ({
       ...prev,
-      [groupId]: {
-        ...prev[groupId],
-        [kind]: { ...prev[groupId]?.[kind], typeId },
-      },
+      [groupId]: (prev[groupId] ?? []).filter((l) => l.typeId !== typeId),
     }))
+  }
+
+  // Add a packaging type to a group's lines (or focus it if already present by
+  // seeding qty 1). Keyed by type, so adding an existing type never duplicates.
+  function addLine(groupId: string) {
+    const t = packagingTypes.find((p) => p.id === addType)
+    if (!t) return
+    setPackInputs((prev) => {
+      const lines = prev[groupId] ?? []
+      if (lines.some((l) => l.typeId === t.id)) {
+        return {
+          ...prev,
+          [groupId]: lines.map((l) =>
+            l.typeId === t.id
+              ? { ...l, qty: String((Number(l.qty) || 0) + 1) }
+              : l,
+          ),
+        }
+      }
+      return {
+        ...prev,
+        [groupId]: [
+          ...lines,
+          {
+            typeId: t.id,
+            typeName: t.name,
+            kind: t.kind,
+            unitCost: t.unit_cost,
+            qty: "1",
+          },
+        ],
+      }
+    })
   }
 
   // Record every positive-qty packaging line for a group, then flip its
   // status. Packaging writes happen first so a failed write never leaves the
   // group marked packed with missing cost.
   async function packOneGroup(groupId: string): Promise<ActionResult> {
-    const row = packInputs[groupId] ?? {}
-    for (const kind of Object.keys(row)) {
-      const { typeId, qty } = row[kind]
+    const lines = packInputs[groupId] ?? []
+    for (const { typeId, qty } of lines) {
       const n = Number(qty)
       if (!Number.isFinite(n) || n <= 0) continue
       const res = await recordPackaging(groupId, typeId, n)
@@ -243,9 +260,7 @@ export function WaveView({
     })
   }
 
-  // Weight breakdown across the whole wave (printable). Counts units per weight
-  // and the packaging those weights imply: jars for 3.5g, bags for anything
-  // heavier, plus 1 box + 1 label per group.
+  // Weight breakdown across the whole wave (printable): units per weight.
   const weightTally = useMemo(
     () =>
       tallyByWeight(
@@ -253,15 +268,39 @@ export function WaveView({
       ),
     [rows],
   )
-  const waveJars = weightTally
-    .filter((t) => t.grams != null && t.grams <= jarMaxGrams)
-    .reduce((n, t) => n + t.units, 0)
-  const waveBags = weightTally
-    .filter((t) => t.grams != null && t.grams > jarMaxGrams)
-    .reduce((n, t) => n + t.units, 0)
-  const waveUnknown = weightTally
-    .filter((t) => t.grams == null)
-    .reduce((n, t) => n + t.units, 0)
+
+  // Packaging the whole wave implies, from the weight→packaging config (FB-6):
+  // sum each group's computed packaging (per-order defaults counted once per
+  // group). Full quantities — a supply-planning total, independent of what's
+  // already recorded on a group's own pack screen.
+  const { wavePackaging, waveUnknownUnits } = useMemo(() => {
+    const byType = new Map<
+      string,
+      { typeName: string; kind: string; qty: number }
+    >()
+    let unknown = 0
+    for (const groupId of allGroupIds) {
+      const computed = computeOrderPackaging(
+        unitsByGroup.get(groupId) ?? [],
+        weightRules,
+        orderDefaults,
+      )
+      unknown += computed.unknownWeightUnits
+      for (const l of computed.lines) {
+        const e = byType.get(l.typeId) ?? {
+          typeName: l.typeName,
+          kind: l.kind,
+          qty: 0,
+        }
+        e.qty += l.qty
+        byType.set(l.typeId, e)
+      }
+    }
+    return {
+      wavePackaging: [...byType.values()],
+      waveUnknownUnits: unknown,
+    }
+  }, [allGroupIds, unitsByGroup, weightRules, orderDefaults])
 
   const keyOf = (r: WaveRow, i: number) => r.childSkuId ?? `row-${i}`
 
@@ -361,16 +400,19 @@ export function WaveView({
           </div>
           <div className="mt-3 border-t pt-2 text-sm">
             <span className="text-muted-foreground">Packaging needed: </span>
-            <span className="tabular-nums">
-              {waveJars} jar{waveJars === 1 ? "" : "s"} · {waveBags} bag
-              {waveBags === 1 ? "" : "s"} · {groupCount} box
-              {groupCount === 1 ? "" : "es"} · {groupCount} label
-              {groupCount === 1 ? "" : "s"}
-            </span>
-            {waveUnknown > 0 ? (
+            {wavePackaging.length > 0 ? (
+              <span className="tabular-nums">
+                {wavePackaging
+                  .map((p) => `${p.qty} ${p.typeName}`)
+                  .join(" · ")}
+              </span>
+            ) : (
+              <span className="text-muted-foreground">—</span>
+            )}
+            {waveUnknownUnits > 0 ? (
               <span className="ml-1 text-amber-700 dark:text-amber-400">
-                · {waveUnknown} unit{waveUnknown === 1 ? "" : "s"} with no weight
-                (add packaging by hand)
+                · {waveUnknownUnits} unit{waveUnknownUnits === 1 ? "" : "s"} with
+                no matching weight rule (add packaging by hand)
               </span>
             ) : null}
           </div>
@@ -575,50 +617,78 @@ export function WaveView({
                       . Add more below only if needed.
                     </p>
                   ) : null}
-                  <div className="flex flex-wrap items-end gap-2">
-                    {Object.entries(packInputs[o.groupId] ?? {}).map(
-                      ([kind, field]) => {
-                        const options = typesByKind.get(kind) ?? []
-                        return (
-                          <div key={kind} className="flex flex-col gap-1">
-                            <Label className="text-[11px] text-muted-foreground">
-                              {PACK_KIND_LABEL[kind] ?? kind}
-                            </Label>
-                            <div className="flex items-center gap-1">
-                              {options.length > 1 ? (
-                                <Select
-                                  className="h-8 w-28 text-xs"
-                                  value={field.typeId}
-                                  onChange={(e) =>
-                                    setPackType(
-                                      o.groupId,
-                                      kind,
-                                      e.target.value,
-                                    )
-                                  }
-                                >
-                                  {options.map((t) => (
-                                    <option key={t.id} value={t.id}>
-                                      {t.name}
-                                    </option>
-                                  ))}
-                                </Select>
-                              ) : null}
-                              <Input
-                                type="number"
-                                min="0"
-                                step="1"
-                                value={field.qty}
-                                onChange={(e) =>
-                                  setQty(o.groupId, kind, e.target.value)
-                                }
-                                className="h-8 w-14 text-xs"
-                              />
-                            </div>
-                          </div>
-                        )
-                      },
-                    )}
+                  {(packInputs[o.groupId] ?? []).length > 0 ? (
+                    <div className="flex flex-col gap-1.5">
+                      {(packInputs[o.groupId] ?? []).map((line) => (
+                        <div
+                          key={line.typeId}
+                          className="flex items-center gap-2"
+                        >
+                          <span className="flex-1 truncate text-xs">
+                            {line.typeName}
+                            <span className="ml-1 text-muted-foreground">
+                              {PACK_KIND_LABEL[line.kind] ?? line.kind}
+                            </span>
+                          </span>
+                          <Input
+                            type="number"
+                            min="0"
+                            step="1"
+                            aria-label={`${line.typeName} quantity`}
+                            value={line.qty}
+                            onChange={(e) =>
+                              setQty(o.groupId, line.typeId, e.target.value)
+                            }
+                            className="h-8 w-14 text-xs"
+                          />
+                          <Button
+                            size="icon-sm"
+                            variant="ghost"
+                            aria-label={`Remove ${line.typeName}`}
+                            onClick={() => removeLine(o.groupId, line.typeId)}
+                          >
+                            <Trash2 />
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      No packaging seeded — add a line below.
+                    </p>
+                  )}
+                  <div className="flex items-end gap-2">
+                    <Select
+                      className="h-8 flex-1 text-xs"
+                      aria-label="Packaging type to add"
+                      value={addType}
+                      onChange={(e) => setAddType(e.target.value)}
+                    >
+                      {packagingTypes.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.name} ({PACK_KIND_LABEL[t.kind] ?? t.kind})
+                        </option>
+                      ))}
+                    </Select>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => addLine(o.groupId)}
+                      disabled={packagingTypes.length === 0}
+                    >
+                      <Plus data-icon="inline-start" /> Add
+                    </Button>
+                  </div>
+                  <div className="flex justify-between border-t pt-1 text-xs">
+                    <span className="text-muted-foreground">Packaging cost</span>
+                    <span className="font-medium tabular-nums">
+                      {formatCurrency(
+                        (packInputs[o.groupId] ?? []).reduce(
+                          (s, l) => s + (Number(l.qty) || 0) * l.unitCost,
+                          0,
+                        ),
+                      )}
+                    </span>
                   </div>
                 </div>
               ) : null}

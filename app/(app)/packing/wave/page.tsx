@@ -10,7 +10,7 @@ import {
   type PickOrderRow,
   type WaveGroupInput,
 } from "@/lib/packing/aggregate"
-import { JAR_MAX_GRAMS } from "@/lib/packing/packaging-rules"
+import { loadPackagingConfig } from "@/lib/packing/load-packaging-config"
 import { WaveView, type WaveRow } from "./wave-view"
 
 export const dynamic = "force-dynamic"
@@ -69,7 +69,7 @@ export default async function WavePage({
   }
 
   const supabase = await createClient()
-  const [groupsRes, typesRes, ruleRes] = await Promise.all([
+  const [groupsRes, typesRes, packagingConfig] = await Promise.all([
     supabase
       .from("fulfillment_groups")
       .select(
@@ -88,14 +88,12 @@ export default async function WavePage({
       .select("id, name, kind, unit_cost")
       .eq("is_active", true)
       .order("kind"),
-    supabase.from("packaging_rule").select("jar_max_grams").maybeSingle(),
+    // FB-6: weight→packaging map + per-order defaults (migration 0046) — same
+    // config the per-order pack screen uses, so the wave seeds identical per-type
+    // packaging (Mylar sizes, one vacuum bag / box / label per order).
+    loadPackagingConfig(supabase),
   ])
   const { data, error } = groupsRes
-
-  // Live jar/bag threshold (FB-3, migration 0040); falls back to the constant.
-  const ruleGrams = Number(ruleRes.data?.jar_max_grams)
-  const jarMaxGrams =
-    Number.isFinite(ruleGrams) && ruleGrams > 0 ? ruleGrams : JAR_MAX_GRAMS
 
   if (error) {
     return <Shell>Could not load the wave: {error.message}</Shell>
@@ -179,7 +177,8 @@ export default async function WavePage({
       rows={viewRows}
       packagingTypes={packagingTypes}
       existingPackaging={existingPackaging}
-      jarMaxGrams={jarMaxGrams}
+      weightRules={packagingConfig.weightRules}
+      orderDefaults={packagingConfig.orderDefaults}
     />
   )
 }
