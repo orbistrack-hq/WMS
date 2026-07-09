@@ -25,11 +25,6 @@ import {
   OUTBOUND_QUEUE_SELECT,
   mapOutboundJobs,
 } from "@/components/outbound-queue-card"
-import {
-  OutboundOrderQueueCard,
-  OUTBOUND_ORDER_QUEUE_SELECT,
-  mapOutboundOrderJobs,
-} from "@/components/outbound-order-queue-card"
 import { Connections, type Connection } from "./connections"
 
 export const dynamic = "force-dynamic"
@@ -63,22 +58,12 @@ type ImportRow = {
 export default async function ShopifyIntegrationPage() {
   const supabase = await createClient()
 
-  const [
-    connRes,
-    sitesRes,
-    importsRes,
-    secretsRes,
-    outboundRes,
-    queueRes,
-    orderOutboundRes,
-    orderQueueRes,
-    hdrs,
-  ] =
+  const [connRes, sitesRes, importsRes, secretsRes, outboundRes, queueRes, hdrs] =
     await Promise.all([
     supabase
       .from("store_connections")
       .select(
-        "id, source, site_id, is_active, last_synced_at, sync_inventory_outbound, sync_orders_outbound, inventory_location_id, site:sites(name)",
+        "id, source, site_id, is_active, last_synced_at, sync_inventory_outbound, inventory_location_id, site:sites(name)",
       )
       .eq("channel", "shopify")
       .order("source"),
@@ -111,34 +96,12 @@ export default async function ShopifyIntegrationPage() {
       .order("status")
       .order("next_attempt_at")
       .limit(500),
-    supabase
-      .from("store_outbound_order_sync_status")
-      .select("site_id, pending, processing, failed, skipped"),
-    supabase
-      .from("store_outbound_order_jobs")
-      .select(OUTBOUND_ORDER_QUEUE_SELECT)
-      .in("status", ["pending", "processing", "failed"])
-      .order("status")
-      .order("next_attempt_at")
-      .limit(500),
     headers(),
   ])
 
   const outboundBySite = new Map(
     (
       (outboundRes.data ?? []) as {
-        site_id: string
-        pending: number
-        processing: number
-        failed: number
-        skipped: number
-      }[]
-    ).map((o) => [o.site_id, o]),
-  )
-
-  const ordersBySite = new Map(
-    (
-      (orderOutboundRes.data ?? []) as {
         site_id: string
         pending: number
         processing: number
@@ -174,14 +137,12 @@ export default async function ShopifyIntegrationPage() {
       is_active: boolean
       last_synced_at: string | null
       sync_inventory_outbound: boolean
-      sync_orders_outbound: boolean
       inventory_location_id: string | null
       site: { name: string | null } | null
     }[]
   ).map((c) => {
     const cred = credByConn.get(c.id)
     const ob = outboundBySite.get(c.site_id)
-    const oo = ordersBySite.get(c.site_id)
     return {
       id: c.id,
       shop_domain: c.source,
@@ -194,9 +155,6 @@ export default async function ShopifyIntegrationPage() {
       has_location: Boolean(c.inventory_location_id),
       outbound_pending: (ob?.pending ?? 0) + (ob?.processing ?? 0),
       outbound_failed: ob?.failed ?? 0,
-      sync_orders_outbound: c.sync_orders_outbound ?? false,
-      orders_pending: (oo?.pending ?? 0) + (oo?.processing ?? 0),
-      orders_failed: oo?.failed ?? 0,
     }
   })
 
@@ -206,7 +164,6 @@ export default async function ShopifyIntegrationPage() {
     ((connRes.data ?? []) as { site_id: string }[]).map((c) => c.site_id),
   )
   const queueRows = mapOutboundJobs(queueRes.data, shopifySiteIds)
-  const orderQueueRows = mapOutboundOrderJobs(orderQueueRes.data, shopifySiteIds)
 
   return (
     <>
@@ -282,11 +239,6 @@ export default async function ShopifyIntegrationPage() {
         </Card>
 
         <OutboundQueueCard rows={queueRows} showSite={shopifySiteIds.size > 1} />
-
-        <OutboundOrderQueueCard
-          rows={orderQueueRows}
-          showSite={shopifySiteIds.size > 1}
-        />
 
         <Card className="p-0">
           <CardHeader className="p-(--card-spacing)">

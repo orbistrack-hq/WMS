@@ -16,10 +16,6 @@ import {
 } from "@/lib/store-sync/jobs"
 import { drainOutboundInventory, kickOutboundDrain } from "@/lib/store-sync/outbound"
 import {
-  drainOutboundOrders,
-  kickOutboundOrderDrain,
-} from "@/lib/store-sync/outbound-orders"
-import {
   normalizeGraphqlOrder,
   type ShopifyGraphqlOrdersPage,
   type ShopifyInventoryItem,
@@ -146,58 +142,6 @@ export async function runOutboundDrainNow(): Promise<
 
   try {
     const summary = await drainOutboundInventory(createAdminClient(), { limit: 200 })
-    revalidatePath("/integrations/shopify")
-    return {
-      ok: true,
-      pushed: summary.pushed,
-      skipped: summary.skipped,
-      failed: summary.failed,
-    }
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : "Drain failed." }
-  }
-}
-
-/**
- * Turn OUTBOUND order fulfillment sync on/off for one connection (migration
- * 0047). Off by default so stores are enabled one at a time. Enabling it makes a
- * future shipment->shipped push a fulfillment (with tracking) to this store;
- * turning it on also nudges the drain so any already-queued jobs go out promptly.
- */
-export async function setOrdersOutbound(
-  id: string,
-  enabled: boolean,
-): Promise<ActionResult> {
-  const supabase = await createClient()
-  const { error } = await supabase
-    .from("store_connections")
-    .update({ sync_orders_outbound: enabled })
-    .eq("id", id)
-  if (error) return { ok: false, error: err(error) }
-
-  if (enabled) await kickOutboundOrderDrain()
-  revalidatePath("/integrations/shopify")
-  return { ok: true }
-}
-
-/** Manually drain the outbound order queue now (Sync orders button). */
-export async function runOutboundOrderDrainNow(): Promise<
-  { ok: true; pushed: number; skipped: number; failed: number } | { ok: false; error: string }
-> {
-  // Authorize: any user who can reach an orders-outbound-enabled connection. The
-  // drain itself runs with the service role (claim/complete are sealed to it).
-  const supabase = await createClient()
-  const { data: conns, error: connErr } = await supabase
-    .from("store_connections")
-    .select("id")
-    .eq("sync_orders_outbound", true)
-    .limit(1)
-  if (connErr) return { ok: false, error: err(connErr) }
-  if (!conns || conns.length === 0)
-    return { ok: false, error: "No store has outbound order sync enabled." }
-
-  try {
-    const summary = await drainOutboundOrders(createAdminClient(), { limit: 200 })
     revalidatePath("/integrations/shopify")
     return {
       ok: true,

@@ -3,7 +3,6 @@
 import { revalidatePath } from "next/cache"
 
 import { createClient } from "@/lib/supabase/server"
-import { kickOutboundOrderDrain } from "@/lib/store-sync/outbound-orders"
 
 export type ActionResult = { ok: true } | { ok: false; error: string }
 
@@ -251,13 +250,6 @@ export async function setShipmentStatus(
     p_new_status: status,
   })
   if (error) return { ok: false, error: shipError(error) }
-
-  // Marking a shipment shipped is the outbound-fulfillment trigger: the DB
-  // trigger has already enqueued a push for each store-mapped order in the
-  // group (gated by the per-store sync_orders_outbound flag). Nudge the drain so
-  // the fulfillment + tracking reach the store promptly. Fully error-swallowing;
-  // the scheduled drain is the safety net.
-  if (status === "shipped") await kickOutboundOrderDrain()
 
   revalidatePath(`/packing/${groupId}`)
   return { ok: true }
