@@ -181,6 +181,85 @@ export async function combineOrders(
   return { ok: true, groupId: data as string }
 }
 
+// ---------------------------------------------------------------------------
+// Bulk actions. The team fulfils/moves many orders at once, so these run the
+// same per-order RPCs in a loop and report per-order outcomes rather than
+// failing the whole batch on one bad order (skip + report). Revalidation and
+// the outbound push happen once, after the loop.
+// ---------------------------------------------------------------------------
+
+export type BulkFailure = { orderId: string; error: string }
+export type BulkResult =
+  | { ok: true; succeeded: string[]; failed: BulkFailure[] }
+  | { ok: false; error: string }
+
+/** Bulk fulfil: attempt fulfill_order per order, collect failures, keep going. */
+export async function bulkFulfill(orderIds: string[]): Promise<BulkResult> {
+  if (!orderIds?.length) return { ok: false, error: "No orders selected." }
+
+  const supabase = await createClient()
+  const succeeded: string[] = []
+  const failed: BulkFailure[] = []
+
+  for (const orderId of orderIds) {
+    const { error } = await supabase.rpc("fulfill_order", { p_order_id: orderId })
+    if (error) failed.push({ orderId, error: rpcError(error) })
+    else succeeded.push(orderId)
+  }
+
+  if (succeeded.length) {
+    revalidatePath("/orders")
+    revalidatePath("/inventory")
+    revalidatePath("/packing")
+    await kickOutboundDrain()
+  }
+  return { ok: true, succeeded, failed }
+}
+
+/** Bulk label move (created/picking/packed) via set_order_status. */
+export async function bulkSetStatus(
+  orderIds: string[],
+  status: (typeof LABEL_STATUSES)[number],
+): Promise<BulkResult> {
+  if (!orderIds?.length) return { ok: false, error: "No orders selected." }
+  if (!LABEL_STATUSES.includes(status))
+    return { ok: false, error: `Cannot bulk-move to ${status}.` }
+
+  const supabase = await createClient()
+  const succeeded: string[] = []
+  const failed: BulkFailure[] = []
+
+  for (const orderId of orderIds) {
+    const { error } = await supabase.rpc("set_order_status", {
+      p_order_id: orderId,
+      p_new_status: status,
+    })
+    if (error) failed.push({ orderId, error: rpcError(error) })
+    else succeeded.push(orderId)
+  }
+
+  if (succeeded.length) revalidatePath("/orders")
+  return { ok: true, succeeded, failed }
+}
+
+/** Bulk hold / unhold. Stock stays reserved either way, so no outbound push. */
+export async function bulkSetHold(
+  orderIds: string[],
+  onHold: boolean,
+): Promise<BulkResult> {
+  if (!orderIds?.length) return { ok: false, error: "No orders selected." }
+
+  const supabase = await createClient()
+  const { error } = await supabase
+    .from("orders")
+    .update({ on_hold: onHold })
+    .in("id", orderIds)
+  if (error) return { ok: false, error: rpcError(error) }
+
+  revalidatePath("/orders")
+  return { ok: true, succeeded: orderIds, failed: [] }
+}
+
 export async function recordPayment(
   orderId: string,
   amount: number,

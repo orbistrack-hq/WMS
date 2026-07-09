@@ -230,7 +230,8 @@ function ConnectionCard({
           `Inventory pushed: ${res.pushed} sent` +
             (res.skipped ? `, ${res.skipped} skipped` : "") +
             (res.failed ? `, ${res.failed} failed` : "") +
-            ".",
+            "." +
+            (res.firstError ? ` First error: ${res.firstError}` : ""),
         )
         router.refresh()
       }

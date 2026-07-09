@@ -62,6 +62,7 @@ export default async function PackingPage() {
         siteId: g.site_id,
         customer: g.customer?.name ?? "—",
         site: g.site?.name ?? "—",
+        windowStart: g.window_start,
         orderNumbers: activeOrders.map((o) => o.order_number),
         orderCount: activeOrders.length,
         itemCount,

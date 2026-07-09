@@ -4,24 +4,29 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* Print: show only the .print-root subtree so printable lists (e.g. the pick
-   list) come out clean without the sidebar, header, or buttons. The visibility
-   trick avoids depending on app-shell markup. */
+/* Print: drop the app chrome (sidebar, header, buttons) so printable lists
+   (e.g. the pick list) come out clean. We remove chrome from layout with
+   `display: none` and keep `.print-root` in normal flow so long lists paginate
+   across pages instead of being clipped. Chrome elements opt in via `no-print`.
+   NOTE: do not position `.print-root` absolutely — in paged media an absolute
+   box with a fixed height collapses (blank page) and never fragments across
+   pages. Keeping it in flow is what makes multi-page pick lists print. */
 @media print {
-  body * {
-    visibility: hidden;
-  }
-  .print-root,
-  .print-root * {
-    visibility: visible;
-  }
-  .print-root {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-  }
   .no-print {
     display: none !important;
+  }
+  /* Neutralize the flex app-shell so the print root starts at the page origin
+     rather than being offset by the (now-hidden) sidebar column and padding. */
+  .print-shell,
+  .print-shell-main {
+    display: block !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    max-width: none !important;
+  }
+  .print-root {
+    max-width: none;
+    color: #000;
   }
   @page {
     margin: 1.2cm;

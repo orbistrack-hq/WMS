@@ -38,16 +38,16 @@ export function AppShell({
   const [mobileOpen, setMobileOpen] = useState(false)
 
   return (
-    <div className="flex min-h-svh w-full">
+    <div className="print-shell flex min-h-svh w-full">
       {/* Desktop sidebar */}
-      <aside className="hidden w-60 shrink-0 flex-col border-r border-sidebar-border bg-sidebar md:flex">
+      <aside className="no-print hidden w-60 shrink-0 flex-col border-r border-sidebar-border bg-sidebar md:flex">
         <Brand />
         <SidebarNav />
       </aside>
 
       {/* Mobile drawer */}
       {mobileOpen && (
-        <div className="fixed inset-0 z-50 md:hidden">
+        <div className="no-print fixed inset-0 z-50 md:hidden">
           <div
             className="absolute inset-0 bg-black/40"
             onClick={() => setMobileOpen(false)}
@@ -71,8 +71,8 @@ export function AppShell({
       )}
 
       {/* Main column */}
-      <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-14 items-center gap-3 border-b px-4 md:px-6">
+      <div className="print-shell flex min-w-0 flex-1 flex-col">
+        <header className="no-print flex h-14 items-center gap-3 border-b px-4 md:px-6">
           <button
             type="button"
             onClick={() => setMobileOpen(true)}
@@ -88,8 +88,10 @@ export function AppShell({
           <ThemeToggle />
           <LogoutButton />
         </header>
-        <main className="flex-1 p-4 md:p-8">
-          <div className="mx-auto w-full max-w-6xl">{children}</div>
+        <main className="print-shell-main flex-1 p-4 md:p-8">
+          <div className="print-shell-main mx-auto w-full max-w-6xl">
+            {children}
+          </div>
         </main>
       </div>
     </div>
