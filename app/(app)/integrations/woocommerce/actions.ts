@@ -110,9 +110,10 @@ export async function deleteConnection(id: string): Promise<ActionResult> {
 
 /**
  * Set (or clear) the order-sync floor for one connection. `sinceDate` is a
- * plain YYYY-MM-DD; it is stored at that day's UTC midnight. Null/empty clears
- * the floor (import all history). See lib/store-sync/cutoff.ts for how the
- * backfill and webhook importer apply it.
+ * plain YYYY-MM-DD stored at that day's LOCAL (Pacific) midnight — the string
+ * has no offset, so the DB session zone (America/Los_Angeles, migration 0049)
+ * interprets it, matching how the operator reads the date. Null/empty clears
+ * the floor. See lib/store-sync/cutoff.ts for how the importer applies it.
  */
 export async function setSyncOrdersSince(
   id: string,
@@ -123,7 +124,7 @@ export async function setSyncOrdersSince(
     if (!/^\d{4}-\d{2}-\d{2}$/.test(sinceDate.trim())) {
       return { ok: false, error: "Enter a date as YYYY-MM-DD." }
     }
-    value = `${sinceDate.trim()}T00:00:00Z`
+    value = `${sinceDate.trim()}T00:00:00`
   }
 
   const supabase = await createClient()

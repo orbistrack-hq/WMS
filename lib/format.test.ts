@@ -57,6 +57,11 @@ describe("formatDate", () => {
     expect(out).toContain("Jun")
     expect(out).not.toBe("—")
   })
+
+  it("renders in the app's Pacific zone regardless of host TZ", () => {
+    // 2026-06-23T05:00:00Z is 22:00 on Jun 22 in PDT — the date must roll back.
+    expect(formatDate("2026-06-23T05:00:00Z")).toContain("Jun 22")
+  })
 })
 
 describe("formatDateTime", () => {
@@ -71,6 +76,11 @@ describe("formatDateTime", () => {
     // A time is present (AM/PM marker from the en-US formatter).
     expect(out).toMatch(/\b(AM|PM)\b/)
   })
+
+  it("renders the time in Pacific, not UTC", () => {
+    // Noon UTC is 05:00 AM in PDT.
+    expect(formatDateTime("2026-06-23T12:00:00Z")).toContain("5:00 AM")
+  })
 })
 
 describe("todayISODate", () => {
@@ -78,7 +88,13 @@ describe("todayISODate", () => {
     expect(todayISODate()).toMatch(/^\d{4}-\d{2}-\d{2}$/)
   })
 
-  it("matches the current UTC date", () => {
-    expect(todayISODate()).toBe(new Date().toISOString().slice(0, 10))
+  it("matches the current date in the app's Pacific zone", () => {
+    const expected = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/Los_Angeles",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date())
+    expect(todayISODate()).toBe(expected)
   })
 })
