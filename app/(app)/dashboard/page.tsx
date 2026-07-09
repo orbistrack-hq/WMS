@@ -238,59 +238,6 @@ export default async function DashboardPage() {
           </CardContent>
         </Card>
 
-        <div className="flex flex-col gap-4">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Shipping</CardTitle>
-              <CardDescription>
-                {shippingTotal === 0
-                  ? "No active shipments"
-                  : `${shippingTotal} active shipment${shippingTotal === 1 ? "" : "s"}`}
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-3">
-              <div className="flex flex-col gap-1.5">
-                {shippingActiveStatuses.map((s) => {
-                  const badge = SHIPMENT_STATUS_BADGE[s]
-                  return (
-                    <div
-                      key={s}
-                      className="flex items-center justify-between text-sm"
-                    >
-                      <Badge variant={badge.variant}>{badge.label}</Badge>
-                      <span className="tabular-nums">
-                        {shipping.byStatus[s] ?? 0}
-                      </span>
-                    </div>
-                  )
-                })}
-              </div>
-              <dl className="flex flex-col gap-1 border-t pt-2 text-sm">
-                <div className="flex justify-between">
-                  <dt className="text-muted-foreground">Estimated</dt>
-                  <dd className="tabular-nums">
-                    {formatCurrency(shipping.estimated)}
-                  </dd>
-                </div>
-                <div className="flex justify-between">
-                  <dt className="text-muted-foreground">Actual</dt>
-                  <dd className="tabular-nums">
-                    {formatCurrency(shipping.actual)}
-                  </dd>
-                </div>
-                <div className="flex justify-between">
-                  <dt className="text-muted-foreground">Packages</dt>
-                  <dd className="tabular-nums">{shipping.packages}</dd>
-                </div>
-              </dl>
-              <Link
-                href="/reports"
-                className="text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
-              >
-                View shipping report
-              </Link>
-            </CardContent>
-          </Card>
 
           <Card>
             <CardHeader>

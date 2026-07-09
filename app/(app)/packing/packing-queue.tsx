@@ -1,13 +1,14 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useMemo, useState, useTransition } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { Layers } from "lucide-react"
+import { EyeOff, Layers } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
+import { dismissGroup } from "./actions"
 import {
   Table,
   TableBody,
@@ -79,6 +80,7 @@ export function PackingQueue({ groups }: { groups: QueueGroup[] }) {
               <TableHead className="text-right">Items</TableHead>
               <TableHead className="text-right">Packaging</TableHead>
               <TableHead>State</TableHead>
+              <TableHead className="w-10" />
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -128,6 +130,9 @@ export function PackingQueue({ groups }: { groups: QueueGroup[] }) {
                       <Badge variant="success">Packed</Badge>
                     )}
                   </TableCell>
+                  <TableCell className="text-right">
+                    <DismissButton group={g} />
+                  </TableCell>
                 </TableRow>
               )
             })}
@@ -153,6 +158,67 @@ export function PackingQueue({ groups }: { groups: QueueGroup[] }) {
           </div>
         </div>
       ) : null}
+    </div>
+  )
+}
+
+/**
+ * Per-row "hide" control with a two-step inline confirm. Dismissing is
+ * non-destructive (the order/inventory are untouched) and reversible, but it
+ * removes the group from the queue, so we confirm before firing. On success the
+ * server component refreshes and the row drops out.
+ */
+function DismissButton({ group }: { group: QueueGroup }) {
+  const router = useRouter()
+  const [confirming, setConfirming] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [pending, startTransition] = useTransition()
+
+  function run() {
+    setError(null)
+    startTransition(async () => {
+      const res = await dismissGroup(group.id)
+      if (!res.ok) {
+        setError(res.error)
+        setConfirming(false)
+        return
+      }
+      router.refresh()
+    })
+  }
+
+  if (!confirming) {
+    return (
+      <div className="flex flex-col items-end gap-1">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setConfirming(true)}
+          title="Hide this group from the packing queue"
+          aria-label={`Hide ${group.customer} from the queue`}
+        >
+          <EyeOff className="size-4" /> Hide
+        </Button>
+        {error ? (
+          <p className="text-xs text-destructive">{error}</p>
+        ) : null}
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex items-center justify-end gap-1">
+      <Button variant="destructive" size="sm" onClick={run} disabled={pending}>
+        {pending ? "Hiding…" : "Hide"}
+      </Button>
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => setConfirming(false)}
+        disabled={pending}
+      >
+        Cancel
+      </Button>
     </div>
   )
 }

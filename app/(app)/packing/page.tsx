@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { PageHeader } from "@/components/page-header"
 import { Card, CardContent } from "@/components/ui/card"
 import { PackingQueue, type QueueGroup } from "./packing-queue"
+import { DismissBefore } from "./dismiss-before"
 
 export const dynamic = "force-dynamic"
 
@@ -39,6 +40,7 @@ export default async function PackingPage() {
        packaging_usage(quantity, unit_cost_snapshot)`,
     )
     .eq("status", "open")
+    .is("dismissed_at", null)
     .order("window_start", { ascending: true })
     .limit(300)
 
@@ -102,7 +104,10 @@ export default async function PackingPage() {
           </CardContent>
         </Card>
       ) : (
-        <PackingQueue groups={groups} />
+        <div className="flex flex-col gap-4">
+          <DismissBefore />
+          <PackingQueue groups={groups} />
+        </div>
       )}
     </>
   )

@@ -71,6 +71,57 @@ export async function removePackaging(
   return { ok: true }
 }
 
+// ---------------------------------------------------------------------------
+// Dismiss / hide stale packing groups (migration 0053). Non-destructive: hides a
+// group from the packing queue without touching orders, inventory, or billing.
+// Operator-level (admin/operator/manager) — the RPC enforces it.
+// ---------------------------------------------------------------------------
+
+function dismissError(error: PgError): string {
+  if (!error) return "Something went wrong."
+  if (error.code === "42501")
+    return "You don't have permission to change the packing queue."
+  return error.message || error.details || "Something went wrong."
+}
+
+export async function dismissGroup(groupId: string): Promise<ActionResult> {
+  const supabase = await createClient()
+  const { error } = await supabase.rpc("dismiss_fulfillment_group", {
+    p_group_id: groupId,
+  })
+  if (error) return { ok: false, error: dismissError(error) }
+
+  revalidatePath("/packing")
+  return { ok: true }
+}
+
+export async function undismissGroup(groupId: string): Promise<ActionResult> {
+  const supabase = await createClient()
+  const { error } = await supabase.rpc("undismiss_fulfillment_group", {
+    p_group_id: groupId,
+  })
+  if (error) return { ok: false, error: dismissError(error) }
+
+  revalidatePath("/packing")
+  return { ok: true }
+}
+
+/** Bulk-hide every open group whose window is before the cutoff (ISO string). */
+export async function dismissStaleGroups(
+  before: string,
+): Promise<{ ok: true; count: number } | { ok: false; error: string }> {
+  if (!before) return { ok: false, error: "Pick a cutoff date." }
+
+  const supabase = await createClient()
+  const { data, error } = await supabase.rpc("dismiss_stale_fulfillment_groups", {
+    p_before: before,
+  })
+  if (error) return { ok: false, error: dismissError(error) }
+
+  revalidatePath("/packing")
+  return { ok: true, count: (data as number) ?? 0 }
+}
+
 export async function packGroup(
   groupId: string,
   notes?: string | null,

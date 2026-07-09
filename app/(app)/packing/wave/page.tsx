@@ -82,7 +82,8 @@ export default async function WavePage({
          packaging_usage(quantity, unit_cost_snapshot, packaging_type_id)`,
       )
       .in("id", ids)
-      .eq("status", "open"),
+      .eq("status", "open")
+      .is("dismissed_at", null),
     supabase
       .from("packaging_types")
       .select("id, name, kind, unit_cost")
