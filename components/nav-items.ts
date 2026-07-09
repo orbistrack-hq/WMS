@@ -3,6 +3,7 @@ import {
   LayoutDashboard,
   Boxes,
   PackagePlus,
+  Package,
   ClipboardList,
   PackageCheck,
   FolderTree,
@@ -57,9 +58,22 @@ export const NAV_TREE: NavEntry[] = [
   },
   {
     label: "Intake",
-    href: "/inventory/intake",
     icon: PackagePlus,
-    description: "Receive bulk and allocate to client SKUs",
+    description: "Receive stock into the warehouse",
+    children: [
+      {
+        label: "Product",
+        href: "/inventory/intake",
+        icon: PackagePlus,
+        description: "Receive bulk and allocate to client SKUs",
+      },
+      {
+        label: "Packaging",
+        href: "/inventory/packaging",
+        icon: Package,
+        description: "Central packaging stock on hand — receive and adjust",
+      },
+    ],
   },
   {
     label: "Orders",

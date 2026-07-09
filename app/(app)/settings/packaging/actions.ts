@@ -15,6 +15,7 @@ const KINDS = [
   "jar",
   "jar_label",
   "vacuum_bag",
+  "mylar_bag",
   "custom",
 ]
 
@@ -152,99 +153,9 @@ export async function updatePackagingRule(
   return { ok: true }
 }
 
-// ---------------------------------------------------------------------------
-// Per-site packaging stock. All writes go through the SECURITY DEFINER guards
-// (receive_packaging / adjust_packaging / set_packaging_reorder_point); direct
-// table writes are revoked from the API role.
-// ---------------------------------------------------------------------------
-
-function stockErr(error: PgError): string {
-  if (!error) return "Something went wrong."
-  if (error.code === "42501")
-    return "You don't have permission to change packaging stock."
-  // check_violation from the guards = a business rule (e.g. negative adjust).
-  if (
-    error.code === "23514" ||
-    /negative|positive|required|non-zero/.test(error.message ?? "")
-  )
-    return error.message || "That change isn't allowed."
-  return error.message || error.details || "Something went wrong."
-}
-
-/** Receive packaging stock at a site (positive qty, logged as a receipt). */
-export async function receivePackaging(
-  packagingTypeId: string,
-  siteId: string,
-  qty: number,
-  note?: string | null,
-): Promise<ActionResult> {
-  if (!packagingTypeId || !siteId)
-    return { ok: false, error: "Pick a packaging type and site." }
-  if (!(qty > 0)) return { ok: false, error: "Quantity must be positive." }
-
-  const supabase = await createClient()
-  const { error } = await supabase.rpc("receive_packaging", {
-    p_type: packagingTypeId,
-    p_site: siteId,
-    p_qty: Math.trunc(qty),
-    p_note: note?.trim() || null,
-  })
-  if (error) return { ok: false, error: stockErr(error) }
-
-  revalidate()
-  return { ok: true }
-}
-
-/** Manual signed correction with a required note (cannot go negative). */
-export async function adjustPackaging(
-  packagingTypeId: string,
-  siteId: string,
-  delta: number,
-  note: string,
-): Promise<ActionResult> {
-  const d = Math.trunc(delta)
-  if (!packagingTypeId || !siteId)
-    return { ok: false, error: "Pick a packaging type and site." }
-  if (!d) return { ok: false, error: "Adjustment can't be zero." }
-  if (!note?.trim())
-    return { ok: false, error: "A note is required for manual adjustments." }
-
-  const supabase = await createClient()
-  const { error } = await supabase.rpc("adjust_packaging", {
-    p_type: packagingTypeId,
-    p_site: siteId,
-    p_delta: d,
-    p_note: note.trim(),
-  })
-  if (error) return { ok: false, error: stockErr(error) }
-
-  revalidate()
-  return { ok: true }
-}
-
-/** Set (or clear, with null) the per-site low-stock reorder point. */
-export async function setPackagingReorderPoint(
-  packagingTypeId: string,
-  siteId: string,
-  point: number | null,
-): Promise<ActionResult> {
-  if (!packagingTypeId || !siteId)
-    return { ok: false, error: "Pick a packaging type and site." }
-  const p = point === null || !Number.isFinite(point) ? null : Math.trunc(point)
-  if (p !== null && p < 0)
-    return { ok: false, error: "Reorder point can't be negative." }
-
-  const supabase = await createClient()
-  const { error } = await supabase.rpc("set_packaging_reorder_point", {
-    p_type: packagingTypeId,
-    p_site: siteId,
-    p_point: p,
-  })
-  if (error) return { ok: false, error: stockErr(error) }
-
-  revalidate()
-  return { ok: true }
-}
+// Packaging STOCK actions moved to app/(app)/inventory/packaging/actions.ts in
+// migration 0047 (central pool, no site). This settings module now only manages
+// packaging TYPES, the jar/bag rule, and the weight → packaging map.
 
 // ---------------------------------------------------------------------------
 // Weight → packaging map + per-order defaults (FB-6, migration 0046). Managed

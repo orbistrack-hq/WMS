@@ -1,5 +1,9 @@
+import Link from "next/link"
+
 import { createClient } from "@/lib/supabase/server"
 import { PageHeader } from "@/components/page-header"
+import { buttonVariants } from "@/components/ui/button"
+import { cn } from "@/lib/utils"
 import {
   Card,
   CardContent,
@@ -16,12 +20,6 @@ import {
   type PkgType,
   type WeightRuleRow,
 } from "./packaging-rules-map-editor"
-import {
-  PackagingStock,
-  type StockLevel,
-  type StockSite,
-  type StockType,
-} from "./packaging-stock"
 
 export const dynamic = "force-dynamic"
 
@@ -31,7 +29,6 @@ export default async function PackagingSettingsPage() {
   const [
     typesRes,
     sitesRes,
-    levelsRes,
     adminRes,
     ruleRes,
     operatorRes,
@@ -47,9 +44,6 @@ export default async function PackagingSettingsPage() {
       .order("kind")
       .order("name"),
     supabase.from("sites").select("id, name").eq("is_active", true).order("name"),
-    supabase
-      .from("packaging_levels")
-      .select("packaging_type_id, site_id, on_hand, reorder_point"),
     supabase.rpc("is_admin"),
     supabase.from("packaging_rule").select("jar_max_grams").maybeSingle(),
     supabase.rpc("is_operator"),
@@ -87,9 +81,9 @@ export default async function PackagingSettingsPage() {
   // the shared packaging config, not just admins (FB-7 / migration 0045).
   const canManage = isAdmin || operatorRes.data === true
 
-  // sites is already RLS-scoped to what the user can access; it drives both the
-  // stock card and the "which site owns a new type" picker in the manager.
-  const sites = (sitesRes.data ?? []) as StockSite[]
+  // sites is already RLS-scoped to what the user can access; it drives the
+  // "which site owns a new type" picker in the manager.
+  const sites = (sitesRes.data ?? []) as { id: string; name: string }[]
   const stockTypes = types
     .filter((t) => t.is_active)
     .map((t) => ({
@@ -97,12 +91,7 @@ export default async function PackagingSettingsPage() {
       name: t.name,
       kind: t.kind,
       unit_cost: t.unit_cost,
-    })) as StockType[]
-  const levels = (levelsRes.data ?? []).map((l) => ({
-    ...l,
-    on_hand: Number(l.on_hand),
-    reorder_point: l.reorder_point === null ? null : Number(l.reorder_point),
-  })) as StockLevel[]
+    })) as PkgType[]
 
   // FB-6 weight→packaging map + per-order defaults (migration 0046).
   const oneType = (v: unknown): PkgType | null => {
@@ -192,14 +181,19 @@ export default async function PackagingSettingsPage() {
           <CardHeader>
             <CardTitle className="text-base">Stock on hand</CardTitle>
             <CardDescription>
-              Packaging stock is tracked per location and is consumed
-              automatically when an order is packed (counted once per
-              combined-order group). Set a low-stock threshold to flag types that
-              need reordering.
+              Packaging stock is now a single central pool per type, shared across
+              every site, and lives under Intake so it&apos;s easier to reach while
+              receiving. It&apos;s still consumed automatically at packing (counted
+              once per combined-order group).
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <PackagingStock sites={sites} types={stockTypes} levels={levels} />
+            <Link
+              href="/inventory/packaging"
+              className={cn(buttonVariants({ variant: "secondary", size: "sm" }))}
+            >
+              Go to Intake &rarr; Packaging
+            </Link>
           </CardContent>
         </Card>
       </div>

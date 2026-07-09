@@ -24,6 +24,7 @@ const PACKAGING_KINDS = [
   "jar",
   "jar_label",
   "vacuum_bag",
+  "mylar_bag",
   "custom",
 ] as const
 
@@ -46,6 +47,7 @@ const KIND_LABEL: Record<string, string> = {
   jar: "Jar",
   jar_label: "Jar label",
   vacuum_bag: "Vacuum bag",
+  mylar_bag: "Mylar bag",
   custom: "Custom",
 }
 

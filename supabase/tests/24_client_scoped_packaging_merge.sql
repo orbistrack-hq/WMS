@@ -5,11 +5,11 @@
 --   * A client may merge duplicate masters entirely within its own site(s), but
 --     is refused if ANY involved child (survivor OR loser) is at a site it can't
 --     access. Operators still cross sites freely.
---   * The packaging stock writers now reject a site the caller can't access, and
---     reject stocking a site-owned type at the wrong site.
+--   * Packaging stock is now a single CENTRAL pool (migration 0047) and is
+--     ops-only: a client is refused, an operator can receive.
 -- MAIN = 1111..., EAST = 2222... (from seed). Shared "Standard Box" = 1111..-01.
 begin;
-select plan(17);
+select plan(16);
 
 \set MAIN '''11111111-1111-1111-1111-111111111111'''
 \set EAST '''22222222-2222-2222-2222-222222222222'''
@@ -81,21 +81,12 @@ select throws_ok(
   '42501', NULL,
   'client: merge blocked when the SURVIVOR child is at an inaccessible site');
 
--- ---- packaging stock writers, still as the client --------------------------
-select lives_ok(
-  $$ select public.receive_packaging('11111111-0000-0000-0000-000000000001',
-       '11111111-1111-1111-1111-111111111111', 10, 'client receipt') $$,
-  'client: can receive a shared type at its own site');
+-- ---- packaging stock is CENTRAL + ops-only (migration 0047), still as client
 select throws_ok(
   $$ select public.receive_packaging('11111111-0000-0000-0000-000000000001',
-       '22222222-2222-2222-2222-222222222222', 10, 'nope') $$,
+       10, 'nope') $$,
   '42501', NULL,
-  'client: cannot receive stock at a site it cannot access');
-select throws_ok(
-  $$ select public.receive_packaging('99999999-0000-0000-0000-0000000000e1',
-       '11111111-1111-1111-1111-111111111111', 10, 'nope') $$,
-  '23514', NULL,
-  'client: cannot stock another site''s owned type at its own site');
+  'client: cannot receive central packaging (ops-only)');
 
 -- ============================================================================
 -- Merge regression — an operator still crosses sites freely.
@@ -104,6 +95,10 @@ set local request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000d1"}';
 select is(
   (public.merge_products(:P3, array[:P4]::uuid[], true)->>'ok'),
   'true', 'operator: can preview a cross-site merge');
+select lives_ok(
+  $$ select public.receive_packaging('11111111-0000-0000-0000-000000000001',
+       20, 'ops receipt') $$,
+  'operator: can receive central packaging');
 
 -- ============================================================================
 -- packaging_types RLS — evaluated as the real authenticated role.
