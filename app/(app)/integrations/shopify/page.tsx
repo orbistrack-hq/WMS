@@ -63,7 +63,7 @@ export default async function ShopifyIntegrationPage() {
     supabase
       .from("store_connections")
       .select(
-        "id, source, site_id, is_active, last_synced_at, sync_inventory_outbound, inventory_location_id, site:sites(name)",
+        "id, source, site_id, is_active, last_synced_at, sync_inventory_outbound, inventory_location_id, sync_orders_since, site:sites(name)",
       )
       .eq("channel", "shopify")
       .order("source"),
@@ -138,6 +138,7 @@ export default async function ShopifyIntegrationPage() {
       last_synced_at: string | null
       sync_inventory_outbound: boolean
       inventory_location_id: string | null
+      sync_orders_since: string | null
       site: { name: string | null } | null
     }[]
   ).map((c) => {
@@ -153,6 +154,7 @@ export default async function ShopifyIntegrationPage() {
       last_synced_at: c.last_synced_at,
       sync_inventory_outbound: c.sync_inventory_outbound ?? false,
       has_location: Boolean(c.inventory_location_id),
+      sync_orders_since: c.sync_orders_since,
       outbound_pending: (ob?.pending ?? 0) + (ob?.processing ?? 0),
       outbound_failed: ob?.failed ?? 0,
     }

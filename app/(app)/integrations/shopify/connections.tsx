@@ -29,6 +29,7 @@ import {
   setConnectionActive,
   setCredentials,
   setInventoryOutbound,
+  setSyncOrdersSince,
   startOrderImport,
   stepOrderImport,
   cancelOrderImport,
@@ -47,6 +48,7 @@ export type Connection = {
   last_synced_at: string | null
   sync_inventory_outbound: boolean
   has_location: boolean
+  sync_orders_since: string | null
   outbound_pending: number
   outbound_failed: number
 }
@@ -156,6 +158,8 @@ function ConnectionCard({
   const [credOpen, setCredOpen] = useState(false)
   const [token, setToken] = useState("")
   const [secret, setSecret] = useState("")
+  const savedSince = conn.sync_orders_since?.slice(0, 10) ?? ""
+  const [since, setSince] = useState(savedSince)
 
   function run(fn: () => Promise<{ ok: boolean; error?: string }>) {
     setError(null)
@@ -213,6 +217,19 @@ function ConnectionCard({
             "." +
             (res.firstError ? ` First error: ${res.firstError}` : ""),
         )
+        router.refresh()
+      }
+    })
+  }
+
+  function saveSince(value: string | null) {
+    setError(null)
+    setNote(null)
+    startTransition(async () => {
+      const res = await setSyncOrdersSince(conn.id, value)
+      if (!res.ok) setError(res.error ?? "Something went wrong.")
+      else {
+        if (value === null) setSince("")
         router.refresh()
       }
     })
@@ -367,6 +384,44 @@ function ConnectionCard({
           </Button>
           <span className="text-xs text-muted-foreground">
             Pushes available (on-hand − reserved) to this store.
+          </span>
+        </div>
+      ) : null}
+
+      {canManage ? (
+        <div className="flex flex-wrap items-center gap-2 border-t pt-2">
+          <span className="text-xs font-medium text-muted-foreground">
+            Order sync from
+          </span>
+          <Input
+            type="date"
+            value={since}
+            onChange={(e) => setSince(e.target.value)}
+            className="w-40"
+            aria-label="Order sync from date"
+          />
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={isPending || since === savedSince}
+            onClick={() => saveSince(since || null)}
+          >
+            Save
+          </Button>
+          {conn.sync_orders_since ? (
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={isPending}
+              onClick={() => saveSince(null)}
+            >
+              Clear
+            </Button>
+          ) : null}
+          <span className="text-xs text-muted-foreground">
+            {conn.sync_orders_since
+              ? `Orders placed before ${savedSince} are skipped on import.`
+              : "No floor — all history can import."}
           </span>
         </div>
       ) : null}

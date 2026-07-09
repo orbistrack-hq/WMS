@@ -15,6 +15,7 @@ import {
   type JobProgress,
 } from "@/lib/store-sync/jobs"
 import { drainOutboundInventory, kickOutboundDrain } from "@/lib/store-sync/outbound"
+import { cutoffQueryDate } from "@/lib/store-sync/cutoff"
 import {
   normalizeWooOrder,
   normalizeWooSource,
@@ -100,6 +101,35 @@ export async function deleteConnection(id: string): Promise<ActionResult> {
   const { error } = await supabase
     .from("store_connections")
     .delete()
+    .eq("id", id)
+  if (error) return { ok: false, error: err(error) }
+
+  revalidatePath("/integrations/woocommerce")
+  return { ok: true }
+}
+
+/**
+ * Set (or clear) the order-sync floor for one connection. `sinceDate` is a
+ * plain YYYY-MM-DD; it is stored at that day's UTC midnight. Null/empty clears
+ * the floor (import all history). See lib/store-sync/cutoff.ts for how the
+ * backfill and webhook importer apply it.
+ */
+export async function setSyncOrdersSince(
+  id: string,
+  sinceDate: string | null,
+): Promise<ActionResult> {
+  let value: string | null = null
+  if (sinceDate && sinceDate.trim()) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(sinceDate.trim())) {
+      return { ok: false, error: "Enter a date as YYYY-MM-DD." }
+    }
+    value = `${sinceDate.trim()}T00:00:00Z`
+  }
+
+  const supabase = await createClient()
+  const { error } = await supabase
+    .from("store_connections")
+    .update({ sync_orders_since: value })
     .eq("id", id)
   if (error) return { ok: false, error: err(error) }
 
@@ -235,7 +265,13 @@ function wooApiError(status: number, body: string): string {
   return `WooCommerce API ${status}${detail ? `: ${detail}` : ""}.${hint}`
 }
 
-type WooCreds = { source: string; site_id: string; key: string; secret: string }
+type WooCreds = {
+  source: string
+  site_id: string
+  key: string
+  secret: string
+  sync_orders_since: string | null
+}
 
 /** Load a connection's source/site + its REST credentials (admin read). */
 async function loadCreds(
@@ -244,7 +280,7 @@ async function loadCreds(
   const supabase = await createClient()
   const { data: conn, error: connErr } = await supabase
     .from("store_connections")
-    .select("source, site_id")
+    .select("source, site_id, sync_orders_since")
     .eq("id", connectionId)
     .maybeSingle()
   if (connErr) return { error: err(connErr) }
@@ -264,6 +300,7 @@ async function loadCreds(
       site_id: conn.site_id as string,
       key: secret.consumer_key as string,
       secret: secret.consumer_secret as string,
+      sync_orders_since: (conn.sync_orders_since as string | null) ?? null,
     },
   }
 }
@@ -494,6 +531,14 @@ export async function syncPastOrders(
   // Imports use the service role: store_order_imports has no RLS write policy.
   const admin = createAdminClient()
 
+  // Order-sync floor: filter at the source too so we don't page through history
+  // we'd only discard; the import guard is the authoritative gate.
+  const cutoff = creds.sync_orders_since
+  const sinceDate = cutoffQueryDate(cutoff)
+  const afterParam = sinceDate
+    ? `&after=${encodeURIComponent(`${sinceDate}T00:00:00`)}`
+    : ""
+
   const result = {
     fetched: 0,
     imported: 0,
@@ -506,7 +551,7 @@ export async function syncPastOrders(
   try {
     for (let page = 1; page <= 100; page++) {
       const r: Response = await fetch(
-        `${base}/orders?per_page=100&page=${page}&orderby=date&order=desc`,
+        `${base}/orders?per_page=100&page=${page}&orderby=date&order=desc${afterParam}`,
         { headers: auth },
       )
       if (!r.ok) {
@@ -526,6 +571,7 @@ export async function syncPastOrders(
           order,
           "order.backfill",
           raw,
+          cutoff,
         )
         switch (outcome.status) {
           case "imported":
@@ -651,10 +697,16 @@ export async function stepOrderImport(
   const auth = { Authorization: authHeader(creds.key, creds.secret) }
   const pageNum = job.cursor ? Math.max(1, parseInt(job.cursor, 10) || 1) : 1
 
+  const cutoff = creds.sync_orders_since
+  const sinceDate = cutoffQueryDate(cutoff)
+  const afterParam = sinceDate
+    ? `&after=${encodeURIComponent(`${sinceDate}T00:00:00`)}`
+    : ""
+
   let orders: WooOrderPayload[]
   try {
     const r = await fetch(
-      `${base}/orders?per_page=100&page=${pageNum}&orderby=date&order=desc`,
+      `${base}/orders?per_page=100&page=${pageNum}&orderby=date&order=desc${afterParam}`,
       { headers: auth },
     )
     if (!r.ok) {
@@ -686,6 +738,7 @@ export async function stepOrderImport(
       order,
       "order.backfill",
       raw,
+      cutoff,
     )
     switch (outcome.status) {
       case "imported":

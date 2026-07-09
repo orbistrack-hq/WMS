@@ -63,7 +63,7 @@ export default async function WooCommerceIntegrationPage() {
     supabase
       .from("store_connections")
       .select(
-        "id, source, site_id, is_active, last_synced_at, sync_inventory_outbound, site:sites(name)",
+        "id, source, site_id, is_active, last_synced_at, sync_inventory_outbound, sync_orders_since, site:sites(name)",
       )
       .eq("channel", "woocommerce")
       .order("source"),
@@ -135,6 +135,7 @@ export default async function WooCommerceIntegrationPage() {
       is_active: boolean
       last_synced_at: string | null
       sync_inventory_outbound: boolean
+      sync_orders_since: string | null
       site: { name: string | null } | null
     }[]
   ).map((c) => {
@@ -150,6 +151,7 @@ export default async function WooCommerceIntegrationPage() {
       has_webhook_secret: cred?.has_webhook_secret ?? false,
       last_synced_at: c.last_synced_at,
       sync_inventory_outbound: c.sync_inventory_outbound ?? false,
+      sync_orders_since: c.sync_orders_since,
       outbound_pending: (ob?.pending ?? 0) + (ob?.processing ?? 0),
       outbound_failed: ob?.failed ?? 0,
     }

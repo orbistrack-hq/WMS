@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 
+import { isBeforeSyncCutoff } from "../store-sync/cutoff"
 import type { NormalizedStoreOrder } from "./types"
 
 export type OrderImportOutcome =
@@ -146,6 +147,12 @@ export async function applyWooLifecycleUpdate(
  *
  * Must be called with a service-role client: it writes store_order_imports
  * (no RLS write policy) and reads across customers/child_skus.
+ *
+ * `cutoff` is the connection's sync_orders_since floor: an order created before
+ * it is skipped BEFORE the idempotency insert, so no tombstone is written and a
+ * later cutoff change lets a re-sync pick it up. Guards both the backfill and
+ * the webhook self-heal path (an old order edited in Woo fires order.updated ->
+ * not_found -> here). Pass null for no floor.
  */
 export async function importWooOrder(
   client: SupabaseClient,
@@ -154,9 +161,15 @@ export async function importWooOrder(
   order: NormalizedStoreOrder,
   topic: string,
   rawPayload: unknown,
+  cutoff: string | null = null,
 ): Promise<OrderImportOutcome> {
   if (!order.externalOrderId) {
     return { status: "error", error: "missing order id" }
+  }
+
+  // Sync floor: never ingest orders older than the store's go-live cutoff.
+  if (isBeforeSyncCutoff(order.createdAt, cutoff)) {
+    return { status: "skipped", reason: "before sync cutoff" }
   }
 
   // Idempotency: a re-run (or Woo retry) hits the unique key and is skipped.

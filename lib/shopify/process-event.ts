@@ -66,19 +66,24 @@ export async function processShopifyEvent(
   return { status: "ignored", topic }
 }
 
-/** The active WMS site a store feeds, or null if not connected. */
-async function siteForShop(
+/** The active WMS site a store feeds + its order-sync floor, or null if not
+ *  connected. cutoff is null when the connection has no floor set. */
+async function connForShop(
   supabase: SupabaseClient,
   shopDomain: string,
-): Promise<string | null> {
+): Promise<{ siteId: string; cutoff: string | null } | null> {
   const { data } = await supabase
     .from("store_connections")
-    .select("site_id")
+    .select("site_id, sync_orders_since")
     .eq("channel", "shopify")
     .eq("source", shopDomain)
     .eq("is_active", true)
     .maybeSingle()
-  return (data?.site_id as string) ?? null
+  if (!data?.site_id) return null
+  return {
+    siteId: data.site_id as string,
+    cutoff: (data.sync_orders_since as string | null) ?? null,
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -90,17 +95,18 @@ async function handleOrderCreate(
   topic: string,
   payload: ShopifyOrderPayload,
 ): Promise<ProcessResult> {
-  const siteId = await siteForShop(supabase, shopDomain)
-  if (!siteId) return { status: "no_connection" }
+  const conn = await connForShop(supabase, shopDomain)
+  if (!conn) return { status: "no_connection" }
 
   const order = normalizeShopifyOrder(payload)
   const outcome = await importNormalizedOrder(
     supabase,
-    siteId,
+    conn.siteId,
     shopDomain,
     order,
     topic,
     payload,
+    conn.cutoff,
   )
   // If the order already exists (e.g. create re-delivered after an update
   // landed first), make sure its lifecycle is still reconciled.
@@ -117,23 +123,25 @@ async function handleOrderUpdate(
   topic: string,
   payload: ShopifyOrderPayload,
 ): Promise<ProcessResult> {
-  const siteId = await siteForShop(supabase, shopDomain)
-  if (!siteId) return { status: "no_connection" }
+  const conn = await connForShop(supabase, shopDomain)
+  if (!conn) return { status: "no_connection" }
 
   const order = normalizeShopifyOrder(payload)
   const life = await applyShopifyLifecycleUpdate(supabase, shopDomain, order)
 
   // Update arrived for an order we never imported (we missed orders/create, or
   // it predates the connection): treat the update as a create. This makes the
-  // pair (create + updated) self-healing.
+  // pair (create + updated) self-healing — but the cutoff still applies, so an
+  // edit to a pre-go-live order does not sneak it in.
   if (life.status === "not_found") {
     const outcome = await importNormalizedOrder(
       supabase,
-      siteId,
+      conn.siteId,
       shopDomain,
       order,
       topic,
       payload,
+      conn.cutoff,
     )
     return { status: "imported_from_update", outcome: outcome.status }
   }
@@ -148,9 +156,9 @@ async function handleProductUpsert(
   shopDomain: string,
   product: ShopifyProduct,
 ): Promise<ProcessResult> {
-  const siteId = await siteForShop(supabase, shopDomain)
-  if (!siteId) return { status: "no_connection" }
-  const result = await importShopifyProduct(supabase, siteId, product)
+  const conn = await connForShop(supabase, shopDomain)
+  if (!conn) return { status: "no_connection" }
+  const result = await importShopifyProduct(supabase, conn.siteId, product)
   return { status: "synced", ...result }
 }
 
@@ -159,8 +167,8 @@ async function handleProductDelete(
   shopDomain: string,
   product: ShopifyProduct,
 ): Promise<ProcessResult> {
-  const siteId = await siteForShop(supabase, shopDomain)
-  if (!siteId) return { status: "no_connection" }
-  const deactivated = await deactivateShopifyProduct(supabase, siteId, product)
+  const conn = await connForShop(supabase, shopDomain)
+  if (!conn) return { status: "no_connection" }
+  const deactivated = await deactivateShopifyProduct(supabase, conn.siteId, product)
   return { status: "deleted", deactivated }
 }

@@ -42,19 +42,24 @@ export async function processWooEvent(
   return { status: "ignored", topic }
 }
 
-/** The active WMS site a store feeds, or null if not connected. */
-async function siteForSource(
+/** The active WMS site a store feeds + its order-sync floor, or null if not
+ *  connected. cutoff is null when the connection has no floor set. */
+async function connForSource(
   supabase: SupabaseClient,
   source: string,
-): Promise<string | null> {
+): Promise<{ siteId: string; cutoff: string | null } | null> {
   const { data } = await supabase
     .from("store_connections")
-    .select("site_id")
+    .select("site_id, sync_orders_since")
     .eq("channel", "woocommerce")
     .eq("source", source)
     .eq("is_active", true)
     .maybeSingle()
-  return (data?.site_id as string) ?? null
+  if (!data?.site_id) return null
+  return {
+    siteId: data.site_id as string,
+    cutoff: (data.sync_orders_since as string | null) ?? null,
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -66,11 +71,19 @@ async function handleOrderCreate(
   topic: string,
   payload: WooOrderPayload,
 ): Promise<ProcessResult> {
-  const siteId = await siteForSource(supabase, source)
-  if (!siteId) return { status: "no_connection" }
+  const conn = await connForSource(supabase, source)
+  if (!conn) return { status: "no_connection" }
 
   const order = normalizeWooOrder(payload)
-  const outcome = await importWooOrder(supabase, siteId, source, order, topic, payload)
+  const outcome = await importWooOrder(
+    supabase,
+    conn.siteId,
+    source,
+    order,
+    topic,
+    payload,
+    conn.cutoff,
+  )
   if (outcome.status === "duplicate") {
     const life = await applyWooLifecycleUpdate(supabase, source, order)
     return { status: "duplicate", lifecycle: life.status }
@@ -84,15 +97,24 @@ async function handleOrderUpdate(
   topic: string,
   payload: WooOrderPayload,
 ): Promise<ProcessResult> {
-  const siteId = await siteForSource(supabase, source)
-  if (!siteId) return { status: "no_connection" }
+  const conn = await connForSource(supabase, source)
+  if (!conn) return { status: "no_connection" }
 
   const order = normalizeWooOrder(payload)
   const life = await applyWooLifecycleUpdate(supabase, source, order)
 
   // Update for an order we never imported -> treat as a create (self-healing).
+  // The cutoff still applies, so editing a pre-go-live order can't sneak it in.
   if (life.status === "not_found") {
-    const outcome = await importWooOrder(supabase, siteId, source, order, topic, payload)
+    const outcome = await importWooOrder(
+      supabase,
+      conn.siteId,
+      source,
+      order,
+      topic,
+      payload,
+      conn.cutoff,
+    )
     return { status: "imported_from_update", outcome: outcome.status }
   }
   return { status: "lifecycle", result: life.status, ...("reason" in life ? { reason: life.reason } : {}) }
@@ -106,9 +128,9 @@ async function handleProductUpsert(
   source: string,
   product: WooProduct,
 ): Promise<ProcessResult> {
-  const siteId = await siteForSource(supabase, source)
-  if (!siteId) return { status: "no_connection" }
-  const result = await importWooProduct(supabase, siteId, product)
+  const conn = await connForSource(supabase, source)
+  if (!conn) return { status: "no_connection" }
+  const result = await importWooProduct(supabase, conn.siteId, product)
   return { status: "synced", ...result }
 }
 
@@ -117,8 +139,8 @@ async function handleProductDelete(
   source: string,
   product: WooProduct,
 ): Promise<ProcessResult> {
-  const siteId = await siteForSource(supabase, source)
-  if (!siteId) return { status: "no_connection" }
-  const deactivated = await deactivateWooProduct(supabase, siteId, product)
+  const conn = await connForSource(supabase, source)
+  if (!conn) return { status: "no_connection" }
+  const deactivated = await deactivateWooProduct(supabase, conn.siteId, product)
   return { status: "deleted", deactivated }
 }

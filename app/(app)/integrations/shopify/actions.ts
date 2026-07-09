@@ -15,6 +15,7 @@ import {
   type JobProgress,
 } from "@/lib/store-sync/jobs"
 import { drainOutboundInventory, kickOutboundDrain } from "@/lib/store-sync/outbound"
+import { cutoffQueryDate } from "@/lib/store-sync/cutoff"
 import {
   normalizeGraphqlOrder,
   type ShopifyGraphqlOrdersPage,
@@ -95,6 +96,35 @@ export async function deleteConnection(id: string): Promise<ActionResult> {
   const { error } = await supabase
     .from("store_connections")
     .delete()
+    .eq("id", id)
+  if (error) return { ok: false, error: err(error) }
+
+  revalidatePath("/integrations/shopify")
+  return { ok: true }
+}
+
+/**
+ * Set (or clear) the order-sync floor for one connection. `sinceDate` is a
+ * plain YYYY-MM-DD; it is stored at that day's UTC midnight. Null/empty clears
+ * the floor (import all history). See lib/store-sync/cutoff.ts for how the
+ * backfill and webhook importer apply it.
+ */
+export async function setSyncOrdersSince(
+  id: string,
+  sinceDate: string | null,
+): Promise<ActionResult> {
+  let value: string | null = null
+  if (sinceDate && sinceDate.trim()) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(sinceDate.trim())) {
+      return { ok: false, error: "Enter a date as YYYY-MM-DD." }
+    }
+    value = `${sinceDate.trim()}T00:00:00Z`
+  }
+
+  const supabase = await createClient()
+  const { error } = await supabase
+    .from("store_connections")
+    .update({ sync_orders_since: value })
     .eq("id", id)
   if (error) return { ok: false, error: err(error) }
 
@@ -568,9 +598,14 @@ export type OrderSyncResult =
   | { ok: false; error: string }
 
 // Pull historical orders oldest-first so backdated WMS orders land in order.
-const PAST_ORDERS_QUERY = `
+// A sinceDate (YYYY-MM-DD) adds a created_at floor so the store never returns
+// pre-go-live history; the import guard is the authoritative gate, this just
+// avoids fetching pages we'd only discard.
+const pastOrdersQuery = (sinceDate?: string | null) => `
   query PastOrders($cursor: String) {
-    orders(first: 100, after: $cursor, sortKey: CREATED_AT, query: "status:any") {
+    orders(first: 100, after: $cursor, sortKey: CREATED_AT, query: "status:any${
+      sinceDate ? ` created_at:>=${sinceDate}` : ""
+    }") {
       pageInfo { hasNextPage endCursor }
       nodes {
         id
@@ -620,13 +655,16 @@ export async function syncPastOrders(
   // Authorize via the RLS-scoped connection read (same pattern as syncProducts).
   const { data: conn, error: connErr } = await supabase
     .from("store_connections")
-    .select("source, site_id, is_active")
+    .select("source, site_id, is_active, sync_orders_since")
     .eq("id", connectionId)
     .maybeSingle()
   if (connErr) return { ok: false, error: err(connErr) }
   if (!conn) return { ok: false, error: "Connection not found." }
   if (!conn.is_active)
     return { ok: false, error: "Activate this connection before syncing." }
+
+  const cutoff = (conn.sync_orders_since as string | null) ?? null
+  const sinceDate = cutoffQueryDate(cutoff)
 
   const admin = createAdminClient()
   const { data: secret } = await admin
@@ -664,7 +702,7 @@ export async function syncPastOrders(
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          query: PAST_ORDERS_QUERY,
+          query: pastOrdersQuery(sinceDate),
           variables: { cursor },
         }),
       })
@@ -705,6 +743,7 @@ export async function syncPastOrders(
         order,
         "orders/backfill",
         node,
+        cutoff,
       )
       switch (outcome.status) {
         case "imported":
@@ -822,10 +861,13 @@ export async function stepOrderImport(
   const supabase = await createClient()
   const { data: conn } = await supabase
     .from("store_connections")
-    .select("source, site_id")
+    .select("source, site_id, sync_orders_since")
     .eq("id", job.connection_id)
     .maybeSingle()
   if (!conn) return { ok: false, error: "Access denied." }
+
+  const cutoff = (conn.sync_orders_since as string | null) ?? null
+  const sinceDate = cutoffQueryDate(cutoff)
 
   const { data: secret } = await admin
     .from("store_secrets")
@@ -854,7 +896,7 @@ export async function stepOrderImport(
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        query: PAST_ORDERS_QUERY,
+        query: pastOrdersQuery(sinceDate),
         variables: { cursor: job.cursor },
       }),
     })
@@ -901,6 +943,7 @@ export async function stepOrderImport(
       order,
       "orders/backfill",
       node,
+      cutoff,
     )
     switch (outcome.status) {
       case "imported":

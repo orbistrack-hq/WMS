@@ -12,6 +12,33 @@
    box with a fixed height collapses (blank page) and never fragments across
    pages. Keeping it in flow is what makes multi-page pick lists print. */
 @media print {
+  /* Always print as ink-on-white. In dark mode the theme tokens resolve to
+     light colors (pale text, dark surfaces), so re-pin the surface/text/border
+     tokens to their light-palette values for the print pass. This fixes every
+     `text-muted-foreground` / `border` / `bg-*` utility at once, so we don't
+     have to override colors element by element. */
+  :root,
+  .dark {
+    color-scheme: light;
+    --background: #ffffff;
+    --foreground: #11274d;
+    --card: #ffffff;
+    --card-foreground: #11274d;
+    --popover: #ffffff;
+    --popover-foreground: #11274d;
+    --muted: #f3f5f9;
+    --muted-foreground: #5b6b85;
+    --accent: #e8effa;
+    --accent-foreground: #11274d;
+    --border: #e4e9f1;
+    --input: #e4e9f1;
+  }
+  html,
+  body {
+    background: #ffffff !important;
+    color: #11274d !important;
+  }
+
   .no-print {
     display: none !important;
   }
