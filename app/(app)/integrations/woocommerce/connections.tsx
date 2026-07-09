@@ -12,6 +12,7 @@ import {
   Power,
   RefreshCw,
   Trash2,
+  Truck,
   Webhook,
 } from "lucide-react"
 
@@ -26,9 +27,11 @@ import {
   deleteConnection,
   registerWebhooks,
   runOutboundDrainNow,
+  runOutboundOrderDrainNow,
   setConnectionActive,
   setCredentials,
   setInventoryOutbound,
+  setOrdersOutbound,
   startOrderImport,
   stepOrderImport,
   cancelOrderImport,
@@ -49,6 +52,9 @@ export type Connection = {
   sync_inventory_outbound: boolean
   outbound_pending: number
   outbound_failed: number
+  sync_orders_outbound: boolean
+  orders_pending: number
+  orders_failed: number
 }
 
 export function Connections({
@@ -196,6 +202,24 @@ function ConnectionCard({
         setNote(
           `Synced ${res.products} product${res.products === 1 ? "" : "s"}: ${res.created} new, ${res.updated} updated${res.skipped ? `, ${res.skipped} skipped` : ""}. Stock updated on ${res.stockSynced}, cost seeded on ${res.costSeeded}.` +
             (res.warning ? ` Note: ${res.warning}` : ""),
+        )
+        router.refresh()
+      }
+    })
+  }
+
+  function syncOrders() {
+    setError(null)
+    setNote(null)
+    startTransition(async () => {
+      const res = await runOutboundOrderDrainNow()
+      if (!res.ok) setError(res.error)
+      else {
+        setNote(
+          `Orders pushed: ${res.pushed} sent` +
+            (res.skipped ? `, ${res.skipped} skipped` : "") +
+            (res.failed ? `, ${res.failed} failed` : "") +
+            ".",
         )
         router.refresh()
       }
@@ -363,6 +387,45 @@ function ConnectionCard({
           </Button>
           <span className="text-xs text-muted-foreground">
             Pushes available (on-hand − reserved) to this store.
+          </span>
+        </div>
+      ) : null}
+
+      {canManage ? (
+        <div className="flex flex-wrap items-center gap-2 border-t pt-2">
+          <span className="text-xs font-medium text-muted-foreground">
+            Outbound orders
+          </span>
+          <Badge variant={conn.sync_orders_outbound ? "success" : "muted"}>
+            {conn.sync_orders_outbound ? "On" : "Off"}
+          </Badge>
+          {conn.orders_pending > 0 ? (
+            <Badge variant="secondary">{conn.orders_pending} queued</Badge>
+          ) : null}
+          {conn.orders_failed > 0 ? (
+            <Badge variant="destructive">{conn.orders_failed} failed</Badge>
+          ) : null}
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={isPending || !hasApi}
+            onClick={() =>
+              run(() => setOrdersOutbound(conn.id, !conn.sync_orders_outbound))
+            }
+          >
+            {conn.sync_orders_outbound ? "Turn off" : "Turn on"}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={isPending || !conn.sync_orders_outbound}
+            onClick={syncOrders}
+          >
+            <Truck data-icon="inline-start" /> Sync orders now
+          </Button>
+          <span className="text-xs text-muted-foreground">
+            When a shipment is marked shipped, marks the store order completed with
+            tracking.
           </span>
         </div>
       ) : null}
