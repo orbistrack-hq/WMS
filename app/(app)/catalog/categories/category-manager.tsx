@@ -23,10 +23,10 @@ import {
 
 export function CategoryManager({
   categories,
-  isAdmin,
+  canManage,
 }: {
   categories: CategoryRow[]
-  isAdmin: boolean
+  canManage: boolean
 }) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
@@ -133,7 +133,7 @@ export function CategoryManager({
                 )}
               </div>
 
-              {isAdmin && renamingId !== node.id ? (
+              {canManage && renamingId !== node.id ? (
                 <div className="flex shrink-0 items-center gap-1">
                   <ReparentSelect
                     node={node}
@@ -187,7 +187,7 @@ export function CategoryManager({
         </ul>
       )}
 
-      {isAdmin ? (
+      {canManage ? (
         <div className="flex items-center gap-2">
           <Input
             value={newName}
@@ -204,7 +204,7 @@ export function CategoryManager({
         </div>
       ) : (
         <p className="text-sm text-muted-foreground">
-          Categories can only be edited by an administrator.
+          Categories can only be edited by a manager or administrator.
         </p>
       )}
     </div>

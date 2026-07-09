@@ -17,13 +17,13 @@ export const dynamic = "force-dynamic"
 export default async function CategoriesPage() {
   const supabase = await createClient()
 
-  const [categoryRes, adminRes] = await Promise.all([
+  const [categoryRes, canManageRes] = await Promise.all([
     supabase.from("categories").select("id, name, parent_id"),
-    supabase.rpc("is_admin"),
+    supabase.rpc("can_manage_categories"),
   ])
 
   const categories = (categoryRes.data ?? []) as CategoryRow[]
-  const isAdmin = adminRes.data === true
+  const canManage = canManageRes.data === true
 
   return (
     <>
@@ -44,7 +44,7 @@ export default async function CategoriesPage() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <CategoryManager categories={categories} isAdmin={isAdmin} />
+          <CategoryManager categories={categories} canManage={canManage} />
         </CardContent>
       </Card>
     </>
