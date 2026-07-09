@@ -1,3 +1,7 @@
+"use client"
+
+import { useEffect, useRef, useState } from "react"
+
 import { formatCurrency } from "@/lib/format"
 
 export type TrendPoint = {
@@ -9,17 +13,40 @@ export type TrendPoint = {
 
 // Lightweight inline-SVG trend chart — no chart dependency. Renders revenue and
 // landed-cost as lines and net profit as a filled area, on a shared scale.
+//
+// The chart measures its container and draws on a 1:1 pixel coordinate system.
+// Previously it used a fixed 760-wide viewBox with preserveAspectRatio="none",
+// which stretched the whole coordinate system to fill the container width — that
+// scaled the x-axis, date labels and points horizontally by a different factor
+// than vertically, so the dates looked stretched on wide screens. Measuring the
+// real width keeps the aspect ratio true and the text crisp at any size.
 export function TrendChart({ data }: { data: TrendPoint[] }) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [width, setWidth] = useState(760)
+
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const measure = () => setWidth(el.clientWidth || 760)
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
   if (data.length === 0) {
     return (
-      <div className="flex h-56 items-center justify-center text-sm text-muted-foreground">
+      <div
+        ref={containerRef}
+        className="flex h-56 items-center justify-center text-sm text-muted-foreground"
+      >
         No fulfilled orders in this range.
       </div>
     )
   }
 
-  const W = 760
-  const H = 240
+  const W = Math.max(width, 320)
+  const H = 224
   const padL = 8
   const padR = 8
   const padT = 16
@@ -53,16 +80,17 @@ export function TrendChart({ data }: { data: TrendPoint[] }) {
   const labelEvery = Math.ceil(data.length / 8)
 
   return (
-    <div className="w-full">
+    <div ref={containerRef} className="w-full">
       <div className="mb-2 flex flex-wrap gap-4 text-xs text-muted-foreground">
         <Legend className="bg-foreground/70" label="Revenue" />
         <Legend className="bg-muted-foreground/60" label="Landed cost" />
         <Legend className="bg-emerald-500" label="Net profit" />
       </div>
       <svg
+        width={W}
+        height={H}
         viewBox={`0 0 ${W} ${H}`}
-        className="h-56 w-full"
-        preserveAspectRatio="none"
+        className="max-w-full"
         role="img"
         aria-label="Revenue, landed cost, and net profit over time"
       >
