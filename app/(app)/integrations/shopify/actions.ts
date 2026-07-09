@@ -126,7 +126,8 @@ export async function setInventoryOutbound(
 
 /** Manually drain the outbound inventory queue now (Sync inventory button). */
 export async function runOutboundDrainNow(): Promise<
-  { ok: true; pushed: number; skipped: number; failed: number } | { ok: false; error: string }
+  | { ok: true; pushed: number; skipped: number; failed: number; firstError?: string }
+  | { ok: false; error: string }
 > {
   // Authorize: any user who can reach an outbound-enabled connection. The drain
   // itself runs with the service role (claim/complete are sealed to it).
@@ -148,6 +149,7 @@ export async function runOutboundDrainNow(): Promise<
       pushed: summary.pushed,
       skipped: summary.skipped,
       failed: summary.failed,
+      firstError: summary.firstError,
     }
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "Drain failed." }
