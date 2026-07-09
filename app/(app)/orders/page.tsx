@@ -5,25 +5,14 @@ import { createClient } from "@/lib/supabase/server"
 import { PageHeader } from "@/components/page-header"
 import { Pagination } from "@/components/pagination"
 import { buttonVariants } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
 import { Card, CardContent } from "@/components/ui/card"
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table"
-import {
-  STATUS_BADGE,
-  CHANNEL_LABEL,
   computeOrderTotals,
   type OrderStatus,
   type OrderChannel,
 } from "@/lib/orders/types"
-import { formatCurrency, formatDate } from "@/lib/format"
 import { OrdersFilters } from "./orders-filters"
+import { OrdersTable } from "./orders-table"
 
 export const dynamic = "force-dynamic"
 
@@ -196,81 +185,37 @@ export default async function OrdersPage({
           </CardContent>
         </Card>
       ) : (
-        <Card className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Order</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Customer</TableHead>
-                <TableHead>Site</TableHead>
-                <TableHead>Channel</TableHead>
-                <TableHead className="text-right">Items</TableHead>
-                <TableHead className="text-right">Total</TableHead>
-                <TableHead>Sale date</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {orders.map((o) => {
-                const badge = STATUS_BADGE[o.status]
-                const { itemCount, total } = o
-                return (
-                  <TableRow key={o.id}>
-                    <TableCell className="font-medium">
-                      <Link
-                        href={`/orders/${o.id}`}
-                        className="hover:underline"
-                      >
-                        {o.order_number}
-                      </Link>
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-1.5">
-                        <Badge variant={badge.variant}>{badge.label}</Badge>
-                        {o.on_hold ? (
-                          <Badge variant="destructive">Hold</Badge>
-                        ) : null}
-                        {o.order_type === "layaway" ? (
-                          <Badge variant="outline">Layaway</Badge>
-                        ) : null}
-                        {o.backordered ? (
-                          <Badge variant="warning">Backordered</Badge>
-                        ) : null}
-                      </div>
-                    </TableCell>
-                    <TableCell className="text-muted-foreground">
-                      {o.customer?.name ?? "—"}
-                    </TableCell>
-                    <TableCell className="text-muted-foreground">
-                      {o.site?.name ?? "—"}
-                    </TableCell>
-                    <TableCell className="text-muted-foreground">
-                      {CHANNEL_LABEL[o.channel]}
-                    </TableCell>
-                    <TableCell className="text-right tabular-nums">
-                      {itemCount}
-                    </TableCell>
-                    <TableCell className="text-right tabular-nums">
-                      {formatCurrency(total)}
-                    </TableCell>
-                    <TableCell className="text-muted-foreground">
-                      {formatDate(o.sale_date)}
-                    </TableCell>
-                  </TableRow>
-                )
-              })}
-            </TableBody>
-          </Table>
-          <Pagination
-            basePath="/orders"
-            params={sp}
-            page={page}
-            hasMore={hasMore}
-            pageRows={orders.length}
-            pageSize={PAGE_SIZE}
-            approxTotal={approxTotal}
+        <div className="flex flex-col gap-3">
+          <OrdersTable
+            rows={orders.map((o) => ({
+              id: o.id,
+              order_number: o.order_number,
+              status: o.status,
+              on_hold: o.on_hold,
+              backordered: o.backordered,
+              order_type: o.order_type,
+              channel: o.channel,
+              sale_date: o.sale_date,
+              customerName: o.customer?.name ?? null,
+              siteName: o.site?.name ?? null,
+              itemCount: o.itemCount,
+              total: o.total,
+            }))}
           />
-        </Card>
+          {page > 1 || hasMore ? (
+            <Card className="p-0">
+              <Pagination
+                basePath="/orders"
+                params={sp}
+                page={page}
+                hasMore={hasMore}
+                pageRows={orders.length}
+                pageSize={PAGE_SIZE}
+                approxTotal={approxTotal}
+              />
+            </Card>
+          ) : null}
+        </div>
       )}
     </>
   )
