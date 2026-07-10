@@ -35,11 +35,25 @@ const SHOPIFY_API_VERSION = "2024-10"
 /** Polite spacing between store API calls (Shopify REST allows ~2 req/s). */
 const PUSH_GAP_MS = 300
 
+// --- Per-run circuit breaker -------------------------------------------------
+// After this many consecutive transient failures on one store WITHIN a run, we
+// stop pushing that store's remaining jobs and park them for the cooldown. Keeps
+// one slow/down store from eating the drain's time budget and starving healthy
+// stores. Parked jobs don't burn an attempt, so an outage doesn't march them to
+// give-up — they just retry after the cooldown. Only transient failures count;
+// permanent skips (bad mapping) don't trip it.
+const CIRCUIT_FAIL_THRESHOLD = 3
+const CIRCUIT_COOLDOWN_MS = 5 * 60 * 1000
+
 export type DrainSummary = {
   claimed: number
   pushed: number
   skipped: number
   failed: number
+  /** Parked by the circuit breaker (store tripped); will retry after cooldown. */
+  deferred?: number
+  /** Store keys (channel:source) tripped this run. */
+  trippedSources?: string[]
   /** True when we stopped early because the time budget (deadlineMs) elapsed. */
   deadlineHit?: boolean
   firstError?: string
@@ -102,6 +116,12 @@ export async function drainOutboundInventory(
   const tokenBySource = new Map<string, string | null>()
   const wooCredsBySource = new Map<string, WooCreds | null>()
 
+  // Circuit-breaker state (per run). Key a store by channel+source.
+  const consecutiveFails = new Map<string, number>()
+  const tripped = new Set<string>()
+  const cooldownUntil = new Date(Date.now() + CIRCUIT_COOLDOWN_MS).toISOString()
+  const storeKey = (job: ClaimedJob) => `${job.channel ?? "?"}:${job.source ?? "?"}`
+
   for (let i = 0; i < jobs.length; i++) {
     // Time budget: bail before touching the next job once the deadline passes.
     // Remaining claimed jobs stay 'processing'; the reaper resets them to
@@ -112,17 +132,39 @@ export async function drainOutboundInventory(
     }
 
     const job = jobs[i]
+    const key = storeKey(job)
+
+    // Circuit open for this store: park the job for the cooldown instead of
+    // spending a timeout on a store we already know is failing. No API call, no
+    // attempt burned. It retries once the cooldown elapses.
+    if (tripped.has(key)) {
+      await deferJob(admin, job.job_id, cooldownUntil)
+      summary.deferred = (summary.deferred ?? 0) + 1
+      continue
+    }
+
     const outcome = await pushJob(admin, job, tokenBySource, wooCredsBySource)
 
     if (outcome.ok) {
       summary.pushed++
+      consecutiveFails.set(key, 0) // healthy again — reset the counter
       await complete(admin, job.job_id, { ok: true })
     } else if (outcome.skip) {
+      // Permanent (bad mapping / disabled connection): terminal, and it does NOT
+      // reflect store health, so it must not trip the breaker.
       summary.skipped++
       await complete(admin, job.job_id, { ok: false, skip: true, error: outcome.error })
     } else {
+      // Transient failure (timeout / 5xx / auth): retryable, and a signal the
+      // store may be unhealthy. Count it; trip the breaker at the threshold.
       summary.failed++
       if (!summary.firstError) summary.firstError = outcome.error
+      const n = (consecutiveFails.get(key) ?? 0) + 1
+      consecutiveFails.set(key, n)
+      if (n >= CIRCUIT_FAIL_THRESHOLD) {
+        tripped.add(key)
+        summary.trippedSources = [...(summary.trippedSources ?? []), key]
+      }
       await complete(admin, job.job_id, { ok: false, skip: false, error: outcome.error })
     }
 
@@ -317,6 +359,24 @@ async function complete(
     p_error: outcome.ok ? null : outcome.error,
     p_skip: outcome.ok ? false : outcome.skip,
   })
+}
+
+/**
+ * Park a claimed job for the circuit-breaker cooldown: back to 'pending' at
+ * next_attempt_at=until, attempts/last_error untouched (NOT a failure). If the
+ * RPC is unavailable (older DB), swallow it — the job stays 'processing' and the
+ * reaper recovers it, so the breaker degrades to "no worse than before".
+ */
+async function deferJob(
+  admin: SupabaseClient,
+  jobId: string,
+  until: string,
+): Promise<void> {
+  try {
+    await admin.rpc("defer_outbound_inventory_job", { p_job_id: jobId, p_until: until })
+  } catch {
+    // Intentionally ignored — reaper is the safety net.
+  }
 }
 
 /**
