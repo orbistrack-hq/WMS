@@ -157,7 +157,14 @@ export async function setInventoryOutbound(
 
 /** Manually drain the outbound inventory queue now (Sync inventory button). */
 export async function runOutboundDrainNow(): Promise<
-  | { ok: true; pushed: number; skipped: number; failed: number; firstError?: string }
+  | {
+      ok: true
+      reaped: number
+      pushed: number
+      skipped: number
+      failed: number
+      firstError?: string
+    }
   | { ok: false; error: string }
 > {
   // Authorize: any user who can reach an outbound-enabled connection. The drain
@@ -173,10 +180,18 @@ export async function runOutboundDrainNow(): Promise<
     return { ok: false, error: "No store has outbound inventory sync enabled." }
 
   try {
-    const summary = await drainOutboundInventory(createAdminClient(), { limit: 200 })
+    const admin = createAdminClient()
+    // Recover jobs stranded in 'processing' by an earlier drain that was killed
+    // mid-run (e.g. a slow store timing out) BEFORE draining. Without this the
+    // claim finds only 'pending' rows and reports "0 sent" while the queue is
+    // full of stuck 'processing' jobs. Mirrors the scheduled endpoint's reaper.
+    const { data: reapData } = await admin.rpc("reap_stuck_outbound_inventory_jobs")
+    const reaped = typeof reapData === "number" ? reapData : 0
+    const summary = await drainOutboundInventory(admin, { limit: 200 })
     revalidatePath("/integrations/shopify")
     return {
       ok: true,
+      reaped,
       pushed: summary.pushed,
       skipped: summary.skipped,
       failed: summary.failed,

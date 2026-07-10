@@ -244,7 +244,10 @@ function ConnectionCard({
       if (!res.ok) setError(res.error)
       else {
         setNote(
-          `Inventory pushed: ${res.pushed} sent` +
+          (res.reaped
+            ? `Recovered ${res.reaped} stuck job${res.reaped === 1 ? "" : "s"}. `
+            : "") +
+            `Inventory pushed: ${res.pushed} sent` +
             (res.skipped ? `, ${res.skipped} skipped` : "") +
             (res.failed ? `, ${res.failed} failed` : "") +
             "." +
