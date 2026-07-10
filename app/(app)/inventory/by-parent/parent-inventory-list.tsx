@@ -1,13 +1,26 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { Fragment, useState, useTransition, type ReactNode } from "react"
+import { useRouter } from "next/navigation"
 import Link from "next/link"
-import { ChevronDown, ChevronRight, MapPin, Check, X, Pencil } from "lucide-react"
+import {
+  ChevronDown,
+  ChevronRight,
+  MapPin,
+  Check,
+  X,
+  Pencil,
+  AlertCircle,
+  PackagePlus,
+  SlidersHorizontal,
+} from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Textarea } from "@/components/ui/textarea"
 import {
   Table,
   TableBody,
@@ -16,8 +29,10 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { cn } from "@/lib/utils"
 import { formatCurrency } from "@/lib/format"
 import { updateProductSku } from "@/app/(app)/catalog/actions"
+import { adjustStock, receiveStock } from "@/app/(app)/inventory/actions"
 
 export type ParentChild = {
   child_sku_id: string
@@ -61,6 +76,7 @@ export function ParentInventoryList({
   totalCount?: number
 }) {
   const [open, setOpen] = useState<Set<string>>(new Set())
+  const [editingChild, setEditingChild] = useState<string | null>(null)
   const parentTotal = totalCount ?? parents.length
 
   const allOpen = open.size === parents.length
@@ -149,6 +165,9 @@ export function ParentInventoryList({
                       <TableHead className="text-right">Reserved</TableHead>
                       <TableHead className="text-right">Cost</TableHead>
                       <TableHead className="text-right">Price</TableHead>
+                      <TableHead className="w-0 text-right">
+                        <span className="sr-only">Actions</span>
+                      </TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -157,7 +176,8 @@ export function ParentInventoryList({
                       const newWeight =
                         !prev || prev.grams !== c.grams
                       return (
-                        <TableRow key={c.child_sku_id}>
+                        <Fragment key={c.child_sku_id}>
+                        <TableRow>
                           <TableCell>
                             {newWeight ? (
                               <Badge variant="info">
@@ -202,7 +222,39 @@ export function ParentInventoryList({
                           <TableCell className="text-right tabular-nums text-muted-foreground">
                             {c.price == null ? "—" : formatCurrency(c.price)}
                           </TableCell>
+                          <TableCell className="text-right">
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 px-2"
+                              aria-expanded={editingChild === c.child_sku_id}
+                              onClick={() =>
+                                setEditingChild((cur) =>
+                                  cur === c.child_sku_id
+                                    ? null
+                                    : c.child_sku_id,
+                                )
+                              }
+                            >
+                              <Pencil className="size-3.5" />
+                              <span className="sr-only">Edit stock</span>
+                            </Button>
+                          </TableCell>
                         </TableRow>
+                        {editingChild === c.child_sku_id ? (
+                          <TableRow>
+                            <TableCell
+                              colSpan={10}
+                              className="bg-background p-0"
+                            >
+                              <RowStockEditor
+                                child={c}
+                                onDone={() => setEditingChild(null)}
+                              />
+                            </TableCell>
+                          </TableRow>
+                        ) : null}
+                        </Fragment>
                       )
                     })}
                   </TableBody>
@@ -314,6 +366,210 @@ function ParentSkuEditor({
       </div>
       {error ? <span className="text-xs text-destructive">{error}</span> : null}
     </div>
+  )
+}
+
+type EditMode = "receive" | "adjust"
+
+/**
+ * Compact inline Receive/Adjust form for a single child SKU, reusing the same
+ * server actions as the child detail screen so ledger + revalidation stay
+ * identical. Receives log a receipt; adjustments require a note.
+ */
+function RowStockEditor({
+  child,
+  onDone,
+}: {
+  child: ParentChild
+  onDone: () => void
+}) {
+  const router = useRouter()
+  const [isPending, startTransition] = useTransition()
+  const [mode, setMode] = useState<EditMode>("receive")
+  const [qty, setQty] = useState("")
+  const [delta, setDelta] = useState("")
+  const [note, setNote] = useState("")
+  const [error, setError] = useState<string | null>(null)
+
+  const projected =
+    mode === "receive"
+      ? child.on_hand + (Number(qty) || 0)
+      : child.on_hand + (Number(delta) || 0)
+
+  function submit() {
+    setError(null)
+    startTransition(async () => {
+      let res
+      if (mode === "receive") {
+        const n = Number(qty)
+        if (!(n > 0)) {
+          setError("Enter a quantity to receive.")
+          return
+        }
+        res = await receiveStock(child.child_sku_id, n, note || null)
+      } else {
+        const d = Number(delta)
+        if (!d) {
+          setError("Enter a non-zero adjustment.")
+          return
+        }
+        if (!note.trim()) {
+          setError("A note is required for manual adjustments.")
+          return
+        }
+        res = await adjustStock(child.child_sku_id, d, note)
+      }
+      if (!res.ok) {
+        setError(res.error)
+        return
+      }
+      router.refresh()
+      onDone()
+    })
+  }
+
+  return (
+    <div className="flex flex-col gap-3 border-l-2 border-primary/40 px-4 py-3">
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <span className="font-medium">Edit stock</span>
+        <span className="text-muted-foreground">
+          {child.site_name} · {child.variant_label ?? "No weight"} ·{" "}
+          {child.sku ?? "—"}
+        </span>
+      </div>
+
+      <div className="flex flex-wrap items-end gap-3">
+        <div className="flex gap-1 rounded-lg bg-muted p-0.5">
+          <EditModeButton
+            active={mode === "receive"}
+            onClick={() => {
+              setMode("receive")
+              setError(null)
+            }}
+          >
+            <PackagePlus className="size-4" /> Receive
+          </EditModeButton>
+          <EditModeButton
+            active={mode === "adjust"}
+            onClick={() => {
+              setMode("adjust")
+              setError(null)
+            }}
+          >
+            <SlidersHorizontal className="size-4" /> Adjust
+          </EditModeButton>
+        </div>
+
+        {mode === "receive" ? (
+          <div className="flex flex-col gap-1">
+            <Label htmlFor={`qty-${child.child_sku_id}`}>Quantity received</Label>
+            <Input
+              id={`qty-${child.child_sku_id}`}
+              type="number"
+              min="1"
+              step="1"
+              autoFocus
+              value={qty}
+              onChange={(e) => setQty(e.target.value)}
+              placeholder="0"
+              className="w-32"
+            />
+          </div>
+        ) : (
+          <div className="flex flex-col gap-1">
+            <Label htmlFor={`delta-${child.child_sku_id}`}>
+              Adjustment (+/−)
+            </Label>
+            <Input
+              id={`delta-${child.child_sku_id}`}
+              type="number"
+              step="1"
+              autoFocus
+              value={delta}
+              onChange={(e) => setDelta(e.target.value)}
+              placeholder="e.g. -2"
+              className="w-32"
+            />
+          </div>
+        )}
+
+        <div className="flex min-w-48 flex-1 flex-col gap-1">
+          <Label htmlFor={`note-${child.child_sku_id}`}>
+            Note{mode === "adjust" ? " (required)" : " (optional)"}
+          </Label>
+          <Textarea
+            id={`note-${child.child_sku_id}`}
+            rows={1}
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder={
+              mode === "receive"
+                ? "PO number, supplier…"
+                : "Reason for the adjustment…"
+            }
+            className="min-h-9"
+          />
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-3">
+        <p className="text-xs text-muted-foreground">
+          On hand {child.on_hand} →{" "}
+          <span className="font-medium text-foreground tabular-nums">
+            {projected}
+          </span>
+        </p>
+        <div className="ml-auto flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={onDone}
+            disabled={isPending}
+          >
+            Cancel
+          </Button>
+          <Button size="sm" onClick={submit} disabled={isPending}>
+            {isPending
+              ? "Saving…"
+              : mode === "receive"
+                ? "Receive stock"
+                : "Post adjustment"}
+          </Button>
+        </div>
+      </div>
+
+      {error ? (
+        <div className="flex items-start gap-2 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          <AlertCircle className="mt-0.5 size-4 shrink-0" />
+          <span>{error}</span>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function EditModeButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean
+  onClick: () => void
+  children: ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "flex items-center justify-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm font-medium transition-colors",
+        active
+          ? "bg-background text-foreground shadow-sm"
+          : "text-muted-foreground hover:text-foreground",
+      )}
+    >
+      {children}
+    </button>
   )
 }
 
