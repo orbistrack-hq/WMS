@@ -22,6 +22,13 @@ import { createAdminClient } from "@/lib/supabase/admin"
  * Channels: Shopify and WooCommerce are both wired here. Any future channel
  * parks visibly in the queue (skipped, with a clear reason) rather than silently
  * dropping stock.
+ *
+ * TIME BUDGET: draining makes real network calls to the store, so it can run
+ * long when the store is slow or the queue is deep. Callers on a latency-
+ * sensitive path (esp. a webhook ack) MUST pass a `deadlineMs` so a slow store
+ * can never delay them. Jobs that were claimed but not reached before the
+ * deadline stay in 'processing' and are reset to 'pending' by the reaper
+ * (reap_stuck_outbound_inventory_jobs), then retried on the next drain.
  */
 
 const SHOPIFY_API_VERSION = "2024-10"
@@ -33,6 +40,8 @@ export type DrainSummary = {
   pushed: number
   skipped: number
   failed: number
+  /** True when we stopped early because the time budget (deadlineMs) elapsed. */
+  deadlineHit?: boolean
   firstError?: string
 }
 
@@ -61,12 +70,19 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 /**
  * Claim and process up to `limit` due jobs. Safe to run concurrently (claims
  * use SKIP LOCKED) and safe to call repeatedly.
+ *
+ * `deadlineMs` (optional) is an overall wall-clock budget: once it elapses we
+ * stop before claiming/processing further jobs and return what we've done so
+ * far. Any already-claimed-but-unprocessed job is left 'processing' for the
+ * reaper to recover — this is what stops a slow store from blocking the caller.
  */
 export async function drainOutboundInventory(
   admin: SupabaseClient,
-  opts: { limit?: number } = {},
+  opts: { limit?: number; deadlineMs?: number } = {},
 ): Promise<DrainSummary> {
   const limit = opts.limit ?? 50
+  const deadline =
+    opts.deadlineMs && opts.deadlineMs > 0 ? Date.now() + opts.deadlineMs : Infinity
   const summary: DrainSummary = { claimed: 0, pushed: 0, skipped: 0, failed: 0 }
 
   const { data, error } = await admin.rpc("claim_outbound_inventory_jobs", {
@@ -87,6 +103,14 @@ export async function drainOutboundInventory(
   const wooCredsBySource = new Map<string, WooCreds | null>()
 
   for (let i = 0; i < jobs.length; i++) {
+    // Time budget: bail before touching the next job once the deadline passes.
+    // Remaining claimed jobs stay 'processing'; the reaper resets them to
+    // 'pending' and the next drain retries them.
+    if (Date.now() >= deadline) {
+      summary.deadlineHit = true
+      break
+    }
+
     const job = jobs[i]
     const outcome = await pushJob(admin, job, tokenBySource, wooCredsBySource)
 
@@ -292,15 +316,23 @@ async function complete(
 }
 
 /**
- * Fire-and-forget immediate drain after a stock-changing action. Bounded and
- * fully swallows errors — the durable queue + the scheduled drain are the
- * safety net, so a kick that fails (or a missing service-role key in dev) must
- * never surface to the user or break the originating action.
+ * Fire-and-forget immediate drain after a stock-changing action. TIME-BOUNDED
+ * (never blocks the caller longer than ~deadlineMs) and fully swallows errors —
+ * the scheduled drain + reaper are the safety net, so a kick that runs long,
+ * fails, or hits a missing service-role key in dev must never surface to the
+ * user or break the originating action.
+ *
+ * DO NOT call this on a webhook receiver's response path. Draining makes network
+ * calls to the store; doing it before the ack is what let a slow/backed-up store
+ * delay the 200 until WooCommerce marked deliveries failed and DISABLED the
+ * webhook. Kicks belong on internal server actions and the QStash worker (off
+ * the platform's delivery path). Webhook receivers just process + ack; outbound
+ * flushes via the scheduled drain (/api/store-sync/outbound).
  */
-export async function kickOutboundDrain(limit = 50): Promise<void> {
+export async function kickOutboundDrain(limit = 15, deadlineMs = 6000): Promise<void> {
   try {
     const admin = createAdminClient()
-    await drainOutboundInventory(admin, { limit })
+    await drainOutboundInventory(admin, { limit, deadlineMs })
   } catch {
     // Intentionally ignored: the scheduled drain will pick up pending jobs.
   }
