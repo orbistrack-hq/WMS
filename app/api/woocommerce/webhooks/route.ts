@@ -33,6 +33,18 @@ export async function POST(req: Request) {
   const topic = req.headers.get("x-wc-webhook-topic") ?? ""
   const source = normalizeWooSource(req.headers.get("x-wc-webhook-source") ?? "")
 
+  // WooCommerce sends a non-JSON connectivity ping ("webhook_id=...") when a
+  // webhook is saved or activated. It carries no order data and is NOT signed,
+  // so acknowledge it BEFORE signature verification — otherwise it 401s and Woo
+  // treats the delivery URL as failing, which is what silently disables the
+  // webhook. Real deliveries are JSON and signed; those fall through to auth.
+  let payload: unknown
+  try {
+    payload = JSON.parse(raw)
+  } catch {
+    return NextResponse.json({ ok: true, ignored: "non-json ping" })
+  }
+
   const supabase = createAdminClient()
 
   // Authenticate per-store: verify the signature against THIS store's own
@@ -70,14 +82,6 @@ export async function POST(req: Request) {
       topic,
     })
     return NextResponse.json({ error: "invalid signature" }, { status: 401 })
-  }
-
-  // Woo sends a non-JSON ping ("webhook_id=...") when a webhook is first saved.
-  let payload: unknown
-  try {
-    payload = JSON.parse(raw)
-  } catch {
-    return NextResponse.json({ ok: true, ignored: "non-json ping" })
   }
 
   const bodyHash = crypto.createHash("sha256").update(raw).digest("hex").slice(0, 32)
