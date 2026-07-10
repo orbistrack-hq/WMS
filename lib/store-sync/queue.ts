@@ -56,9 +56,26 @@ const WORKER_SECRET = process.env.STORE_SYNC_WORKER_SECRET
 const REDIS_URL = process.env.UPSTASH_REDIS_REST_URL?.replace(/\/+$/, "")
 const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN
 
-/** True when QStash is configured AND we have a public URL it can call back. */
+/** True when PUBLIC_BASE_URL is a parseable absolute URL (needs a scheme). */
+function publicBaseUrlValid(): boolean {
+  if (!PUBLIC_BASE_URL) return false
+  try {
+    new URL(PUBLIC_BASE_URL)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * True when QStash is configured AND we have a VALID public URL it can call
+ * back. The URL must parse (i.e. include a scheme like https://) — a bare host
+ * such as "app.vercel.app" would otherwise pass the truthy check, then make
+ * publishToQueue build a malformed target that QStash rejects, silently
+ * dropping us to inline processing. Validating here fails honestly instead.
+ */
 export function queueEnabled(): boolean {
-  return Boolean(QSTASH_TOKEN && PUBLIC_BASE_URL && WORKER_SECRET)
+  return Boolean(QSTASH_TOKEN && WORKER_SECRET) && publicBaseUrlValid()
 }
 
 /** True when an Upstash Redis REST endpoint is configured for fast dedupe. */
