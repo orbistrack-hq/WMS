@@ -67,3 +67,26 @@ export function stripWeightSuffix(name: string): {
   }
   return { strain: (name ?? "").trim(), grams: null }
 }
+
+/**
+ * A self-describing display name for a child SKU: the strain parent with any
+ * leftover weight suffix stripped, plus the child's own weight/variant, so a
+ * flat inventory/outbound list tells you the actual product at a glance
+ * (e.g. parent "Blue Slushie - Indica - 28G" + a 7g child -> "Blue Slushie -
+ * Indica · 7g"; a promo child -> "Blue Slushie - Indica · Ounce Special").
+ * Falls back to the raw name if there's no variant to append.
+ */
+export function childDisplayName(
+  productName: string | null | undefined,
+  variantLabel?: string | null,
+  gramsPerUnit?: number | string | null,
+): string {
+  const raw = (productName ?? "").trim()
+  const strain = stripWeightSuffix(raw).strain || raw
+  const grams =
+    gramsPerUnit == null || gramsPerUnit === "" ? null : Number(gramsPerUnit)
+  const variant =
+    (variantLabel ?? "").trim() ||
+    (grams != null && Number.isFinite(grams) ? weightLabel(grams) : "")
+  return variant ? `${strain} · ${variant}` : strain
+}

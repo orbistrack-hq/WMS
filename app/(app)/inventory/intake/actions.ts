@@ -57,6 +57,8 @@ export async function receiveIntake(input: {
 export type AllocationChild = {
   id: string
   label: string
+  /** Own SKU code — differentiates same-weight variants (e.g. two 28g). */
+  sku: string | null
   gramsPerUnit: number
   available: number
 }
@@ -69,6 +71,7 @@ export type AllocationClient = {
 type KidRow = {
   id: string
   site_id: string
+  sku: string | null
   variant_label: string | null
   grams_per_unit: number | string
   site: { name: string | null } | null
@@ -91,7 +94,7 @@ export async function loadAllocationTargets(
     supabase
       .from("child_skus")
       .select(
-        "id, site_id, variant_label, grams_per_unit, site:sites(name), inventory_levels(available)",
+        "id, site_id, sku, variant_label, grams_per_unit, site:sites(name), inventory_levels(available)",
       )
       .eq("product_id", productId)
       .eq("is_active", true)
@@ -116,6 +119,7 @@ export async function loadAllocationTargets(
     client.children.push({
       id: k.id,
       label: k.variant_label ?? `${grams}g`,
+      sku: k.sku,
       gramsPerUnit: grams,
       available: inv?.available ?? 0,
     })
@@ -125,8 +129,14 @@ export async function loadAllocationTargets(
   const clients = Array.from(bySite.values()).sort((a, b) =>
     a.siteName.localeCompare(b.siteName),
   )
+  // Weight first, then SKU, so same-weight variants (e.g. a regular 28g and an
+  // ounce-special 28g) sit next to each other in a stable, distinguishable order.
   for (const c of clients)
-    c.children.sort((a, b) => a.gramsPerUnit - b.gramsPerUnit)
+    c.children.sort(
+      (a, b) =>
+        a.gramsPerUnit - b.gramsPerUnit ||
+        (a.sku ?? "").localeCompare(b.sku ?? ""),
+    )
 
   const pool = poolRes.data as { on_hand_grams: number | string } | null
   return {

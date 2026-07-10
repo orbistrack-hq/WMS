@@ -15,6 +15,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { formatCurrency } from "@/lib/format"
+import { childDisplayName } from "@/lib/catalog/weight"
 import { InventoryFilters } from "./inventory-filters"
 
 export const dynamic = "force-dynamic"
@@ -26,6 +27,8 @@ type InventoryRow = {
   site_id: string
   site_name: string | null
   product_name: string | null
+  variant_label: string | null
+  grams_per_unit: number | string | null
   sku: string | null
   on_hand: number
   available: number
@@ -51,8 +54,9 @@ export default async function InventoryPage({
   let query = supabase
     .from("inventory_report")
     .select(
-      `child_sku_id, site_id, site_name, product_name, sku,
-       on_hand, available, reserved, layby, cost, value_at_cost`,
+      `child_sku_id, site_id, site_name, product_name, variant_label,
+       grams_per_unit, sku, on_hand, available, reserved, layby, cost,
+       value_at_cost`,
     )
     .order("product_name")
     .limit(1000)
@@ -133,7 +137,11 @@ export default async function InventoryPage({
                       href={`/inventory/${r.child_sku_id}`}
                       className="hover:underline"
                     >
-                      {r.product_name ?? "—"}
+                      {childDisplayName(
+                        r.product_name,
+                        r.variant_label,
+                        r.grams_per_unit,
+                      )}
                     </Link>
                   </TableCell>
                   <TableCell className="text-muted-foreground">

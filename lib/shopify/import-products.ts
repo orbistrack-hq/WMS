@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 
-import { parseWeightGrams } from "../catalog/weight"
+import { parseWeightGrams, stripWeightSuffix } from "../catalog/weight"
 import { variantProductName, type ShopifyProduct } from "./types"
 
 export type ProductImportResult = {
@@ -71,12 +71,19 @@ export async function importShopifyProduct(
     // If the variant title (or SKU) names a known weight, attach it to the
     // strain parent as a weight variant instead of a flattened "Strain - 3.5g".
     const grams = parseWeightGrams(v.title, v.sku)
+    // Strip any trailing weight from the product title so per-weight store
+    // products ("Blue Slushie - Indica - 28G") group under one clean strain
+    // parent ("Blue Slushie - Indica") instead of stamping the weight onto the
+    // grouping parent's name (which then mismatches its other-weight children).
+    const rawTitle = (product.title ?? "").trim()
+    const strainName =
+      stripWeightSuffix(rawTitle).strain || rawTitle || "Untitled product"
     const { data, error } =
       grams != null
         ? await client.rpc("upsert_store_weight_variant", {
             p_site_id: siteId,
             p_store_variant_id: variantId,
-            p_strain_name: (product.title ?? "").trim() || "Untitled product",
+            p_strain_name: strainName,
             p_grams_per_unit: grams,
             p_sku: v.sku ?? null,
             p_price: Number.isFinite(price) ? price : 0,
