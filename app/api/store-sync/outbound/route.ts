@@ -25,6 +25,15 @@ export const maxDuration = 60
  */
 function authorized(req: Request): boolean {
   if (verifyWorkerSecret(req.headers.get("x-wms-worker-key"))) return true
+  // Also accept the worker secret as a ?key= query param. Forwarding a custom
+  // header through a QStash schedule / cron is fiddly (must be prefixed
+  // Upstash-Forward-…), whereas a query param on the destination URL is always
+  // delivered verbatim. Same secret, same constant-time check.
+  try {
+    if (verifyWorkerSecret(new URL(req.url).searchParams.get("key"))) return true
+  } catch {
+    // ignore malformed URL
+  }
   const cronSecret = process.env.CRON_SECRET
   if (cronSecret) {
     const auth = req.headers.get("authorization")

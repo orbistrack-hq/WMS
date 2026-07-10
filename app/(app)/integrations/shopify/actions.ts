@@ -187,7 +187,14 @@ export async function runOutboundDrainNow(): Promise<
     // full of stuck 'processing' jobs. Mirrors the scheduled endpoint's reaper.
     const { data: reapData } = await admin.rpc("reap_stuck_outbound_inventory_jobs")
     const reaped = typeof reapData === "number" ? reapData : 0
-    const summary = await drainOutboundInventory(admin, { limit: 200 })
+    // Bound the drain so this server action returns and RECORDS outcomes rather
+    // than being killed mid-run — a killed run re-strands claimed jobs in
+    // 'processing'. The scheduled endpoint does the bulk draining; this is a
+    // manual nudge.
+    const summary = await drainOutboundInventory(admin, {
+      limit: 200,
+      deadlineMs: 25_000,
+    })
     revalidatePath("/integrations/shopify")
     return {
       ok: true,
