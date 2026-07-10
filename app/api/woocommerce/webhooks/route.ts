@@ -53,6 +53,22 @@ export async function POST(req: Request) {
     storeSecret?.webhook_secret ?? process.env.WOOCOMMERCE_WEBHOOK_SECRET
 
   if (!verifyWooSignature(raw, signature, secret ?? undefined)) {
+    // Diagnostic (no secret values): tells you WHY the 401 happened —
+    // "connMatched:false" => the incoming source doesn't match any active
+    // store_connections.source (fix the stored source); "secretSource:none"
+    // => neither a per-store nor an env secret exists; "secretSource:per-store"
+    // with connMatched:true => the stored secret value doesn't match the store.
+    console.warn("[woo-webhook] 401 invalid signature", {
+      source,
+      connMatched: Boolean(connRow),
+      secretSource: storeSecret?.webhook_secret
+        ? "per-store"
+        : process.env.WOOCOMMERCE_WEBHOOK_SECRET
+          ? "env"
+          : "none",
+      signaturePresent: Boolean(signature),
+      topic,
+    })
     return NextResponse.json({ error: "invalid signature" }, { status: 401 })
   }
 

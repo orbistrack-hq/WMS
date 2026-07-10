@@ -50,6 +50,23 @@ export async function POST(req: Request) {
   const secret = storeSecret?.api_secret ?? process.env.SHOPIFY_WEBHOOK_SECRET
 
   if (!verifyShopifyHmac(raw, hmac, secret ?? undefined)) {
+    // Diagnostic (no secret values): tells you WHY the 401 happened —
+    // "connMatched:false" => the incoming shop domain doesn't match any active
+    // store_connections.source (fix the stored source; it must be the bare
+    // *.myshopify.com domain, no scheme); "secretSource:none" => no api_secret
+    // on the connection and no env fallback; "secretSource:per-store" with
+    // connMatched:true => the stored api_secret doesn't match the app's secret.
+    console.warn("[shopify-webhook] 401 invalid hmac", {
+      shopDomain,
+      connMatched: Boolean(connRow),
+      secretSource: storeSecret?.api_secret
+        ? "per-store"
+        : process.env.SHOPIFY_WEBHOOK_SECRET
+          ? "env"
+          : "none",
+      hmacPresent: Boolean(hmac),
+      topic,
+    })
     return NextResponse.json({ error: "invalid hmac" }, { status: 401 })
   }
 
