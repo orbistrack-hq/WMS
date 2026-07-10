@@ -4,7 +4,6 @@ import { NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { normalizeWooSource, verifyWooSignature } from "@/lib/woocommerce/types"
 import { processWooEvent } from "@/lib/woocommerce/process-event"
-import { kickOutboundDrain } from "@/lib/store-sync/outbound"
 import {
   dedupeKey,
   publishToQueue,
@@ -85,9 +84,14 @@ export async function POST(req: Request) {
   }
 
   // 3) Fallback: process inline (local dev / Upstash not yet provisioned).
+  //    We deliberately DO NOT drain the outbound inventory queue here. Draining
+  //    makes network calls to the store and can run long; doing it on the ack
+  //    path is what let a slow/backed-up store delay this 200 until WooCommerce
+  //    marked deliveries failed and DISABLED the webhook. Outbound flushes via
+  //    the scheduled drain (/api/store-sync/outbound) and kicks from WMS server
+  //    actions instead — off the delivery path.
   try {
     const result = await processWooEvent(supabase, topic, source, payload)
-    await kickOutboundDrain()
     return NextResponse.json({ ok: true, ...result }, { status: 200 })
   } catch (err) {
     const message = err instanceof Error ? err.message : "processing failed"
