@@ -280,7 +280,11 @@ async function pushWoo(
         manage_stock: true,
         stock_quantity: job.desired_available,
       }),
-      signal: AbortSignal.timeout(10_000),
+      // Shorter than Shopify's: an unhealthy Woo origin (budclub's 502/timeout)
+      // otherwise stalls the whole run for 10s per job and starves the healthy
+      // stores of the drain's time budget. A live Woo answers a single-product
+      // PUT well under this; a dead one fails fast and frees the budget.
+      signal: AbortSignal.timeout(5_000),
     })
 
     if (r.ok) return { ok: true }
