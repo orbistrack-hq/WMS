@@ -14,7 +14,6 @@ node_modules
 .next/
 .DS_Store
 
-*.sql
 .temp
 # Sentry
 .env.sentry-build-plugin

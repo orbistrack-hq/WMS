@@ -35,6 +35,11 @@ export async function GET() {
 
   const target = `${PUBLIC_BASE_URL}/api/store-sync/health`
   const publishUrl = `${QSTASH_URL}/v2/publish/${target}`
+  // Echo the effective base URL so you can see whether QSTASH_URL is applied.
+  // If this shows "https://qstash.upstash.io" you're on the default global
+  // endpoint (routes to eu-central-1) instead of your token's region.
+  const qstashUrlInUse = QSTASH_URL
+  const qstashUrlFromEnv = Boolean(process.env.QSTASH_URL)
 
   // 1) Probe that the destination origin is publicly reachable (not behind a
   //    Vercel auth wall). A JSON 200 from /health = reachable; HTML = blocked.
@@ -66,5 +71,11 @@ export async function GET() {
     publish = { error: e instanceof Error ? e.message : "publish failed" }
   }
 
-  return NextResponse.json({ target, reachable, publish })
+  return NextResponse.json({
+    qstashUrlInUse,
+    qstashUrlFromEnv,
+    target,
+    reachable,
+    publish,
+  })
 }

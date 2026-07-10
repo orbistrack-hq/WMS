@@ -13,6 +13,17 @@ Add new items at the top of "Open items". Status: 🆕 new · 🔍 needs decisio
 
 ## Open items
 
+### FB-9 — Central packaging intake (move out of Settings, no per-site) + types-not-visible bug ✅
+**Feedback (J, 2026-07-08):** Need a better way to record **packaging intake**. Put it somewhere more visible than Settings, and it should **not be per site — one pool for every site** (no allocation). Make **Intake** a dropdown that reveals **Product** or **Packaging**; the Packaging screen is the same "stock on hand" as Settings but relocated and without the per-site setup. Also: packaging **types still aren't visible** on the stock-on-hand / packaging-types screen.
+
+**Decisions (J, 2026-07-08):** central packaging counts **start at zero** (existing per-site counts cleared, not summed). Types-visibility symptom confirmed: the list is **completely empty**.
+
+**Build log — 2026-07-08 — shipped ✅ (round-trip PASS)**
+- **Migration 0047** (`central_packaging_stock`): `packaging_levels` collapses to PK `(packaging_type_id)` — `site_id` (+ FK + index) dropped, existing rows cleared (start-at-zero). `packaging_ledger.site_id` made **nullable** (history kept; central movements write NULL). Primitives + writers lose the site arg: `_pkg_lock(type)`, `_pkg_write(type,…)`, `receive_packaging(type,qty,note)`, `adjust_packaging(type,delta,note)`, `set_packaging_reorder_point(type,point)`, now **ops-only** (`app_role in (admin,operator)`) since packaging is a central warehouse resource, not client-managed. Consumption trigger decrements the **central** pool (per-order `packaging_usage` unchanged → packaging cost report + per-brand billing unaffected). RLS reads open to any signed-in user; `packaging_stock_report` view now per-type. **Re-seeds the canonical shared types** (same fixed ids as 0046, `on conflict do nothing`) so the list can't come back empty — the fix for "types not visible". Reversible down restores the full per-site 0025/0039 shape; **round-trip verifier PASS** (55 migrations forward + reverse, schema clean).
+- **App:** new **Intake → Packaging** screen `app/(app)/inventory/packaging/` (page + `packaging-stock.tsx` central card + `actions.ts`); nav **Intake** is now a group → **Product** (`/inventory/intake`) + **Packaging** (`/inventory/packaging`) (`components/nav-items.ts`). Settings → Packaging keeps type CRUD + rules; its per-site stock card is removed and links to the new screen; stock actions dropped from `settings/packaging/actions.ts`. Added `mylar_bag` to the kind label/list in the manager + settings actions.
+- **Tests:** `17_packaging_stock.sql` rewritten central (plan 12); `24_client_scoped_packaging_merge.sql` packaging-stock sub-tests → central + ops-only (client refused 42501, operator receives; plan 16). `tsc`/`pnpm test` not runnable in-sandbox → run in CI before merge.
+- **Incidental fix:** `supabase/migrations/20260707000041_order_returns.sql` and its `.down.sql` were **truncated in the working tree** (unterminated string / missing `commit;`) — restored from HEAD; they were blocking the whole migration chain (and any deploy).
+
 ### FB-5 — Intake flow: allocate-later, skip-to-allocate, fix history display ✅
 **Feedback (J, 2026-07-08):** After intaking, let the team either (a) go **straight to allocation** when a product already has central inventory, or (b) go to an **intake history page** and **allocate later**. Also: the **intake / allocation history isn't displaying properly**.
 
