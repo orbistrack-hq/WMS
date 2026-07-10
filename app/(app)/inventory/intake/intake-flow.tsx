@@ -514,9 +514,18 @@ export function IntakeFlow({
                             key={ch.id}
                             className="flex items-center justify-between gap-3"
                           >
-                            <div className="flex flex-col">
-                              <span className="text-sm font-medium">
-                                {ch.label}
+                            <div className="flex min-w-0 flex-col">
+                              <span className="flex items-center gap-2 text-sm font-medium">
+                                <span className="truncate">{ch.label}</span>
+                                {ch.sku ? (
+                                  <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-xs font-normal text-muted-foreground">
+                                    {ch.sku}
+                                  </span>
+                                ) : (
+                                  <span className="shrink-0 text-xs font-normal italic text-muted-foreground/70">
+                                    no SKU
+                                  </span>
+                                )}
                               </span>
                               <span className="text-xs text-muted-foreground">
                                 {ch.gramsPerUnit}g each · {ch.available} on hand
@@ -527,7 +536,7 @@ export function IntakeFlow({
                               min="0"
                               step="1"
                               inputMode="numeric"
-                              aria-label={`${c.siteName} ${ch.label} units`}
+                              aria-label={`${c.siteName} ${ch.label}${ch.sku ? ` ${ch.sku}` : ""} units`}
                               aria-invalid={isOver && u > 0}
                               value={units[ch.id] ?? ""}
                               onChange={(e) =>

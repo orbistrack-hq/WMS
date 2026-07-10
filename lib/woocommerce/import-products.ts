@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 
-import { parseWeightGrams } from "../catalog/weight"
+import { parseWeightGrams, stripWeightSuffix } from "../catalog/weight"
 import {
   wooCost,
   wooVariantName,
@@ -172,7 +172,12 @@ export async function importWooProduct(
       .filter(Boolean)
       .join(" ")
     const grams = parseWeightGrams(attrText, v.sku)
-    const strainName = (product.name ?? "").trim() || "Untitled product"
+    // Strip any trailing weight from the product name so per-weight products
+    // group under one clean strain parent instead of stamping the weight onto
+    // the grouping parent's name (which then mismatches its other-weight kids).
+    const rawName = (product.name ?? "").trim()
+    const strainName =
+      stripWeightSuffix(rawName).strain || rawName || "Untitled product"
     await upsert(
       variationId,
       wooVariantName(product.name, v.attributes),
