@@ -62,6 +62,12 @@ describe("formatDate", () => {
     // 2026-06-23T05:00:00Z is 22:00 on Jun 22 in PDT — the date must roll back.
     expect(formatDate("2026-06-23T05:00:00Z")).toContain("Jun 22")
   })
+
+  it("renders a date-only value as its own calendar day (no TZ shift)", () => {
+    // A `date` column like sale_date has no time/zone; it must NOT roll back a
+    // day when the app zone is Pacific.
+    expect(formatDate("2026-07-09")).toBe("Jul 9, 2026")
+  })
 })
 
 describe("formatDateTime", () => {

@@ -44,11 +44,27 @@ const isoDateFormatter = new Intl.DateTimeFormat("en-CA", {
   timeZone: APP_TIME_ZONE,
 })
 
+// Date-only values (e.g. a `date` column like sale_date) are calendar dates
+// with no time or zone. `new Date("2026-07-09")` parses them at UTC midnight, so
+// they must be rendered in UTC — converting to Pacific would shift them back a
+// day. Only real timestamps get the app-zone treatment.
+const dateOnlyRe = /^\d{4}-\d{2}-\d{2}$/
+const utcDateFormatter = new Intl.DateTimeFormat("en-US", {
+  year: "numeric",
+  month: "short",
+  day: "numeric",
+  timeZone: "UTC",
+})
+
 /** Format an ISO date/timestamp as e.g. "Jun 23, 2026". */
 export function formatDate(value: string | null | undefined): string {
   if (!value) return "—"
   const d = new Date(value)
-  return Number.isNaN(d.getTime()) ? "—" : dateFormatter.format(d)
+  if (Number.isNaN(d.getTime())) return "—"
+  // Calendar-date strings render as-is; timestamps convert to the app zone.
+  return dateOnlyRe.test(value)
+    ? utcDateFormatter.format(d)
+    : dateFormatter.format(d)
 }
 
 /** Format an ISO timestamp as e.g. "Jun 23, 2026, 4:05 PM". */
