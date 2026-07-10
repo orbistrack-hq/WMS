@@ -124,8 +124,11 @@ export async function updateProductSku(
 // Child SKUs (one product at one site, per weight variant)
 // ---------------------------------------------------------------------------
 // A product can now have several child SKUs at the same site — one per weight
-// variant (e.g. 3.5g / 7g / 14g / 28g) plus at most one non-weight child. The
-// DB enforces uniqueness on (product_id, site_id, coalesce(grams_per_unit, -1)).
+// variant (e.g. 3.5g / 7g / 14g / 28g), and since migration 0057 even several
+// of the SAME weight (e.g. two 28g "ounce specials") as long as each carries a
+// distinct SKU code. Identity is the SKU: child_skus_site_sku_key keeps (site,
+// sku) unique. Un-coded children are still capped at one per (product, site,
+// weight) by the partial index child_skus_null_variant_key.
 export type ChildSkuInput = {
   product_id: string
   site_id: string
@@ -144,8 +147,8 @@ export type ChildSkuInput = {
 
 const SKU_CONFLICTS = {
   child_skus_pkey: "This product already has this SKU.",
-  child_skus_product_site_variant_key:
-    "This product already has a SKU of that weight at this site.",
+  child_skus_null_variant_key:
+    "This product already has an un-coded SKU of that weight at this site. Give this one a SKU code to keep them apart.",
   child_skus_site_sku_key: "That SKU code is already used at this site.",
 }
 
