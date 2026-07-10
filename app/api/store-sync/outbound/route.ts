@@ -53,15 +53,22 @@ async function handle(req: Request) {
     // (serverless timeout) or that hit its time budget last pass. Resets stale
     // rows back to 'pending' so they retry this run instead of sticking forever.
     let reaped = 0
-    const { data: reapData } = await admin.rpc("reap_stuck_outbound_inventory_jobs")
-    if (typeof reapData === "number") reaped = reapData
+    let reapError: string | null = null
+    // Surface (don't swallow) the reaper's error: a 23505 here silently reaping
+    // nothing is exactly what let 'processing' zombies pile up for hours.
+    const reap = await admin.rpc("reap_stuck_outbound_inventory_jobs")
+    if (reap.error) reapError = reap.error.message
+    else if (typeof reap.data === "number") reaped = reap.data
 
     // Bound the drain below maxDuration so we finish and record outcomes.
     const summary = await drainOutboundInventory(admin, {
       limit: 100,
       deadlineMs: 50_000,
     })
-    return NextResponse.json({ ok: true, reaped, ...summary }, { status: 200 })
+    return NextResponse.json(
+      { ok: true, reaped, ...(reapError ? { reapError } : {}), ...summary },
+      { status: 200 },
+    )
   } catch (err) {
     const message = err instanceof Error ? err.message : "drain failed"
     return NextResponse.json({ error: message }, { status: 500 })
