@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 
+import { storeAutoFulfillEnabled } from "../store-sync/config"
 import { isBeforeSyncCutoff } from "../store-sync/cutoff"
 import type { NormalizedStoreOrder } from "./types"
 
@@ -45,15 +46,19 @@ export async function applyWooOrderMeta(
   }
 
   if (order.lifecycle === "fulfilled") {
-    const { error } = await client.rpc("fulfill_order", {
-      p_order_id: wmsOrderId,
-      p_fulfilled_at: order.fulfilledAt ?? order.createdAt,
-    })
-    if (error) {
-      console.error(
-        `[woocommerce] fulfill_order failed for ${wmsOrderId}: ${error.message}`,
-      )
+    if (storeAutoFulfillEnabled()) {
+      const { error } = await client.rpc("fulfill_order", {
+        p_order_id: wmsOrderId,
+        p_fulfilled_at: order.fulfilledAt ?? order.createdAt,
+      })
+      if (error) {
+        console.error(
+          `[woocommerce] fulfill_order failed for ${wmsOrderId}: ${error.message}`,
+        )
+      }
     }
+    // else: auto-fulfill disabled — leave the order in the normal pick/pack flow
+    // so the team packs it and packaging/costs are captured.
   } else if (order.lifecycle === "cancelled") {
     const { error } = await client.rpc("cancel_order", {
       p_order_id: wmsOrderId,
@@ -121,6 +126,14 @@ export async function applyWooLifecycleUpdate(
   }
 
   if (order.lifecycle === "fulfilled") {
+    if (!storeAutoFulfillEnabled()) {
+      // Auto-fulfill disabled — do NOT fall through to cancel_order. Leave the
+      // order open in the pick/pack flow so packaging/costs are captured locally.
+      return {
+        status: "noop",
+        reason: "auto-fulfill disabled; left for local packing",
+      }
+    }
     const { error } = await client.rpc("fulfill_order", {
       p_order_id: wmsOrderId,
       p_fulfilled_at: order.fulfilledAt ?? order.createdAt,

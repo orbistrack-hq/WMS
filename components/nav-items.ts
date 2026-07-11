@@ -9,6 +9,7 @@ import {
   FolderTree,
   BarChart3,
   Undo2,
+  PackageX,
   Store,
   ShoppingCart,
   Plug,
@@ -104,6 +105,12 @@ export const NAV_TREE: NavEntry[] = [
     href: "/reports/returns",
     icon: Undo2,
     description: "Bounced orders, restocked and logged per site",
+  },
+  {
+    label: "Packaging gaps",
+    href: "/reports/packaging-gaps",
+    icon: PackageX,
+    description: "Fulfilled store orders missing packaging costs",
   },
   {
     label: "Integrations",

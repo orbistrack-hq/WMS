@@ -6,7 +6,10 @@ import { headers } from "next/headers"
 import { createClient } from "@/lib/supabase/server"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { importWooProduct } from "@/lib/woocommerce/import-products"
-import { importWooOrder } from "@/lib/woocommerce/import-orders"
+import {
+  importWooOrder,
+  applyWooLifecycleUpdate,
+} from "@/lib/woocommerce/import-orders"
 import {
   getJob,
   saveJob,
@@ -602,6 +605,11 @@ export async function syncPastOrders(
             break
           case "duplicate":
             result.duplicates++
+            // Already imported — but the store's copy may have moved on
+            // (cancelled / completed) since. The create is idempotent, so push
+            // the CURRENT lifecycle through the same guarded path the webhook
+            // uses. Safe: no-ops for still-open orders and ones already final.
+            await applyWooLifecycleUpdate(admin, creds.source, order)
             break
           case "needs_mapping":
             result.needsMapping++
@@ -769,6 +777,11 @@ export async function stepOrderImport(
         break
       case "duplicate":
         duplicates++
+        // Already imported — reconcile lifecycle in case the store cancelled or
+        // completed it after our first import (idempotent create blocks a second
+        // insert, so this is the only path that catches the later state). See
+        // syncPastOrders for the rationale; no-ops for open/final orders.
+        await applyWooLifecycleUpdate(admin, creds.source, order)
         break
       case "needs_mapping":
         needs_mapping++
