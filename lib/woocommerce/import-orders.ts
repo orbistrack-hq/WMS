@@ -50,6 +50,10 @@ export async function applyWooOrderMeta(
       const { error } = await client.rpc("fulfill_order", {
         p_order_id: wmsOrderId,
         p_fulfilled_at: order.fulfilledAt ?? order.createdAt,
+        // Store completed it upstream (e.g. ShipStation shipped it) before/without
+        // local packing — mark it so it's distinguishable from a local pack and
+        // surfaces in the packaging-gap report for after-the-fact cost capture.
+        p_auto_fulfilled: true,
       })
       if (error) {
         console.error(
@@ -137,6 +141,8 @@ export async function applyWooLifecycleUpdate(
     const { error } = await client.rpc("fulfill_order", {
       p_order_id: wmsOrderId,
       p_fulfilled_at: order.fulfilledAt ?? order.createdAt,
+      // Completed upstream after we imported it — mark as an auto-fulfillment.
+      p_auto_fulfilled: true,
     })
     if (error) return { status: "error", error: error.message }
     return { status: "fulfilled", wmsOrderId }

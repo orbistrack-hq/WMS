@@ -6,7 +6,10 @@ import { headers } from "next/headers"
 import { createClient } from "@/lib/supabase/server"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { importShopifyProduct } from "@/lib/shopify/import-products"
-import { importNormalizedOrder } from "@/lib/shopify/import-orders"
+import {
+  importNormalizedOrder,
+  applyShopifyLifecycleUpdate,
+} from "@/lib/shopify/import-orders"
 import {
   getJob,
   saveJob,
@@ -774,6 +777,11 @@ export async function syncPastOrders(
           break
         case "duplicate":
           result.duplicates++
+          // Already imported — reconcile lifecycle in case the store cancelled or
+          // completed it after our first import (the idempotent create blocks a
+          // second insert, so this is the only path that catches the later state).
+          // No-ops for still-open and already-final orders.
+          await applyShopifyLifecycleUpdate(admin, shopDomain, order)
           break
         case "needs_mapping":
           result.needsMapping++
@@ -974,6 +982,9 @@ export async function stepOrderImport(
         break
       case "duplicate":
         duplicates++
+        // Reconcile lifecycle for an already-imported order (see the full-sync
+        // loop above for rationale); no-ops for open/final orders.
+        await applyShopifyLifecycleUpdate(admin, shopDomain, order)
         break
       case "needs_mapping":
         needs_mapping++

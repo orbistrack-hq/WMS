@@ -41,6 +41,7 @@ type GapRow = {
   unit_count: number | string
   order_value: number | string
   group_order_count: number | string
+  auto_fulfilled: boolean
 }
 
 const num = (v: number | string | null | undefined) => Number(v ?? 0)
@@ -71,7 +72,7 @@ export default async function PackagingGapsReportPage({
     .select(
       `order_id, order_number, site_id, site_name, customer_name, channel,
        order_type, group_id, entered_at, sale_date, fulfilled_at,
-       line_count, unit_count, order_value, group_order_count`,
+       line_count, unit_count, order_value, group_order_count, auto_fulfilled`,
     )
     .order("fulfilled_at", { ascending: false })
     .limit(5000)
@@ -181,6 +182,14 @@ export default async function PackagingGapsReportPage({
                         {num(r.group_order_count) > 1 ? (
                           <span className="ml-1 text-xs text-muted-foreground">
                             (combined ×{num(r.group_order_count)})
+                          </span>
+                        ) : null}
+                        {r.auto_fulfilled ? (
+                          <span
+                            className="ml-1 text-xs text-muted-foreground"
+                            title="Completed at the store before it reached OT — fulfilled automatically, not packed locally"
+                          >
+                            · auto-fulfilled
                           </span>
                         ) : null}
                       </TableCell>

@@ -37,6 +37,7 @@ export type OrderTableRow = {
   status: OrderStatus
   on_hold: boolean
   backordered: boolean
+  auto_fulfilled: boolean
   order_type: "standard" | "layaway"
   channel: OrderChannel
   sale_date: string
@@ -172,6 +173,11 @@ export function OrdersTable({ rows }: { rows: OrderTableRow[] }) {
                       ) : null}
                       {o.backordered ? (
                         <Badge variant="warning">Backordered</Badge>
+                      ) : null}
+                      {o.auto_fulfilled ? (
+                        <Badge variant="outline" title="Completed at the store before it reached OT — fulfilled automatically, not packed locally">
+                          Auto-fulfilled
+                        </Badge>
                       ) : null}
                     </div>
                   </TableCell>
