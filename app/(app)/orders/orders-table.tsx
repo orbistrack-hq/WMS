@@ -175,8 +175,8 @@ export function OrdersTable({ rows }: { rows: OrderTableRow[] }) {
                         <Badge variant="warning">Backordered</Badge>
                       ) : null}
                       {o.auto_fulfilled ? (
-                        <Badge variant="outline" title="Completed at the store before it reached OT — fulfilled automatically, not packed locally">
-                          Auto-fulfilled
+                        <Badge variant="outline" title="Marked completed at the store (shipped outside OT) — not packed locally">
+                          Completed at store
                         </Badge>
                       ) : null}
                     </div>

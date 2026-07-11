@@ -11,6 +11,7 @@ import {
   AlertCircle,
   Undo2,
   RotateCcw,
+  PackageCheck,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -19,6 +20,7 @@ import {
   cancelOrder,
   combineOrders,
   fulfillOrder,
+  markCompletedAtStore,
   reopenOrder,
   returnOrder,
   setStatus,
@@ -180,6 +182,51 @@ export function OrderActions({
         >
           <XCircle data-icon="inline-start" /> Cancel
         </Button>
+      </div>
+
+      {/* Completed at the store — shipped outside OT (e.g. ShipStation) */}
+      <div className="flex flex-col gap-2 rounded-lg border border-border p-3">
+        <div className="flex items-center gap-1.5 text-sm font-medium">
+          <PackageCheck className="size-4" /> Completed at the store
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Use when this order already shipped at the store and just needs
+          recording here. It&apos;s marked completed and flagged as a store
+          completion. Pick whether to leave stock alone (it already left the
+          shelf before OT tracked it) or deplete on-hand.
+        </p>
+        <div className="flex flex-wrap gap-1.5">
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={isPending}
+            onClick={() => {
+              if (
+                confirm(
+                  "Mark completed at the store WITHOUT changing stock? Its reservation is released and any backorder cleared, but on-hand is left as-is because the item already shipped.",
+                )
+              )
+                run(() => markCompletedAtStore(orderId))
+            }}
+          >
+            <PackageCheck data-icon="inline-start" /> Completed — leave stock
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={isPending}
+            onClick={() => {
+              if (
+                confirm(
+                  "Mark completed at the store AND deplete on-hand for its items? Use only if OT's stock should reflect this shipment.",
+                )
+              )
+                run(() => markCompletedAtStore(orderId, { consume: true }))
+            }}
+          >
+            Completed — deplete stock
+          </Button>
+        </div>
       </div>
 
       {/* Combine candidates */}

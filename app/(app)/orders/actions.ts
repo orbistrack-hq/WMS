@@ -135,6 +135,37 @@ export async function returnOrder(orderId: string): Promise<ActionResult> {
   return { ok: true }
 }
 
+/**
+ * Mark an OPEN order as completed at the store — for orders that shipped outside
+ * OT (e.g. ShipStation) and just need recording here. Marks it fulfilled,
+ * auto_fulfilled, and closes the group.
+ *
+ *  - default (no consume): fulfill_order_no_stock — releases the reservation and
+ *    clears any backorder but leaves on_hand ALONE, because the item already left
+ *    before OT tracked this stock. Inventory-neutral.
+ *  - consume: normal fulfill_order — depletes on_hand. Use only when OT's stock
+ *    should reflect this shipment (a live order OT reserved real stock for).
+ */
+export async function markCompletedAtStore(
+  orderId: string,
+  opts: { consume?: boolean } = {},
+): Promise<ActionResult> {
+  const supabase = await createClient()
+  const { error } = opts.consume
+    ? await supabase.rpc("fulfill_order", {
+        p_order_id: orderId,
+        p_auto_fulfilled: true,
+      })
+    : await supabase.rpc("fulfill_order_no_stock", { p_order_id: orderId })
+  if (error) return { ok: false, error: rpcError(error) }
+
+  revalidatePath(`/orders/${orderId}`)
+  revalidatePath("/orders")
+  revalidatePath("/inventory")
+  await kickOutboundDrain()
+  return { ok: true }
+}
+
 /** Re-open a returned order (returned → created); re-reserves its stock. */
 export async function reopenOrder(orderId: string): Promise<ActionResult> {
   const supabase = await createClient()

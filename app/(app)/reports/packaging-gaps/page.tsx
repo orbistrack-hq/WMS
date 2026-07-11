@@ -187,9 +187,9 @@ export default async function PackagingGapsReportPage({
                         {r.auto_fulfilled ? (
                           <span
                             className="ml-1 text-xs text-muted-foreground"
-                            title="Completed at the store before it reached OT — fulfilled automatically, not packed locally"
+                            title="Marked completed at the store (shipped outside OT) — not packed locally"
                           >
-                            · auto-fulfilled
+                            · completed at store
                           </span>
                         ) : null}
                       </TableCell>
