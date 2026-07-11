@@ -1,20 +1,13 @@
-import Link from "next/link"
-
 import { createClient } from "@/lib/supabase/server"
 import { PageHeader } from "@/components/page-header"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table"
 import { formatCurrency } from "@/lib/format"
-import { CHANNEL_LABEL, type OrderChannel } from "@/lib/orders/types"
 import { ExportButton } from "../export-button"
 import { PackagingGapsFilters } from "./packaging-gaps-filters"
+import {
+  PackagingGapsTable,
+  type PackagingType,
+} from "./packaging-gaps-table"
 
 export const dynamic = "force-dynamic"
 
@@ -45,14 +38,6 @@ type GapRow = {
 }
 
 const num = (v: number | string | null | undefined) => Number(v ?? 0)
-const fmtDate = (v: string | null) =>
-  v
-    ? new Date(v).toLocaleDateString("en-US", {
-        year: "numeric",
-        month: "short",
-        day: "numeric",
-      })
-    : "—"
 
 export default async function PackagingGapsReportPage({
   searchParams,
@@ -66,6 +51,12 @@ export default async function PackagingGapsReportPage({
     .from("sites")
     .select("id, name")
     .order("name")
+
+  const { data: packagingTypes } = await supabase
+    .from("packaging_types")
+    .select("id, name, kind, unit_cost")
+    .eq("is_active", true)
+    .order("kind")
 
   let query = supabase
     .from("orders_missing_packaging")
@@ -161,66 +152,10 @@ export default async function PackagingGapsReportPage({
                 recorded.
               </CardContent>
             ) : (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Order</TableHead>
-                    <TableHead>Fulfilled</TableHead>
-                    <TableHead>Site</TableHead>
-                    <TableHead>Customer</TableHead>
-                    <TableHead>Channel</TableHead>
-                    <TableHead className="text-right">Units</TableHead>
-                    <TableHead className="text-right">Value</TableHead>
-                    <TableHead className="text-right">Pack</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {rows.map((r) => (
-                    <TableRow key={r.order_id}>
-                      <TableCell className="font-medium">
-                        {r.order_number}
-                        {num(r.group_order_count) > 1 ? (
-                          <span className="ml-1 text-xs text-muted-foreground">
-                            (combined ×{num(r.group_order_count)})
-                          </span>
-                        ) : null}
-                        {r.auto_fulfilled ? (
-                          <span
-                            className="ml-1 text-xs text-muted-foreground"
-                            title="Marked completed at the store (shipped outside OT) — not packed locally"
-                          >
-                            · completed at store
-                          </span>
-                        ) : null}
-                      </TableCell>
-                      <TableCell className="text-muted-foreground">
-                        {fmtDate(r.fulfilled_at)}
-                      </TableCell>
-                      <TableCell>{r.site_name ?? "—"}</TableCell>
-                      <TableCell className="text-muted-foreground">
-                        {r.customer_name ?? "—"}
-                      </TableCell>
-                      <TableCell className="text-muted-foreground">
-                        {CHANNEL_LABEL[r.channel as OrderChannel] ?? r.channel}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums">
-                        {num(r.unit_count)}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums">
-                        {formatCurrency(num(r.order_value))}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <Link
-                          href={`/packing/${r.group_id}`}
-                          className="text-sm font-medium text-primary underline-offset-4 hover:underline"
-                        >
-                          Record
-                        </Link>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+              <PackagingGapsTable
+                rows={rows}
+                packagingTypes={(packagingTypes ?? []) as PackagingType[]}
+              />
             )}
           </Card>
         </div>
