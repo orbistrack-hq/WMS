@@ -57,3 +57,45 @@ export async function bulkRecordPackaging(
   revalidatePath("/packing")
   return { ok: true, groups: groups.length, recorded, failed, firstError }
 }
+
+export type RecordGroupResult =
+  | { ok: true; recorded: number; failed: number; firstError?: string }
+  | { ok: false; error: string }
+
+/**
+ * Record one group's edited packaging lines — the per-group confirm on the
+ * mass-pack screen. Each line goes through the guarded record_packaging_usage
+ * (cost snapshot + packaging-stock decrement); a failed line is counted, not
+ * fatal, so a partial config still records what it can.
+ */
+export async function recordGroupPackaging(
+  groupId: string,
+  lines: BulkPackagingLine[],
+): Promise<RecordGroupResult> {
+  if (!groupId) return { ok: false, error: "Missing group." }
+  const valid = lines.filter((l) => l.packagingTypeId && l.quantity > 0)
+  if (valid.length === 0)
+    return { ok: false, error: "Add at least one packaging line to record." }
+
+  const supabase = await createClient()
+  let recorded = 0
+  let failed = 0
+  let firstError: string | undefined
+  for (const line of valid) {
+    const { error } = await supabase.rpc("record_packaging_usage", {
+      p_group_id: groupId,
+      p_packaging_type_id: line.packagingTypeId,
+      p_quantity: Math.trunc(line.quantity),
+    })
+    if (error) {
+      failed++
+      if (!firstError) firstError = error.message
+    } else {
+      recorded++
+    }
+  }
+
+  revalidatePath("/reports/packaging-gaps")
+  revalidatePath("/packing")
+  return { ok: true, recorded, failed, firstError }
+}

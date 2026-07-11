@@ -4,10 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { formatCurrency } from "@/lib/format"
 import { ExportButton } from "../export-button"
 import { PackagingGapsFilters } from "./packaging-gaps-filters"
-import {
-  PackagingGapsTable,
-  type PackagingType,
-} from "./packaging-gaps-table"
+import { PackagingGapsTable } from "./packaging-gaps-table"
 
 export const dynamic = "force-dynamic"
 
@@ -51,12 +48,6 @@ export default async function PackagingGapsReportPage({
     .from("sites")
     .select("id, name")
     .order("name")
-
-  const { data: packagingTypes } = await supabase
-    .from("packaging_types")
-    .select("id, name, kind, unit_cost")
-    .eq("is_active", true)
-    .order("kind")
 
   let query = supabase
     .from("orders_missing_packaging")
@@ -152,10 +143,7 @@ export default async function PackagingGapsReportPage({
                 recorded.
               </CardContent>
             ) : (
-              <PackagingGapsTable
-                rows={rows}
-                packagingTypes={(packagingTypes ?? []) as PackagingType[]}
-              />
+              <PackagingGapsTable rows={rows} />
             )}
           </Card>
         </div>
