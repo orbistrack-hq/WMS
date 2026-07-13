@@ -30,19 +30,29 @@ const PREPACK = new Set(["created", "picking"])
 export default async function PackingPage() {
   const supabase = await createClient()
 
+  // Fetch every open, un-dismissed group that still has at least one active
+  // order (created/picking/packed). The !inner join + status filter drops
+  // "dead" open groups — ones whose orders are all fulfilled/cancelled but whose
+  // group never flipped to 'fulfilled' — which otherwise pile up in the table.
+  //
+  // NO row limit: the queue must always surface the newest work. The previous
+  // `.order(window_start asc).limit(300)` truncated to the oldest 300 open
+  // groups, so once dead groups accumulated past 300 the latest orders silently
+  // fell off the queue. Bounding the fetch to active groups keeps the result set
+  // to real packing work, so an unbounded fetch is safe.
   const { data, error } = await supabase
     .from("fulfillment_groups")
     .select(
       `id, status, window_start, site_id,
        customer:customers(name),
        site:sites(name),
-       orders(id, order_number, status, order_line_items(quantity)),
+       orders:orders!inner(id, order_number, status, order_line_items(quantity)),
        packaging_usage(quantity, unit_cost_snapshot)`,
     )
     .eq("status", "open")
     .is("dismissed_at", null)
+    .in("orders.status", ["created", "picking", "packed"])
     .order("window_start", { ascending: true })
-    .limit(300)
 
   const groups: QueueGroup[] = ((data ?? []) as unknown as GroupRow[])
     .map((g) => {
