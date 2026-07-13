@@ -61,11 +61,20 @@ export async function removePackaging(
   groupId: string,
 ): Promise<ActionResult> {
   const supabase = await createClient()
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("packaging_usage")
     .delete()
     .eq("id", usageId)
+    .select("id")
   if (error) return { ok: false, error: packError(error) }
+  // RLS can silently filter a DELETE to zero rows (no error). Surface that as a
+  // real failure instead of a no-op that looks like it worked.
+  if (!data || data.length === 0)
+    return {
+      ok: false,
+      error:
+        "That packaging line couldn't be removed — you may not have permission to. Ask an admin.",
+    }
 
   revalidatePath(`/packing/${groupId}`)
   return { ok: true }
@@ -226,6 +235,40 @@ export async function setPickQty(
       complete: r.complete,
     },
   }
+}
+
+/**
+ * Mark every still-to-pick SKU in a group as fully picked, in one call. Used by
+ * the wave "Sort to orders" confirm: sorting the gathered stock back out to each
+ * order IS the pick, so we record pick_progress before packing. set_pick_qty
+ * clamps each line to its required qty (pick_required = orders still in
+ * created/picking), so this is idempotent and never over-picks. Without it,
+ * pack_group's pick gate rejects a wave-confirmed group with "Finish picking
+ * this group before packing it" — even though the wave screen is the pick step.
+ */
+export async function markGroupPicked(groupId: string): Promise<ActionResult> {
+  const supabase = await createClient()
+  const { data: required, error: reqErr } = await supabase.rpc("pick_required", {
+    p_group_id: groupId,
+  })
+  if (reqErr) return { ok: false, error: packError(reqErr) }
+
+  for (const row of (required ?? []) as {
+    child_sku_id: string
+    required: number
+  }[]) {
+    const { error } = await supabase.rpc("set_pick_qty", {
+      p_group_id: groupId,
+      p_child_sku_id: row.child_sku_id,
+      p_qty: row.required,
+      p_short: false,
+    })
+    if (error) return { ok: false, error: packError(error) }
+  }
+
+  revalidatePath(`/packing/${groupId}`)
+  revalidatePath("/packing")
+  return { ok: true }
 }
 
 // ---------------------------------------------------------------------------

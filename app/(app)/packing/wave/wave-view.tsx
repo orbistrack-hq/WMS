@@ -11,7 +11,12 @@ import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { formatCurrency } from "@/lib/format"
 
-import { packGroup, recordPackaging, type ActionResult } from "../actions"
+import {
+  markGroupPicked,
+  packGroup,
+  recordPackaging,
+  type ActionResult,
+} from "../actions"
 import type { PackagingTypeOption } from "@/lib/packing/aggregate"
 import {
   computeOrderPackaging,
@@ -221,6 +226,11 @@ export function WaveView({
       const res = await recordPackaging(groupId, typeId, n)
       if (!res.ok) return res
     }
+    // Sorting the gathered stock back out to each order IS the pick. Record it
+    // so pack_group's pick gate passes — otherwise confirming here fails with
+    // "Finish picking this group before packing it".
+    const picked = await markGroupPicked(groupId)
+    if (!picked.ok) return picked
     return packGroup(groupId)
   }
 
