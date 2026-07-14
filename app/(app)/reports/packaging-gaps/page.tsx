@@ -13,6 +13,10 @@ import {
 } from "@/components/ui/table"
 import { formatCurrency, formatDate } from "@/lib/format"
 import { CHANNEL_LABEL, type OrderChannel } from "@/lib/orders/types"
+import {
+  childCountsByParent,
+  qualifiesForWeightWarning,
+} from "@/lib/catalog/missing-weight"
 import { ExportButton } from "../export-button"
 import { PackagingGapsFilters } from "./packaging-gaps-filters"
 import { PackagingGapsTable } from "./packaging-gaps-table"
@@ -42,14 +46,22 @@ async function loadPackedWithMissingWeights(
   sp: { from?: string; to?: string; site?: string; channel?: string },
 ): Promise<MissingWeightOrder[]> {
   // 1. No-weight child SKUs (null grams AND null variant label — a labelled
-  //    null-weight item is an intentional non-weight variant, not a gap).
+  //    null-weight item is an intentional non-weight variant, not a gap), kept
+  //    only when the parent product sells by weight (≥2 child SKUs).
   const { data: skuRows } = await supabase
     .from("child_skus")
-    .select("id")
+    .select("id, product_id")
     .is("grams_per_unit", null)
     .is("variant_label", null)
     .limit(5000)
-  const skuIds = (skuRows ?? []).map((r) => r.id as string)
+  const noWeightSkus = (skuRows ?? []) as { id: string; product_id: string }[]
+  if (noWeightSkus.length === 0) return []
+  const parentCounts = await childCountsByParent(supabase, [
+    ...new Set(noWeightSkus.map((r) => r.product_id)),
+  ])
+  const skuIds = noWeightSkus
+    .filter((r) => qualifiesForWeightWarning(parentCounts.get(r.product_id) ?? 0))
+    .map((r) => r.id)
   if (skuIds.length === 0) return []
 
   // 2. Their lines on packed/fulfilled orders, embedding the order for filters.

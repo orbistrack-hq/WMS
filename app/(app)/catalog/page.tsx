@@ -36,6 +36,10 @@ import {
   indent,
   type CategoryRow,
 } from "@/lib/catalog/types"
+import {
+  isMissingWeight,
+  missingWeightParentIds,
+} from "@/lib/catalog/missing-weight"
 import { CatalogFilters } from "./catalog-filters"
 
 export const dynamic = "force-dynamic"
@@ -64,16 +68,6 @@ type ProductRow = {
   child_skus: ChildRow[]
 }
 
-/**
- * A child SKU is "missing its weight" only when it carries neither a
- * grams_per_unit nor a variant_label — a null weight paired with a label
- * (e.g. "Ounce Special") is an intentional non-weight variant, not a gap.
- * Inactive SKUs don't nag. Keep this in sync with the affected-id query below.
- */
-function isMissingWeight(c: ChildRow): boolean {
-  return c.is_active && c.grams_per_unit == null && !c.variant_label
-}
-
 export default async function CatalogPage({
   searchParams,
 }: {
@@ -93,23 +87,12 @@ export default async function CatalogPage({
     .from("duplicate_products_report")
     .select("sku", { count: "exact", head: true })
 
-  // Parent products that have at least one active child SKU with no weight and
-  // no variant label — surfaced as a pressable warning above the table. Pulls
-  // just the product_ids (RLS-scoped by site access) so the count and the
-  // "?missing=true" filter both work off one cheap query.
-  const { data: missingRows } = await supabase
-    .from("child_skus")
-    .select("product_id")
-    .eq("is_active", true)
-    .is("grams_per_unit", null)
-    .is("variant_label", null)
-  const missingProductIds = [
-    ...new Set(
-      ((missingRows ?? []) as { product_id: string }[]).map(
-        (r) => r.product_id,
-      ),
-    ),
-  ]
+  // Parent products worth warning about missing weights: they have a no-weight
+  // active child AND carry ≥2 child SKUs (single-child products often have no
+  // weight on purpose). RLS-scoped; drives the count, the "?missing=true"
+  // filter, and the per-row badge gate below.
+  const missingProductIds = await missingWeightParentIds(supabase)
+  const missingIdSet = new Set(missingProductIds)
   const missingCount = missingProductIds.length
   const showingMissing = sp.missing === "true"
 
@@ -282,7 +265,9 @@ export default async function CatalogPage({
                 const siteCount = new Set(
                   p.child_skus.map((c) => c.site_id),
                 ).size
-                const missingWeights = p.child_skus.filter(isMissingWeight).length
+                const missingWeights = missingIdSet.has(p.id)
+                  ? p.child_skus.filter(isMissingWeight).length
+                  : 0
                 return (
                   <TableRow key={p.id}>
                     <TableCell className="font-medium">

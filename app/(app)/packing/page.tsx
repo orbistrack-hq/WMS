@@ -1,6 +1,10 @@
 import { PackageCheck } from "lucide-react"
 
 import { createClient } from "@/lib/supabase/server"
+import {
+  childCountsByParent,
+  qualifiesForWeightWarning,
+} from "@/lib/catalog/missing-weight"
 import { PageHeader } from "@/components/page-header"
 import { Card, CardContent } from "@/components/ui/card"
 import { PackingQueue, type QueueGroup } from "./packing-queue"
@@ -22,6 +26,7 @@ type GroupRow = {
     order_line_items: {
       quantity: number
       child_sku: {
+        product_id: string
         grams_per_unit: number | string | null
         variant_label: string | null
       } | null
@@ -54,7 +59,7 @@ export default async function PackingPage() {
        site:sites(name),
        orders:orders!inner(id, order_number, status,
          order_line_items(quantity,
-           child_sku:child_skus(grams_per_unit, variant_label))),
+           child_sku:child_skus(product_id, grams_per_unit, variant_label))),
        packaging_usage(quantity, unit_cost_snapshot)`,
     )
     .eq("status", "open")
@@ -62,7 +67,29 @@ export default async function PackingPage() {
     .in("orders.status", ["created", "picking", "packed"])
     .order("window_start", { ascending: true })
 
-  const groups: QueueGroup[] = ((data ?? []) as unknown as GroupRow[])
+  const rows = (data ?? []) as unknown as GroupRow[]
+
+  // A no-weight line only warrants a badge when its parent product carries ≥2
+  // child SKUs (single-child products often have no weight on purpose). Collect
+  // the parents of every active no-weight line, then count their children once.
+  const candidateParentIds = new Set<string>()
+  for (const g of rows) {
+    for (const o of g.orders) {
+      if (!ACTIVE.has(o.status)) continue
+      for (const li of o.order_line_items) {
+        const cs = li.child_sku
+        if (cs && cs.grams_per_unit == null && !cs.variant_label)
+          candidateParentIds.add(cs.product_id)
+      }
+    }
+  }
+  const parentCounts = await childCountsByParent(supabase, [
+    ...candidateParentIds,
+  ])
+  const parentQualifies = (productId: string) =>
+    qualifiesForWeightWarning(parentCounts.get(productId) ?? 0)
+
+  const groups: QueueGroup[] = rows
     .map((g) => {
       const activeOrders = g.orders.filter((o) => ACTIVE.has(o.status))
       const needsPacking = g.orders.some((o) => PREPACK.has(o.status))
@@ -72,13 +99,15 @@ export default async function PackingPage() {
         0,
       )
       // Any active line whose child SKU has no weight (and no intentional
-      // variant label) — its jars/bags can't be auto-filled at packing.
+      // variant label) AND whose parent sells by weight (≥2 child SKUs) — its
+      // jars/bags can't be auto-filled at packing.
       const needsWeight = activeOrders.some((o) =>
         o.order_line_items.some(
           (li) =>
             li.child_sku != null &&
             li.child_sku.grams_per_unit == null &&
-            !li.child_sku.variant_label,
+            !li.child_sku.variant_label &&
+            parentQualifies(li.child_sku.product_id),
         ),
       )
       const packagingCost = g.packaging_usage.reduce(

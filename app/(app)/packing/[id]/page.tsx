@@ -23,6 +23,10 @@ import { STATUS_BADGE, type OrderStatus } from "@/lib/orders/types"
 import { aggregatePickLines, type PickOrderRow } from "@/lib/packing/aggregate"
 import { computeOrderPackaging } from "@/lib/packing/packaging-rules"
 import { loadPackagingConfig } from "@/lib/packing/load-packaging-config"
+import {
+  childCountsByParent,
+  qualifiesForWeightWarning,
+} from "@/lib/catalog/missing-weight"
 import type { ShipmentRow, ShipmentStatus } from "@/lib/shipping/types"
 import {
   PackagingEditor,
@@ -49,6 +53,7 @@ type GroupDetail = {
       quantity: number
       child_sku: {
         id: string
+        product_id: string
         sku: string | null
         bin_location: string | null
         barcode: string | null
@@ -100,7 +105,7 @@ export default async function PackDetailPage({
          site:sites(name),
          orders(id, order_number, status,
            order_line_items(id, quantity,
-             child_sku:child_skus(id, sku, bin_location, barcode, grams_per_unit, variant_label, product:products(name)))),
+             child_sku:child_skus(id, product_id, sku, bin_location, barcode, grams_per_unit, variant_label, product:products(name)))),
          packaging_usage(id, quantity, unit_cost_snapshot,
            packaging_type:packaging_types(name, kind)),
          shipments(id, carrier, service_level, estimated_cost, actual_cost, status,
@@ -183,26 +188,34 @@ export default async function PackDetailPage({
 
   // Lines whose child SKU carries no weight AND no variant label — packaging
   // couldn't be auto-filled for them (a labelled null-weight item, e.g. "Ounce
-  // Special", is an intentional non-weight variant and is left out). Aggregated
-  // per child SKU across the group's orders so the packer sees exactly which
-  // SKUs to fix, then re-run "Top up from weight".
+  // Special", is an intentional non-weight variant and is left out). We only
+  // warn when the parent product sells by weight (≥2 child SKUs); single-child
+  // products often have no weight on purpose. Aggregated per child SKU so the
+  // packer sees exactly which SKUs to fix, then re-runs "Top up from weight".
+  const noWeightCandidates = group.orders.flatMap((o) =>
+    o.order_line_items.filter(
+      (li) =>
+        li.child_sku != null &&
+        li.child_sku.grams_per_unit == null &&
+        !li.child_sku.variant_label,
+    ),
+  )
+  const parentCounts = await childCountsByParent(supabase, [
+    ...new Set(noWeightCandidates.map((li) => li.child_sku!.product_id)),
+  ])
   const noWeightMap = new Map<string, NoWeightLine>()
-  for (const o of group.orders) {
-    for (const li of o.order_line_items) {
-      const cs = li.child_sku
-      if (!cs) continue
-      if (cs.grams_per_unit != null) continue
-      if (cs.variant_label) continue
-      const existing = noWeightMap.get(cs.id)
-      if (existing) existing.qty += li.quantity
-      else
-        noWeightMap.set(cs.id, {
-          childSkuId: cs.id,
-          name: cs.product?.name ?? "—",
-          sku: cs.sku,
-          qty: li.quantity,
-        })
-    }
+  for (const li of noWeightCandidates) {
+    const cs = li.child_sku!
+    if (!qualifiesForWeightWarning(parentCounts.get(cs.product_id) ?? 0)) continue
+    const existing = noWeightMap.get(cs.id)
+    if (existing) existing.qty += li.quantity
+    else
+      noWeightMap.set(cs.id, {
+        childSkuId: cs.id,
+        name: cs.product?.name ?? "—",
+        sku: cs.sku,
+        qty: li.quantity,
+      })
   }
   const noWeightLines = [...noWeightMap.values()]
 
