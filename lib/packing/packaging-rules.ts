@@ -273,3 +273,57 @@ export function computeOrderPackaging(
   const totalCost = round2(lines.reduce((s, l) => s + l.lineCost, 0))
   return { lines, totalCost, unknownWeightUnits: unknown }
 }
+
+// ---------------------------------------------------------------------------
+// Top-up reconciliation (re-apply autofill after a missing weight is filled in)
+// ---------------------------------------------------------------------------
+// When a child SKU had no weight at pack time, its units fell into
+// `unknownWeightUnits` and got no jar/bag — the group was packed with too few
+// consumables. After the weight is corrected in the catalog, `topUpLines`
+// recomputes the target and returns only the lines to ADD to bring each
+// consumable kind up to that target: never removing, never exceeding. It
+// reconciles by KIND (not packaging type) so an operator who already recorded a
+// different jar type isn't double-counted, and box/label (already at target)
+// are left alone. This is the "top up only" re-apply — forgiving of manual edits.
+
+/** What's already recorded on the group, summed per packaging kind. */
+export type RecordedKindQty = { kind: string; quantity: number }
+
+export type TopUpLine = {
+  typeId: string
+  typeName: string
+  kind: string
+  qty: number
+}
+
+/**
+ * Given a freshly-computed target packaging and what's already recorded (by
+ * kind), return the add-only lines that raise each kind to its target. Kinds
+ * already at or above target yield nothing. The packaging type used for a
+ * deficit is the first computed line of that kind (i.e. the config's choice).
+ */
+export function topUpLines(
+  computed: ComputedPackaging,
+  recorded: RecordedKindQty[],
+): TopUpLine[] {
+  const recordedByKind = new Map<string, number>()
+  for (const r of recorded)
+    recordedByKind.set(r.kind, (recordedByKind.get(r.kind) ?? 0) + r.quantity)
+
+  const firstByKind = new Map<string, ComputedPackagingLine>()
+  const desiredByKind = new Map<string, number>()
+  for (const l of computed.lines) {
+    if (!firstByKind.has(l.kind)) firstByKind.set(l.kind, l)
+    desiredByKind.set(l.kind, (desiredByKind.get(l.kind) ?? 0) + l.qty)
+  }
+
+  const out: TopUpLine[] = []
+  for (const [kind, desired] of desiredByKind) {
+    const deficit = desired - (recordedByKind.get(kind) ?? 0)
+    if (deficit <= 0) continue
+    const t = firstByKind.get(kind)
+    if (!t) continue
+    out.push({ typeId: t.typeId, typeName: t.typeName, kind, qty: deficit })
+  }
+  return out
+}

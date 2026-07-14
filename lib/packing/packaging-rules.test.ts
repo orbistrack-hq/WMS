@@ -7,8 +7,10 @@ import {
   packagingKindForGrams,
   suggestedPackagingLines,
   tallyByWeight,
+  topUpLines,
   type PackagingOrderDefault,
   type PackagingWeightRule,
+  type RecordedKindQty,
   type WeightedUnit,
 } from "./packaging-rules"
 
@@ -266,5 +268,66 @@ describe("computeOrderPackaging (FB-6 weight+dimension config)", () => {
     )
     expect(r.unknownWeightUnits).toBe(3)
     expect(cQty("jar", r)).toBe(1)
+  })
+})
+
+describe("topUpLines (re-apply after a weight is filled in)", () => {
+  // Scenario: a 3.5g line was packed while its SKU had no weight, so only the
+  // per-order defaults (box, label, vacuum bag) were recorded — the jars/labels
+  // were dropped. Now the weight is set; top-up should add exactly the missing
+  // jars + jar labels and nothing else.
+  const target = computeOrderPackaging(
+    [{ gramsPerUnit: 3.5, qty: 3 }],
+    WEIGHT_RULES,
+    ORDER_DEFAULTS,
+  )
+
+  it("adds only the consumables that were dropped, leaving box/label/bag alone", () => {
+    const recorded: RecordedKindQty[] = [
+      { kind: "box", quantity: 1 },
+      { kind: "shipping_label", quantity: 1 },
+      { kind: "vacuum_bag", quantity: 1 },
+    ]
+    const add = topUpLines(target, recorded)
+    const byKind = Object.fromEntries(add.map((l) => [l.kind, l.qty]))
+    expect(byKind).toEqual({ jar: 3, jar_label: 3 })
+  })
+
+  it("returns nothing when everything is already at target", () => {
+    const recorded: RecordedKindQty[] = [
+      { kind: "box", quantity: 1 },
+      { kind: "shipping_label", quantity: 1 },
+      { kind: "vacuum_bag", quantity: 1 },
+      { kind: "jar", quantity: 3 },
+      { kind: "jar_label", quantity: 3 },
+    ]
+    expect(topUpLines(target, recorded)).toEqual([])
+  })
+
+  it("never removes or exceeds — an over-recorded kind is left untouched", () => {
+    const recorded: RecordedKindQty[] = [
+      { kind: "box", quantity: 2 }, // operator added a second box by hand
+      { kind: "jar", quantity: 5 }, // more jars than target
+    ]
+    const add = topUpLines(target, recorded)
+    expect(add.find((l) => l.kind === "box")).toBeUndefined()
+    expect(add.find((l) => l.kind === "jar")).toBeUndefined()
+    // The still-missing consumables/defaults are the ones topped up.
+    expect(add.find((l) => l.kind === "jar_label")?.qty).toBe(3)
+    expect(add.find((l) => l.kind === "shipping_label")?.qty).toBe(1)
+  })
+
+  it("reconciles by kind: a different jar type already covers the need", () => {
+    // Recorded jars are a different packaging type but same 'jar' kind — the
+    // count is what matters, so no more jars are added.
+    const recorded: RecordedKindQty[] = [{ kind: "jar", quantity: 3 }]
+    const add = topUpLines(target, recorded)
+    expect(add.find((l) => l.kind === "jar")).toBeUndefined()
+  })
+
+  it("tops up partially when some of a kind is recorded", () => {
+    const recorded: RecordedKindQty[] = [{ kind: "jar", quantity: 1 }]
+    const add = topUpLines(target, recorded)
+    expect(add.find((l) => l.kind === "jar")?.qty).toBe(2) // 3 target − 1
   })
 })

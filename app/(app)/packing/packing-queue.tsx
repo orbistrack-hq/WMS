@@ -3,7 +3,7 @@
 import { useMemo, useState, useTransition } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { EyeOff, Layers } from "lucide-react"
+import { EyeOff, Layers, Scale } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -31,6 +31,8 @@ export type QueueGroup = {
   itemCount: number
   packagingCost: number
   needsPacking: boolean
+  /** A line in the group has a child SKU with no weight — packaging can't auto-fill. */
+  needsWeight: boolean
 }
 
 type SortKey = "recommended" | "site" | "items" | "orders" | "customer" | "age"
@@ -199,11 +201,21 @@ export function PackingQueue({ groups }: { groups: QueueGroup[] }) {
           {formatCurrency(g.packagingCost)}
         </TableCell>
         <TableCell>
-          {g.needsPacking ? (
-            <Badge variant="warning">Needs packing</Badge>
-          ) : (
-            <Badge variant="success">Packed</Badge>
-          )}
+          <div className="flex flex-wrap items-center gap-1">
+            {g.needsPacking ? (
+              <Badge variant="warning">Needs packing</Badge>
+            ) : (
+              <Badge variant="success">Packed</Badge>
+            )}
+            {g.needsWeight ? (
+              <Badge
+                variant="warning"
+                title="A SKU here has no weight set — its jars/bags won't auto-fill. Fix in Catalog."
+              >
+                <Scale /> Needs weight
+              </Badge>
+            ) : null}
+          </div>
         </TableCell>
         <TableCell className="text-right">
           <DismissButton group={g} />

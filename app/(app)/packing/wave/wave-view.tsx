@@ -508,6 +508,11 @@ export function WaveView({
                       </span>
                     ) : null}
                     <span className="truncate font-medium">{r.name}</span>
+                    {r.gramsPerUnit == null ? (
+                      <Badge variant="warning" className="shrink-0">
+                        No weight
+                      </Badge>
+                    ) : null}
                   </div>
                   <span className="truncate text-xs tabular-nums text-muted-foreground">
                     {r.sku ?? "no SKU"}

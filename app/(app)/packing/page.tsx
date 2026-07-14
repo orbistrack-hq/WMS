@@ -19,7 +19,13 @@ type GroupRow = {
     id: string
     order_number: string
     status: string
-    order_line_items: { quantity: number }[]
+    order_line_items: {
+      quantity: number
+      child_sku: {
+        grams_per_unit: number | string | null
+        variant_label: string | null
+      } | null
+    }[]
   }[]
   packaging_usage: { quantity: number; unit_cost_snapshot: number | string }[]
 }
@@ -46,7 +52,9 @@ export default async function PackingPage() {
       `id, status, window_start, site_id,
        customer:customers(name),
        site:sites(name),
-       orders:orders!inner(id, order_number, status, order_line_items(quantity)),
+       orders:orders!inner(id, order_number, status,
+         order_line_items(quantity,
+           child_sku:child_skus(grams_per_unit, variant_label))),
        packaging_usage(quantity, unit_cost_snapshot)`,
     )
     .eq("status", "open")
@@ -63,6 +71,16 @@ export default async function PackingPage() {
           n + o.order_line_items.reduce((s, li) => s + li.quantity, 0),
         0,
       )
+      // Any active line whose child SKU has no weight (and no intentional
+      // variant label) — its jars/bags can't be auto-filled at packing.
+      const needsWeight = activeOrders.some((o) =>
+        o.order_line_items.some(
+          (li) =>
+            li.child_sku != null &&
+            li.child_sku.grams_per_unit == null &&
+            !li.child_sku.variant_label,
+        ),
+      )
       const packagingCost = g.packaging_usage.reduce(
         (s, u) => s + u.quantity * Number(u.unit_cost_snapshot),
         0,
@@ -78,6 +96,7 @@ export default async function PackingPage() {
         itemCount,
         packagingCost,
         needsPacking,
+        needsWeight,
       }
     })
     .filter((g) => g.orderCount > 0)

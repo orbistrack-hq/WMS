@@ -1,5 +1,14 @@
 import Link from "next/link"
-import { Plus, FolderTree, Boxes, CopyCheck, Layers } from "lucide-react"
+import {
+  Plus,
+  FolderTree,
+  Boxes,
+  CopyCheck,
+  Layers,
+  Scale,
+  TriangleAlert,
+  X,
+} from "lucide-react"
 
 import { createClient } from "@/lib/supabase/server"
 import { PageHeader } from "@/components/page-header"
@@ -36,6 +45,14 @@ type SearchParams = {
   category?: string
   active?: string
   page?: string
+  missing?: string
+}
+
+type ChildRow = {
+  site_id: string
+  is_active: boolean
+  grams_per_unit: number | string | null
+  variant_label: string | null
 }
 
 type ProductRow = {
@@ -44,7 +61,17 @@ type ProductRow = {
   description: string | null
   category_id: string | null
   is_active: boolean
-  child_skus: { site_id: string; is_active: boolean }[]
+  child_skus: ChildRow[]
+}
+
+/**
+ * A child SKU is "missing its weight" only when it carries neither a
+ * grams_per_unit nor a variant_label — a null weight paired with a label
+ * (e.g. "Ounce Special") is an intentional non-weight variant, not a gap.
+ * Inactive SKUs don't nag. Keep this in sync with the affected-id query below.
+ */
+function isMissingWeight(c: ChildRow): boolean {
+  return c.is_active && c.grams_per_unit == null && !c.variant_label
 }
 
 export default async function CatalogPage({
@@ -65,6 +92,27 @@ export default async function CatalogPage({
   const { count: dupCount } = await supabase
     .from("duplicate_products_report")
     .select("sku", { count: "exact", head: true })
+
+  // Parent products that have at least one active child SKU with no weight and
+  // no variant label — surfaced as a pressable warning above the table. Pulls
+  // just the product_ids (RLS-scoped by site access) so the count and the
+  // "?missing=true" filter both work off one cheap query.
+  const { data: missingRows } = await supabase
+    .from("child_skus")
+    .select("product_id")
+    .eq("is_active", true)
+    .is("grams_per_unit", null)
+    .is("variant_label", null)
+  const missingProductIds = [
+    ...new Set(
+      ((missingRows ?? []) as { product_id: string }[]).map(
+        (r) => r.product_id,
+      ),
+    ),
+  ]
+  const missingCount = missingProductIds.length
+  const showingMissing = sp.missing === "true"
+
   const pathMap = categoryPathMap(categories)
   const categoryOptions = flattenCategoryTree(buildCategoryTree(categories)).map(
     (n) => ({ id: n.id, label: `${indent(n.depth)}${n.name}` }),
@@ -76,7 +124,7 @@ export default async function CatalogPage({
   let query = supabase
     .from("products")
     .select(
-      "id, name, description, category_id, is_active, child_skus(site_id, is_active)",
+      "id, name, description, category_id, is_active, child_skus(site_id, is_active, grams_per_unit, variant_label)",
       { count: "estimated" },
     )
     .order("name")
@@ -87,11 +135,31 @@ export default async function CatalogPage({
   if (sp.category === "none") query = query.is("category_id", null)
   else if (sp.category) query = query.eq("category_id", sp.category)
   if (sp.q) query = query.ilike("name", `%${sp.q}%`)
+  // Restrict to the affected products when the missing-weights filter is on.
+  // An empty `in` list matches nothing, which is exactly right when there are
+  // none left to fix.
+  if (showingMissing) query = query.in("id", missingProductIds)
 
   const { data, error, count } = await query
   const fetched = (data ?? []) as unknown as ProductRow[]
   const hasMore = fetched.length > DEFAULT_PAGE_SIZE
   const products = fetched.slice(0, DEFAULT_PAGE_SIZE)
+
+  // Build a catalog URL that keeps the current filters but overrides the given
+  // keys — used by the missing-weights banner to toggle its filter on/off.
+  // Toggling the filter resets to page 1.
+  function catalogHref(overrides: Partial<SearchParams>): string {
+    const u = new URLSearchParams()
+    if (sp.q) u.set("q", sp.q)
+    if (sp.category) u.set("category", sp.category)
+    if (sp.active) u.set("active", sp.active)
+    for (const [k, v] of Object.entries(overrides)) {
+      if (v) u.set(k, v)
+      else u.delete(k)
+    }
+    const qs = u.toString()
+    return qs ? `/catalog?${qs}` : "/catalog"
+  }
 
   return (
     <>
@@ -132,6 +200,31 @@ export default async function CatalogPage({
 
       <CatalogFilters categories={categoryOptions} />
 
+      {showingMissing ? (
+        <div className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300">
+          <span className="flex items-center gap-2">
+            <TriangleAlert className="size-4 shrink-0" />
+            Showing products with SKUs that have no weight set. Open each and
+            fill in the weight.
+          </span>
+          <Link
+            href={catalogHref({ missing: undefined })}
+            className="inline-flex items-center gap-1 font-medium hover:underline"
+          >
+            <X className="size-3.5" /> Clear
+          </Link>
+        </div>
+      ) : missingCount > 0 ? (
+        <Link
+          href={catalogHref({ missing: "true" })}
+          className="mb-4 flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-800 transition-colors hover:bg-amber-100 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300 dark:hover:bg-amber-900"
+        >
+          <TriangleAlert className="size-4 shrink-0" />
+          {missingCount} {missingCount === 1 ? "product has" : "products have"}{" "}
+          SKUs with no weight set — review and fill them in
+        </Link>
+      ) : null}
+
       {error ? (
         <Card>
           <CardContent className="py-8 text-sm text-destructive">
@@ -144,15 +237,32 @@ export default async function CatalogPage({
             <div className="flex size-12 items-center justify-center rounded-full bg-muted text-muted-foreground">
               <Boxes className="size-6" />
             </div>
-            <p className="text-sm text-muted-foreground">
-              No products match these filters.
-            </p>
-            <Link
-              href="/catalog/new"
-              className={buttonVariants({ variant: "outline" })}
-            >
-              <Plus data-icon="inline-start" /> Add the first product
-            </Link>
+            {showingMissing ? (
+              <>
+                <p className="text-sm text-muted-foreground">
+                  No products with missing weights match these filters. Every
+                  SKU here has a weight (or an intentional variant label) set.
+                </p>
+                <Link
+                  href={catalogHref({ missing: undefined })}
+                  className={buttonVariants({ variant: "outline" })}
+                >
+                  <X data-icon="inline-start" /> Clear missing-weights filter
+                </Link>
+              </>
+            ) : (
+              <>
+                <p className="text-sm text-muted-foreground">
+                  No products match these filters.
+                </p>
+                <Link
+                  href="/catalog/new"
+                  className={buttonVariants({ variant: "outline" })}
+                >
+                  <Plus data-icon="inline-start" /> Add the first product
+                </Link>
+              </>
+            )}
           </CardContent>
         </Card>
       ) : (
@@ -172,15 +282,27 @@ export default async function CatalogPage({
                 const siteCount = new Set(
                   p.child_skus.map((c) => c.site_id),
                 ).size
+                const missingWeights = p.child_skus.filter(isMissingWeight).length
                 return (
                   <TableRow key={p.id}>
                     <TableCell className="font-medium">
-                      <Link
-                        href={`/catalog/${p.id}`}
-                        className="hover:underline"
-                      >
-                        {p.name}
-                      </Link>
+                      <div className="flex items-center gap-2">
+                        <Link
+                          href={`/catalog/${p.id}`}
+                          className="hover:underline"
+                        >
+                          {p.name}
+                        </Link>
+                        {missingWeights > 0 ? (
+                          <Badge
+                            variant="warning"
+                            title="Child SKUs with no weight set"
+                          >
+                            <Scale />
+                            {missingWeights} missing weight
+                          </Badge>
+                        ) : null}
+                      </div>
                     </TableCell>
                     <TableCell className="text-muted-foreground">
                       {p.category_id ? pathMap.get(p.category_id) ?? "—" : "—"}

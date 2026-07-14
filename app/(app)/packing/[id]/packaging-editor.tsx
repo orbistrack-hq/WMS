@@ -1,8 +1,16 @@
 "use client"
 
 import { useEffect, useRef, useState, useTransition } from "react"
+import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { AlertCircle, Plus, Trash2, Wand2 } from "lucide-react"
+import {
+  AlertCircle,
+  Plus,
+  RefreshCw,
+  Trash2,
+  TriangleAlert,
+  Wand2,
+} from "lucide-react"
 
 import type { SuggestedPackagingLine } from "@/lib/packing/packaging-rules"
 
@@ -20,7 +28,12 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { formatCurrency } from "@/lib/format"
-import { recordPackaging, removePackaging, updatePackagingQty } from "../actions"
+import {
+  recordPackaging,
+  removePackaging,
+  topUpPackagingFromWeight,
+  updatePackagingQty,
+} from "../actions"
 
 export const KIND_LABEL: Record<string, string> = {
   box: "Box",
@@ -47,29 +60,65 @@ type PackagingType = {
   unit_cost: number
 }
 
+/** A line whose child SKU has no weight set — packaging can't be auto-filled. */
+export type NoWeightLine = {
+  childSkuId: string
+  name: string
+  sku: string | null
+  qty: number
+}
+
 export function PackagingEditor({
   groupId,
   lines,
   packagingTypes,
   suggested = [],
-  unknownWeightUnits = 0,
+  noWeightLines = [],
   autoApply = false,
+  enableTopUp = false,
 }: {
   groupId: string
   lines: UsageLine[]
   packagingTypes: PackagingType[]
   /** Weight-config seed (FB-6), only when nothing is recorded yet. */
   suggested?: SuggestedPackagingLine[]
-  /** Units the rule couldn't classify (no weight) — flagged for manual entry. */
-  unknownWeightUnits?: number
+  /**
+   * Lines whose child SKU has no weight — packaging couldn't be auto-filled for
+   * them, so the group is short on jars/bags. Surfaced as an always-visible
+   * warning (even after autofill records box+label) so it never slips through.
+   */
+  noWeightLines?: NoWeightLine[]
   /** FB-6: record the suggested packaging automatically on load (no button). */
   autoApply?: boolean
+  /** Show the "top up from weight" re-apply button (pack detail screen). */
+  enableTopUp?: boolean
 }) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
   const [addType, setAddType] = useState(packagingTypes[0]?.id ?? "")
   const [addQty, setAddQty] = useState("1")
+  const [topUpMsg, setTopUpMsg] = useState<string | null>(null)
+
+  const noWeightUnits = noWeightLines.reduce((n, l) => n + l.qty, 0)
+
+  function runTopUp() {
+    setError(null)
+    setTopUpMsg(null)
+    startTransition(async () => {
+      const res = await topUpPackagingFromWeight(groupId)
+      if (!res.ok) {
+        setError(res.error)
+        return
+      }
+      setTopUpMsg(
+        res.added.length === 0
+          ? "Already up to date — nothing to add."
+          : `Added ${res.added.map((a) => `${a.qty} × ${a.typeName}`).join(", ")}.`,
+      )
+      router.refresh()
+    })
+  }
 
   const total = lines.reduce(
     (s, l) => s + l.quantity * l.unit_cost_snapshot,
@@ -153,6 +202,38 @@ export function PackagingEditor({
         </div>
       ) : null}
 
+      {noWeightLines.length > 0 ? (
+        <div className="flex flex-col gap-1.5 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300">
+          <div className="flex items-center gap-1.5 font-medium">
+            <TriangleAlert className="size-4 shrink-0" />
+            {noWeightUnits} unit{noWeightUnits === 1 ? "" : "s"} across{" "}
+            {noWeightLines.length} SKU
+            {noWeightLines.length === 1 ? "" : "s"} have no weight — their
+            jars/bags weren&rsquo;t auto-filled.
+          </div>
+          <ul className="ml-5 list-disc text-xs">
+            {noWeightLines.map((l) => (
+              <li key={l.childSkuId}>
+                {l.name}
+                {l.sku ? ` (${l.sku})` : ""} × {l.qty}
+              </li>
+            ))}
+          </ul>
+          <p className="text-xs">
+            Set the weight in{" "}
+            <Link
+              href="/catalog?missing=true"
+              className="font-medium underline"
+            >
+              Catalog
+            </Link>
+            {enableTopUp
+              ? ", then press “Top up from weight” below to add the missing packaging."
+              : ", then add the missing jars/bags by hand."}
+          </p>
+        </div>
+      ) : null}
+
       {showSuggested ? (
         <div className="flex flex-col gap-2 rounded-lg border border-dashed border-primary/40 bg-primary/5 p-3">
           <div className="flex items-center gap-1.5 text-sm font-medium">
@@ -173,12 +254,6 @@ export function PackagingEditor({
               </span>
             ))}
           </div>
-          {unknownWeightUnits > 0 ? (
-            <p className="text-xs text-amber-700 dark:text-amber-400">
-              {unknownWeightUnits} unit{unknownWeightUnits === 1 ? "" : "s"} have
-              no weight set — add their packaging by hand.
-            </p>
-          ) : null}
           {autoApply ? (
             <p className="text-xs text-muted-foreground">
               Filled automatically — adjust any line below (e.g. the box) before
@@ -252,6 +327,23 @@ export function PackagingEditor({
           No packaging recorded yet.
         </p>
       )}
+
+      {enableTopUp && lines.length > 0 ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={runTopUp}
+            disabled={isPending}
+            title="Recompute from current weights and add any missing jars/bags — never removes or double-counts."
+          >
+            <RefreshCw data-icon="inline-start" /> Top up from weight
+          </Button>
+          {topUpMsg ? (
+            <span className="text-xs text-muted-foreground">{topUpMsg}</span>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="flex flex-wrap items-end gap-2 rounded-lg border border-border p-3">
         <div className="flex min-w-44 flex-1 flex-col gap-1">

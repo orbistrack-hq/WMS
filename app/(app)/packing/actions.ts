@@ -3,6 +3,8 @@
 import { revalidatePath } from "next/cache"
 
 import { createClient } from "@/lib/supabase/server"
+import { computeOrderPackaging, topUpLines } from "@/lib/packing/packaging-rules"
+import { loadPackagingConfig } from "@/lib/packing/load-packaging-config"
 
 export type ActionResult = { ok: true } | { ok: false; error: string }
 
@@ -36,6 +38,101 @@ export async function recordPackaging(
   revalidatePath(`/packing/${groupId}`)
   revalidatePath("/packing")
   return { ok: true }
+}
+
+// ---------------------------------------------------------------------------
+// Re-apply weight-based packaging (top up only)
+// ---------------------------------------------------------------------------
+// A line packed while its child SKU had no weight got no jar/bag — the group is
+// short on consumables. After the weight is corrected in the catalog, this
+// recomputes the target from the current weights and records ONLY the deficit
+// per packaging kind (see topUpLines): box/label and any hand-added lines are
+// left untouched, nothing is removed, and it never exceeds the target — so it's
+// safe to press more than once. record_packaging_usage has no status guard, so
+// this also works on an already-fulfilled group.
+
+export type TopUpResult =
+  | {
+      ok: true
+      added: { typeName: string; qty: number }[]
+      /** Units still with no weight after top-up — fix these in the catalog. */
+      unknownWeightUnits: number
+    }
+  | { ok: false; error: string }
+
+type TopUpGroup = {
+  orders: {
+    order_line_items: {
+      quantity: number
+      child_sku: { grams_per_unit: number | string | null } | null
+    }[]
+  }[]
+  packaging_usage: {
+    quantity: number
+    packaging_type: { kind: string | null } | null
+  }[]
+}
+
+export async function topUpPackagingFromWeight(
+  groupId: string,
+): Promise<TopUpResult> {
+  const supabase = await createClient()
+
+  const { data, error } = await supabase
+    .from("fulfillment_groups")
+    .select(
+      `id,
+       orders(order_line_items(quantity,
+         child_sku:child_skus(grams_per_unit))),
+       packaging_usage(quantity, packaging_type:packaging_types(kind))`,
+    )
+    .eq("id", groupId)
+    .maybeSingle()
+  if (error) return { ok: false, error: packError(error) }
+  if (!data) return { ok: false, error: "That group no longer exists." }
+
+  const group = data as unknown as TopUpGroup
+
+  const units = group.orders.flatMap((o) =>
+    o.order_line_items.map((li) => ({
+      gramsPerUnit:
+        li.child_sku?.grams_per_unit == null
+          ? null
+          : Number(li.child_sku.grams_per_unit),
+      qty: li.quantity,
+    })),
+  )
+
+  const config = await loadPackagingConfig(supabase)
+  const computed = computeOrderPackaging(
+    units,
+    config.weightRules,
+    config.orderDefaults,
+  )
+  const recorded = group.packaging_usage.map((u) => ({
+    kind: u.packaging_type?.kind ?? "custom",
+    quantity: u.quantity,
+  }))
+  const toAdd = topUpLines(computed, recorded)
+
+  // Sequential so a failed write surfaces its error and stops rather than
+  // half-applying blind.
+  for (const line of toAdd) {
+    const { error: recErr } = await supabase.rpc("record_packaging_usage", {
+      p_group_id: groupId,
+      p_packaging_type_id: line.typeId,
+      p_quantity: line.qty,
+    })
+    if (recErr) return { ok: false, error: packError(recErr) }
+  }
+
+  revalidatePath(`/packing/${groupId}`)
+  revalidatePath("/packing")
+  return {
+    ok: true,
+    added: toAdd.map((l) => ({ typeName: l.typeName, qty: l.qty })),
+    unknownWeightUnits: computed.unknownWeightUnits,
+  }
 }
 
 export async function updatePackagingQty(

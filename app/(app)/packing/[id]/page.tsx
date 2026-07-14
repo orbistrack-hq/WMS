@@ -24,7 +24,11 @@ import { aggregatePickLines, type PickOrderRow } from "@/lib/packing/aggregate"
 import { computeOrderPackaging } from "@/lib/packing/packaging-rules"
 import { loadPackagingConfig } from "@/lib/packing/load-packaging-config"
 import type { ShipmentRow, ShipmentStatus } from "@/lib/shipping/types"
-import { PackagingEditor, type UsageLine } from "./packaging-editor"
+import {
+  PackagingEditor,
+  type NoWeightLine,
+  type UsageLine,
+} from "./packaging-editor"
 import { PackConfirm, type PackScanItem } from "./pack-confirm"
 import { ShippingEditor } from "./shipping-editor"
 
@@ -49,6 +53,7 @@ type GroupDetail = {
         bin_location: string | null
         barcode: string | null
         grams_per_unit: number | string | null
+        variant_label: string | null
         product: { name: string | null } | null
       } | null
     }[]
@@ -95,7 +100,7 @@ export default async function PackDetailPage({
          site:sites(name),
          orders(id, order_number, status,
            order_line_items(id, quantity,
-             child_sku:child_skus(id, sku, bin_location, barcode, grams_per_unit, product:products(name)))),
+             child_sku:child_skus(id, sku, bin_location, barcode, grams_per_unit, variant_label, product:products(name)))),
          packaging_usage(id, quantity, unit_cost_snapshot,
            packaging_type:packaging_types(name, kind)),
          shipments(id, carrier, service_level, estimated_cost, actual_cost, status,
@@ -175,6 +180,31 @@ export default async function PackDetailPage({
           qty: l.qty,
         }))
       : []
+
+  // Lines whose child SKU carries no weight AND no variant label — packaging
+  // couldn't be auto-filled for them (a labelled null-weight item, e.g. "Ounce
+  // Special", is an intentional non-weight variant and is left out). Aggregated
+  // per child SKU across the group's orders so the packer sees exactly which
+  // SKUs to fix, then re-run "Top up from weight".
+  const noWeightMap = new Map<string, NoWeightLine>()
+  for (const o of group.orders) {
+    for (const li of o.order_line_items) {
+      const cs = li.child_sku
+      if (!cs) continue
+      if (cs.grams_per_unit != null) continue
+      if (cs.variant_label) continue
+      const existing = noWeightMap.get(cs.id)
+      if (existing) existing.qty += li.quantity
+      else
+        noWeightMap.set(cs.id, {
+          childSkuId: cs.id,
+          name: cs.product?.name ?? "—",
+          sku: cs.sku,
+          qty: li.quantity,
+        })
+    }
+  }
+  const noWeightLines = [...noWeightMap.values()]
 
   const num = (v: number | string | null) =>
     v === null || v === "" ? null : Number(v)
@@ -298,8 +328,9 @@ export default async function PackDetailPage({
                 lines={usageLines}
                 packagingTypes={packagingTypes}
                 suggested={suggestedPackaging}
-                unknownWeightUnits={computedPackaging.unknownWeightUnits}
+                noWeightLines={noWeightLines}
                 autoApply
+                enableTopUp
               />
             </CardContent>
           </Card>
