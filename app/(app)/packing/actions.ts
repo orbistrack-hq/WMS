@@ -60,6 +60,13 @@ export type TopUpResult =
     }
   | { ok: false; error: string }
 
+type TopUpUsageRow = {
+  id: string
+  quantity: number
+  packaging_type_id: string
+  packaging_type: { kind: string | null } | null
+}
+
 type TopUpGroup = {
   orders: {
     order_line_items: {
@@ -67,10 +74,7 @@ type TopUpGroup = {
       child_sku: { grams_per_unit: number | string | null } | null
     }[]
   }[]
-  packaging_usage: {
-    quantity: number
-    packaging_type: { kind: string | null } | null
-  }[]
+  packaging_usage: TopUpUsageRow[]
 }
 
 export async function topUpPackagingFromWeight(
@@ -84,7 +88,8 @@ export async function topUpPackagingFromWeight(
       `id,
        orders(order_line_items(quantity,
          child_sku:child_skus(grams_per_unit))),
-       packaging_usage(quantity, packaging_type:packaging_types(kind))`,
+       packaging_usage(id, quantity, packaging_type_id,
+         packaging_type:packaging_types(kind))`,
     )
     .eq("id", groupId)
     .maybeSingle()
@@ -116,14 +121,28 @@ export async function topUpPackagingFromWeight(
   const toAdd = topUpLines(computed, recorded)
 
   // Sequential so a failed write surfaces its error and stops rather than
-  // half-applying blind.
+  // half-applying blind. When a line's packaging TYPE already has a usage row,
+  // bump that row's quantity instead of inserting a second row of the same type
+  // — only insert when the type isn't recorded yet (e.g. a config jar type that
+  // was never added). Keeps the editor to one line per type.
   for (const line of toAdd) {
-    const { error: recErr } = await supabase.rpc("record_packaging_usage", {
-      p_group_id: groupId,
-      p_packaging_type_id: line.typeId,
-      p_quantity: line.qty,
-    })
-    if (recErr) return { ok: false, error: packError(recErr) }
+    const existing = group.packaging_usage.find(
+      (u) => u.packaging_type_id === line.typeId,
+    )
+    if (existing) {
+      const { error: updErr } = await supabase
+        .from("packaging_usage")
+        .update({ quantity: existing.quantity + line.qty })
+        .eq("id", existing.id)
+      if (updErr) return { ok: false, error: packError(updErr) }
+    } else {
+      const { error: recErr } = await supabase.rpc("record_packaging_usage", {
+        p_group_id: groupId,
+        p_packaging_type_id: line.typeId,
+        p_quantity: line.qty,
+      })
+      if (recErr) return { ok: false, error: packError(recErr) }
+    }
   }
 
   revalidatePath(`/packing/${groupId}`)
