@@ -231,6 +231,44 @@ export async function undismissGroup(groupId: string): Promise<ActionResult> {
   return { ok: true }
 }
 
+/**
+ * Un-hide every currently hidden open group — the inverse of "Hide orders
+ * before a date". There is no bulk-undismiss RPC, so we reuse the guarded
+ * per-group RPC (which enforces the operator check and is idempotent). Calls run
+ * in bounded-concurrency chunks so a large batch neither serialises into a slow
+ * crawl nor floods the pooler. Non-destructive and safe to re-run: a partial
+ * failure just leaves the rest hidden, and running again finishes the job.
+ */
+export async function undismissAllHidden(): Promise<
+  { ok: true; count: number } | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data, error } = await supabase
+    .from("fulfillment_groups")
+    .select("id")
+    .eq("status", "open")
+    .not("dismissed_at", "is", null)
+  if (error) return { ok: false, error: dismissError(error) }
+
+  const ids = (data ?? []).map((r) => r.id as string)
+  const CHUNK = 20
+  let count = 0
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const chunk = ids.slice(i, i + CHUNK)
+    const results = await Promise.all(
+      chunk.map((id) =>
+        supabase.rpc("undismiss_fulfillment_group", { p_group_id: id }),
+      ),
+    )
+    const failed = results.find((r) => r.error)
+    if (failed?.error) return { ok: false, error: dismissError(failed.error) }
+    count += chunk.length
+  }
+
+  revalidatePath("/packing")
+  return { ok: true, count }
+}
+
 /** Bulk-hide every open group whose window is before the cutoff (ISO string). */
 export async function dismissStaleGroups(
   before: string,

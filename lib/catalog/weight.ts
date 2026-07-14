@@ -58,7 +58,7 @@ export function stripWeightSuffix(name: string): {
   grams: number | null
 } {
   const parts = (name ?? "").split(/\s+-\s+/)
-  if (parts.length >= 2) {
+  if (parts.length >= 1) {
     const last = parts[parts.length - 1]
     const g = parseWeightGrams(last)
     if (g != null) {

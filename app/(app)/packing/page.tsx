@@ -1,14 +1,18 @@
-import { PackageCheck } from "lucide-react"
+import Link from "next/link"
+import { Eye, EyeOff, PackageCheck } from "lucide-react"
 
 import { createClient } from "@/lib/supabase/server"
 import {
   childCountsByParent,
   qualifiesForWeightWarning,
 } from "@/lib/catalog/missing-weight"
+import { cn } from "@/lib/utils"
 import { PageHeader } from "@/components/page-header"
+import { buttonVariants } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { PackingQueue, type QueueGroup } from "./packing-queue"
 import { DismissBefore } from "./dismiss-before"
+import { HiddenGroups, type HiddenGroup } from "./hidden-groups"
 
 export const dynamic = "force-dynamic"
 
@@ -38,8 +42,22 @@ type GroupRow = {
 const ACTIVE = new Set(["created", "picking", "packed"])
 const PREPACK = new Set(["created", "picking"])
 
-export default async function PackingPage() {
+type HiddenRow = {
+  id: string
+  window_start: string
+  dismissed_at: string | null
+  customer: { name: string | null } | null
+  site: { name: string | null } | null
+  orders: { id: string }[]
+}
+
+export default async function PackingPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ hidden?: string }>
+}) {
   const supabase = await createClient()
+  const showHidden = (await searchParams).hidden === "1"
 
   // Fetch every open, un-dismissed group that still has at least one active
   // order (created/picking/packed). The !inner join + status filter drops
@@ -138,6 +156,39 @@ export default async function PackingPage() {
           : 1,
     )
 
+  // How many open groups are currently hidden (dismissed). Cheap head count so
+  // the "Show hidden" toggle can advertise that there's something to restore.
+  const { count: hiddenCount } = await supabase
+    .from("fulfillment_groups")
+    .select("id", { count: "exact", head: true })
+    .eq("status", "open")
+    .not("dismissed_at", "is", null)
+
+  // Only pull the full hidden list when the panel is open.
+  let hidden: HiddenGroup[] = []
+  if (showHidden) {
+    const { data: hdata } = await supabase
+      .from("fulfillment_groups")
+      .select(
+        `id, window_start, dismissed_at,
+         customer:customers(name),
+         site:sites(name),
+         orders(id)`,
+      )
+      .eq("status", "open")
+      .not("dismissed_at", "is", null)
+      .order("dismissed_at", { ascending: false })
+
+    hidden = ((hdata ?? []) as unknown as HiddenRow[]).map((g) => ({
+      id: g.id,
+      customer: g.customer?.name ?? "—",
+      site: g.site?.name ?? "—",
+      windowStart: g.window_start,
+      dismissedAt: g.dismissed_at,
+      orderCount: g.orders.length,
+    }))
+  }
+
   return (
     <>
       <PageHeader
@@ -145,29 +196,57 @@ export default async function PackingPage() {
         description="Pack orders by fulfillment group — box and label counted once per group, consumables summed. Select groups at one site to pick them as a wave."
       />
 
-      {error ? (
-        <Card>
-          <CardContent className="py-8 text-sm text-destructive">
-            Could not load packing queue: {error.message}
-          </CardContent>
-        </Card>
-      ) : groups.length === 0 ? (
-        <Card>
-          <CardContent className="flex flex-col items-center gap-3 py-16 text-center">
-            <div className="flex size-12 items-center justify-center rounded-full bg-muted text-muted-foreground">
-              <PackageCheck className="size-6" />
-            </div>
-            <p className="text-sm text-muted-foreground">
-              Nothing to pack right now. New orders appear here as they come in.
-            </p>
-          </CardContent>
-        </Card>
-      ) : (
-        <div className="flex flex-col gap-4">
-          <DismissBefore />
-          <PackingQueue groups={groups} />
+      <div className="flex flex-col gap-4">
+        {/* Controls row: hide-before-a-date (only useful when there's a queue)
+            and the Show/Hide-hidden toggle (always available, so a hidden group
+            can be restored even when the queue is otherwise empty). */}
+        <div className="flex flex-wrap items-center gap-2">
+          {groups.length > 0 ? <DismissBefore /> : null}
+          <Link
+            href={showHidden ? "/packing" : "/packing?hidden=1"}
+            className={cn(
+              buttonVariants({
+                variant: showHidden ? "default" : "outline",
+                size: "sm",
+              }),
+              "ml-auto",
+            )}
+          >
+            {showHidden ? (
+              <Eye className="size-4" />
+            ) : (
+              <EyeOff className="size-4" />
+            )}
+            {showHidden
+              ? "Hide hidden"
+              : `Show hidden${hiddenCount ? ` (${hiddenCount})` : ""}`}
+          </Link>
         </div>
-      )}
+
+        {showHidden ? <HiddenGroups groups={hidden} /> : null}
+
+        {error ? (
+          <Card>
+            <CardContent className="py-8 text-sm text-destructive">
+              Could not load packing queue: {error.message}
+            </CardContent>
+          </Card>
+        ) : groups.length === 0 ? (
+          <Card>
+            <CardContent className="flex flex-col items-center gap-3 py-16 text-center">
+              <div className="flex size-12 items-center justify-center rounded-full bg-muted text-muted-foreground">
+                <PackageCheck className="size-6" />
+              </div>
+              <p className="text-sm text-muted-foreground">
+                Nothing to pack right now. New orders appear here as they come
+                in.
+              </p>
+            </CardContent>
+          </Card>
+        ) : (
+          <PackingQueue groups={groups} />
+        )}
+      </div>
     </>
   )
 }
