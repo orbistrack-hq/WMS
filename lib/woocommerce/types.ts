@@ -232,6 +232,16 @@ export function deriveWooPaid(status: string | null | undefined): boolean {
   return s !== "pending"
 }
 
+/**
+ * A Woo `on-hold` order — awaiting bank transfer / manual review. It ships
+ * (ShipStation pulls it), so WMS keeps it active and reserved, but flags it
+ * `on_hold` so staff see it's awaiting payment clearance (a visible "Hold"
+ * badge; it does not remove the order from the pick/pack flow).
+ */
+export function deriveWooOnHold(status: string | null | undefined): boolean {
+  return (status ?? "").toLowerCase() === "on-hold"
+}
+
 export type NormalizedStoreOrder = {
   externalOrderId: string
   number: string | null
@@ -243,6 +253,9 @@ export type NormalizedStoreOrder = {
   // Whether payment has cleared. When lifecycle is "open" and this is false the
   // order is held as pending_payment (reserves no stock) until payment lands.
   paid: boolean
+  // A Woo `on-hold` order: active and shippable, but flagged on_hold so staff
+  // see it's awaiting payment clearance.
+  onHold: boolean
   // Best-effort fulfillment time (date_completed, else date_created); null
   // unless lifecycle is "fulfilled".
   fulfilledAt: string | null
@@ -291,6 +304,7 @@ export function normalizeWooOrder(
     createdAt,
     lifecycle,
     paid: deriveWooPaid(payload.status),
+    onHold: deriveWooOnHold(payload.status),
     fulfilledAt:
       lifecycle === "fulfilled" ? (str(payload.date_completed) ?? createdAt) : null,
     customer: bill

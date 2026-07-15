@@ -8,12 +8,17 @@ export function ThemeToggle() {
   const [mounted, setMounted] = useState(false)
 
   useEffect(() => {
+    // Client-only init: localStorage / the DOM class aren't available during
+    // SSR render, so the theme is read after mount. Intentional setState-on-
+    // mount, not a synchronization loop.
     const stored = localStorage.getItem("theme")
     const isDark = stored
       ? stored === "dark"
       : document.documentElement.classList.contains("dark")
+    /* eslint-disable react-hooks/set-state-in-effect */
     setTheme(isDark ? "dark" : "light")
     setMounted(true)
+    /* eslint-enable react-hooks/set-state-in-effect */
   }, [])
 
   function toggle() {

@@ -200,12 +200,12 @@ export default async function OrdersPage({
         <Link
           href={heldHref}
           className={cn(
-            buttonVariants({ variant: "outline", size: "sm" }),
-            "w-fit gap-2 border-amber-300 text-amber-800 dark:border-amber-800 dark:text-amber-300",
+            buttonVariants({ variant: "ghost", size: "sm" }),
+            "h-auto w-fit gap-1.5 self-end px-2 py-1 text-xs font-normal text-muted-foreground hover:text-foreground",
           )}
         >
-          <Clock className="size-4" />
-          {heldCount} order{heldCount === 1 ? "" : "s"} pending payment — view
+          <Clock className="size-3.5" />
+          {heldCount} pending payment
         </Link>
       ) : null}
 

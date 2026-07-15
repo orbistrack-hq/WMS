@@ -201,6 +201,9 @@ export function IntakeFlow({
     if (didInitAllocate.current) return
     if (!initialAllocateProductId) return
     didInitAllocate.current = true
+    // One-time deep-link init from a prop (?allocate=<id>) — intentional
+    // setState-on-mount, guarded by the ref so it can't loop.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setProductId(initialAllocateProductId)
     doLoadAllocation(initialAllocateProductId, true)
     // eslint-disable-next-line react-hooks/exhaustive-deps

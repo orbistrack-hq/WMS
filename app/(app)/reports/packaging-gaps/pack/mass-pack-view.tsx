@@ -225,7 +225,7 @@ export function MassPackView({
             {g.existingCost > 0 ? (
               <p className="mb-2 text-xs text-muted-foreground">
                 {formatCurrency(g.existingCost)} already recorded on this group —
-                add below only if something's missing.
+                add below only if something&apos;s missing.
               </p>
             ) : null}
 

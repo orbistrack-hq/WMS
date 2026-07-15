@@ -46,6 +46,21 @@ export async function applyWooOrderMeta(
     }
   }
 
+  // Woo `on-hold` — active/shippable, but flag on_hold so staff see it's
+  // awaiting payment clearance. Only for an open order (a fulfilled/cancelled
+  // one has moved past the hold). Non-fatal on error.
+  if (order.lifecycle === "open" && order.onHold) {
+    const { error } = await client
+      .from("orders")
+      .update({ on_hold: true })
+      .eq("id", wmsOrderId)
+    if (error) {
+      console.error(
+        `[woocommerce] could not set on_hold for ${wmsOrderId}: ${error.message}`,
+      )
+    }
+  }
+
   if (order.lifecycle === "fulfilled") {
     if (storeAutoFulfillEnabled()) {
       const { error } = await client.rpc("fulfill_order", {

@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest"
 
 import {
   deriveWooLifecycle,
+  deriveWooOnHold,
   deriveWooPaid,
   effectiveWooLifecycle,
   normalizeWooOrder,
@@ -13,6 +14,16 @@ import {
   wooLineVariantId,
   wooVariantName,
 } from "./types"
+
+describe("deriveWooOnHold", () => {
+  it("flags on-hold, nothing else", () => {
+    expect(deriveWooOnHold("on-hold")).toBe(true)
+    expect(deriveWooOnHold("processing")).toBe(false)
+    expect(deriveWooOnHold("pending")).toBe(false)
+    expect(deriveWooOnHold("completed")).toBe(false)
+    expect(deriveWooOnHold(undefined)).toBe(false)
+  })
+})
 
 describe("deriveWooPaid", () => {
   it("treats processing and completed as ready to ship", () => {
