@@ -40,6 +40,7 @@ export type OrderTableRow = {
   backordered: boolean
   auto_fulfilled: boolean
   force_fulfilled: boolean
+  store_completed_at: string | null
   order_type: "standard" | "layaway"
   channel: OrderChannel
   sale_date: string
@@ -178,6 +179,11 @@ export function OrdersTable({
                   <TableCell>
                     <div className="flex items-center gap-1.5">
                       <Badge variant={badge.variant}>{badge.label}</Badge>
+                      {o.store_completed_at &&
+                      o.status !== "fulfilled" &&
+                      o.status !== "cancelled" ? (
+                        <Badge variant="success">Completed at store</Badge>
+                      ) : null}
                       {o.on_hold ? <Badge variant="destructive">Hold</Badge> : null}
                       {o.order_type === "layaway" ? (
                         <Badge variant="outline">Layaway</Badge>

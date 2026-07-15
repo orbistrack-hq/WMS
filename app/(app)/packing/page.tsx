@@ -27,6 +27,7 @@ type GroupRow = {
     id: string
     order_number: string
     status: string
+    store_completed_at: string | null
     order_line_items: {
       quantity: number
       child_sku: {
@@ -75,7 +76,7 @@ export default async function PackingPage({
       `id, status, window_start, site_id,
        customer:customers(name),
        site:sites(name),
-       orders:orders!inner(id, order_number, status,
+       orders:orders!inner(id, order_number, status, store_completed_at,
          order_line_items(quantity,
            child_sku:child_skus(product_id, grams_per_unit, variant_label))),
        packaging_usage(quantity, unit_cost_snapshot)`,
@@ -132,6 +133,10 @@ export default async function PackingPage({
         (s, u) => s + u.quantity * Number(u.unit_cost_snapshot),
         0,
       )
+      // Any active order the store already marked completed — pack + close it.
+      const storeCompleted = activeOrders.some(
+        (o) => o.store_completed_at != null,
+      )
       return {
         id: g.id,
         siteId: g.site_id,
@@ -144,6 +149,7 @@ export default async function PackingPage({
         packagingCost,
         needsPacking,
         needsWeight,
+        storeCompleted,
       }
     })
     .filter((g) => g.orderCount > 0)

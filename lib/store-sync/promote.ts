@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { storeAutoFulfillEnabled } from "./config"
+import { markStoreCompleted } from "./store-completed"
 
 // ---------------------------------------------------------------------------
 // Held-order promotion — shared by the Shopify and WooCommerce lifecycle
@@ -59,7 +60,9 @@ export async function applyToHeldOrder(
     })
     if (aerr) return { status: "error", error: aerr.message }
     if (!storeAutoFulfillEnabled()) {
-      // Reserved and in the local pick flow; leave the actual fulfil to packing.
+      // Reserved and in the local pick flow; leave the actual fulfil to packing,
+      // but stamp store_completed_at so it shows as "completed at store".
+      await markStoreCompleted(client, wmsOrderId, order.fulfilledAt ?? order.createdAt)
       return { status: "activated", wmsOrderId }
     }
     const { error } = await client.rpc("fulfill_order", {

@@ -33,6 +33,8 @@ export type QueueGroup = {
   needsPacking: boolean
   /** A line in the group has a child SKU with no weight — packaging can't auto-fill. */
   needsWeight: boolean
+  /** The store already marked an order in this group completed — pack + close it. */
+  storeCompleted: boolean
 }
 
 type SortKey = "recommended" | "site" | "items" | "orders" | "customer" | "age"
@@ -213,6 +215,14 @@ export function PackingQueue({ groups }: { groups: QueueGroup[] }) {
                 title="A SKU here has no weight set — its jars/bags won't auto-fill. Fix in Catalog."
               >
                 <Scale /> Needs weight
+              </Badge>
+            ) : null}
+            {g.storeCompleted ? (
+              <Badge
+                variant="success"
+                title="The store already marked this order completed — pack it and close it out."
+              >
+                Completed at store
               </Badge>
             ) : null}
           </div>

@@ -3,6 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { storeAutoFulfillEnabled } from "../store-sync/config"
 import { isBeforeSyncCutoff } from "../store-sync/cutoff"
 import { applyToHeldOrder } from "../store-sync/promote"
+import { markStoreCompleted } from "../store-sync/store-completed"
 import type { NormalizedStoreOrder } from "./types"
 
 export type OrderImportOutcome =
@@ -76,9 +77,16 @@ export async function applyWooOrderMeta(
           `[woocommerce] fulfill_order failed for ${wmsOrderId}: ${error.message}`,
         )
       }
+    } else {
+      // Auto-fulfill disabled — leave the order in the normal pick/pack flow so
+      // the team packs it and costs are captured, but stamp store_completed_at so
+      // it shows as "completed at store".
+      await markStoreCompleted(
+        client,
+        wmsOrderId,
+        order.fulfilledAt ?? order.createdAt,
+      )
     }
-    // else: auto-fulfill disabled — leave the order in the normal pick/pack flow
-    // so the team packs it and packaging/costs are captured.
   } else if (order.lifecycle === "cancelled") {
     const { error } = await client.rpc("cancel_order", {
       p_order_id: wmsOrderId,
@@ -154,11 +162,17 @@ export async function applyWooLifecycleUpdate(
 
   if (order.lifecycle === "fulfilled") {
     if (!storeAutoFulfillEnabled()) {
-      // Auto-fulfill disabled — do NOT fall through to cancel_order. Leave the
-      // order open in the pick/pack flow so packaging/costs are captured locally.
+      // Auto-fulfill disabled — do NOT fulfil. Leave the order in the pick/pack
+      // flow so packaging/costs are captured locally, but stamp store_completed_at
+      // so it surfaces as "completed at store" without a manual reconcile.
+      await markStoreCompleted(
+        client,
+        wmsOrderId,
+        order.fulfilledAt ?? order.createdAt,
+      )
       return {
         status: "noop",
-        reason: "auto-fulfill disabled; left for local packing",
+        reason: "auto-fulfill disabled; marked completed at store, left for local packing",
       }
     }
     const { error } = await client.rpc("fulfill_order", {
