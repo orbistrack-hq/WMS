@@ -2,7 +2,16 @@
 
 import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
-import { AlertCircle, ArrowRightLeft, Pencil, Plus, Trash2, X } from "lucide-react"
+import {
+  AlertCircle,
+  ArrowRightLeft,
+  PackageCheck,
+  PackageX,
+  Pencil,
+  Plus,
+  Trash2,
+  X,
+} from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -19,7 +28,12 @@ import {
 } from "@/components/ui/table"
 import { formatCurrency } from "@/lib/format"
 import { SCANNING_ENABLED } from "@/lib/flags"
-import { createChildSku, deleteChildSku, updateChildSku } from "../actions"
+import {
+  createChildSku,
+  deleteChildSku,
+  setChildTrackInventory,
+  updateChildSku,
+} from "../actions"
 import { ReparentSku } from "./reparent-sku"
 
 export type ChildSku = {
@@ -35,6 +49,8 @@ export type ChildSku = {
   price: number
   cost: number
   is_active: boolean
+  /** false = service/fee SKU: skips all inventory ops, never backorders. */
+  track_inventory: boolean
   on_hand: number
   available: number
 }
@@ -82,11 +98,13 @@ export function ChildSkuManager({
   skus,
   availableSites,
   isAdmin = false,
+  canManageInventory = false,
 }: {
   productId: string
   skus: ChildSku[]
   availableSites: SiteOption[]
   isAdmin?: boolean
+  canManageInventory?: boolean
 }) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
@@ -118,6 +136,25 @@ export function ChildSkuManager({
         return
       }
       router.refresh()
+    })
+  }
+
+  function handleToggleTrack(s: ChildSku) {
+    const next = !s.track_inventory
+    if (
+      next === false &&
+      !window.confirm(
+        `Mark ${s.sku ?? "this SKU"} as a fee / non-inventory line? It will stop ` +
+          `reserving, backordering, and consuming stock, and its stock counts will ` +
+          `be ignored. Use for fee products like shipping protection.`,
+      )
+    )
+      return
+    setError(null)
+    startTransition(async () => {
+      const res = await setChildTrackInventory(s.id, productId, next)
+      if (!res.ok) setError(res.error)
+      else router.refresh()
     })
   }
 
@@ -372,18 +409,38 @@ export function ChildSkuManager({
                   <TableCell className="text-right tabular-nums">
                     {formatCurrency(s.cost)}
                   </TableCell>
-                  <TableCell className="text-right tabular-nums text-muted-foreground">
-                    {s.on_hand}
+                  <TableCell
+                    className="text-right tabular-nums text-muted-foreground"
+                    title={
+                      s.track_inventory ? undefined : "Inventory not tracked (fee SKU)"
+                    }
+                  >
+                    {s.track_inventory ? s.on_hand : "—"}
                   </TableCell>
-                  <TableCell className="text-right tabular-nums text-muted-foreground">
-                    {s.available}
+                  <TableCell
+                    className="text-right tabular-nums text-muted-foreground"
+                    title={
+                      s.track_inventory ? undefined : "Inventory not tracked (fee SKU)"
+                    }
+                  >
+                    {s.track_inventory ? s.available : "—"}
                   </TableCell>
                   <TableCell>
-                    {s.is_active ? (
-                      <Badge variant="success">Active</Badge>
-                    ) : (
-                      <Badge variant="muted">Inactive</Badge>
-                    )}
+                    <div className="flex flex-wrap gap-1">
+                      {s.is_active ? (
+                        <Badge variant="success">Active</Badge>
+                      ) : (
+                        <Badge variant="muted">Inactive</Badge>
+                      )}
+                      {!s.track_inventory ? (
+                        <Badge
+                          variant="warning"
+                          title="Service/fee SKU: skips reservation, backorder, and stock — inventory ignored"
+                        >
+                          Fee · no stock
+                        </Badge>
+                      ) : null}
+                    </div>
                   </TableCell>
                   <TableCell>
                     <div className="flex gap-1">
@@ -408,6 +465,29 @@ export function ChildSkuManager({
                       >
                         <ArrowRightLeft />
                       </Button>
+                      {canManageInventory ? (
+                        <Button
+                          size="icon-sm"
+                          variant="ghost"
+                          aria-label={
+                            s.track_inventory
+                              ? "Mark as fee / non-inventory SKU"
+                              : "Mark as tracked inventory SKU"
+                          }
+                          title={
+                            s.track_inventory
+                              ? "Mark as fee / non-inventory (skips stock & backorder)"
+                              : "Mark as tracked inventory"
+                          }
+                          className={
+                            s.track_inventory ? "text-amber-600 hover:text-amber-700" : ""
+                          }
+                          disabled={isPending}
+                          onClick={() => handleToggleTrack(s)}
+                        >
+                          {s.track_inventory ? <PackageX /> : <PackageCheck />}
+                        </Button>
+                      ) : null}
                       {isAdmin ? (
                         <Button
                           size="icon-sm"

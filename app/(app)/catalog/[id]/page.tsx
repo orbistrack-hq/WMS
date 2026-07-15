@@ -36,6 +36,7 @@ type SkuQueryRow = {
   price: number | string
   cost: number | string
   is_active: boolean
+  track_inventory: boolean
   site: { name: string | null } | null
   inventory_levels:
     | { on_hand: number; available: number }
@@ -66,7 +67,11 @@ export default async function ProductDetailPage({
   const { data: me } = userId
     ? await supabase.from("profiles").select("role").eq("id", userId).maybeSingle()
     : { data: null }
-  const isAdmin = (me as { role?: string } | null)?.role === "admin"
+  const role = (me as { role?: string } | null)?.role
+  const isAdmin = role === "admin"
+  // Managers are admin-equivalent for everything except integrations, so they
+  // may also flag a SKU as non-inventory (fee) or back to tracked.
+  const canManageInventory = role === "admin" || role === "manager"
 
   const [productRes, categoryRes, sitesRes] = await Promise.all([
     supabase
@@ -74,7 +79,7 @@ export default async function ProductDetailPage({
       .select(
         `id, name, sku, description, category_id, is_active,
          child_skus(id, site_id, sku, store_variant_id, bin_location, barcode,
-           grams_per_unit, variant_label, price, cost, is_active,
+           grams_per_unit, variant_label, price, cost, is_active, track_inventory,
            site:sites(name),
            inventory_levels(on_hand, available))`,
       )
@@ -110,6 +115,7 @@ export default async function ProductDetailPage({
       price: Number(s.price),
       cost: Number(s.cost),
       is_active: s.is_active,
+      track_inventory: s.track_inventory ?? true,
       on_hand: inv?.on_hand ?? 0,
       available: inv?.available ?? 0,
     }
@@ -162,6 +168,7 @@ export default async function ProductDetailPage({
                 skus={skus}
                 availableSites={availableSites}
                 isAdmin={isAdmin}
+                canManageInventory={canManageInventory}
               />
             </CardContent>
           </Card>

@@ -33,7 +33,7 @@ const PAGE_SIZE = 50
 // enough for this team's volume; DB-sortable columns paginate without a cap.
 const COMPUTED_SORT_CAP = 1000
 
-const ORDERS_SELECT = `id, order_number, status, on_hold, backordered, auto_fulfilled, order_type, channel, sale_date, entered_at,
+const ORDERS_SELECT = `id, order_number, status, on_hold, backordered, auto_fulfilled, force_fulfilled, order_type, channel, sale_date, entered_at,
    group_id,
    customer:customers(name),
    site:sites(name, code),
@@ -56,6 +56,7 @@ type OrderRow = {
   on_hold: boolean
   backordered: boolean
   auto_fulfilled: boolean
+  force_fulfilled: boolean
   order_type: "standard" | "layaway"
   channel: OrderChannel
   sale_date: string
@@ -206,6 +207,7 @@ export default async function OrdersPage({
               on_hold: o.on_hold,
               backordered: o.backordered,
               auto_fulfilled: o.auto_fulfilled,
+              force_fulfilled: o.force_fulfilled,
               order_type: o.order_type,
               channel: o.channel,
               sale_date: o.sale_date,

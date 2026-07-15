@@ -39,6 +39,7 @@ export type OrderTableRow = {
   on_hold: boolean
   backordered: boolean
   auto_fulfilled: boolean
+  force_fulfilled: boolean
   order_type: "standard" | "layaway"
   channel: OrderChannel
   sale_date: string
@@ -187,6 +188,15 @@ export function OrdersTable({
                       {o.auto_fulfilled ? (
                         <Badge variant="outline" title="Marked completed at the store (shipped outside OT) — not packed locally">
                           Completed at store
+                        </Badge>
+                      ) : null}
+                      {o.force_fulfilled ? (
+                        <Badge
+                          variant="outline"
+                          className="border-amber-500/50 text-amber-700"
+                          title="Force-fulfilled: shipped while backordered via an admin/manager override (inventory-neutral)"
+                        >
+                          Force fulfilled
                         </Badge>
                       ) : null}
                     </div>

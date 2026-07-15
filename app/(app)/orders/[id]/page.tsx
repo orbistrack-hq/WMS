@@ -53,6 +53,7 @@ type OrderDetail = {
   status: OrderStatus
   on_hold: boolean
   backordered: boolean
+  force_fulfilled: boolean
   order_type: OrderType
   channel: OrderChannel
   sale_date: string
@@ -101,7 +102,7 @@ export default async function OrderDetailPage({
   const { data } = await supabase
     .from("orders")
     .select(
-      `id, order_number, status, on_hold, backordered, order_type, channel, sale_date, entered_at,
+      `id, order_number, status, on_hold, backordered, force_fulfilled, order_type, channel, sale_date, entered_at,
        fulfilled_at, cancelled_at, notes, group_id,
        ship_to_name, ship_to_address1, ship_to_address2, ship_to_city,
        ship_to_region, ship_to_postal, ship_to_country,
@@ -164,6 +165,15 @@ export default async function OrderDetailPage({
           ) : null}
           {order.backordered ? (
             <Badge variant="warning">Backordered</Badge>
+          ) : null}
+          {order.force_fulfilled ? (
+            <Badge
+              variant="outline"
+              className="border-amber-500/50 text-amber-700"
+              title="Force-fulfilled: shipped while backordered via an admin/manager override (inventory-neutral)"
+            >
+              Force fulfilled
+            </Badge>
           ) : null}
         </div>
         <div className="flex items-center gap-3">

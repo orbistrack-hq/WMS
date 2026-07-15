@@ -226,6 +226,29 @@ export async function updateChildSku(
   return { ok: true }
 }
 
+/**
+ * Flag a child SKU as a service/fee line (track_inventory=false) or back to
+ * normal physical inventory (true). Non-inventory SKUs skip every inventory op
+ * — reserve, backorder, consume, release, receive — so fee products like Route
+ * "Shipping Protection" never make an order look backordered. Admin/manager
+ * only; the RPC gates the role and the child_skus audit trigger logs the flip.
+ */
+export async function setChildTrackInventory(
+  id: string,
+  productId: string,
+  track: boolean,
+): Promise<ActionResult> {
+  const supabase = await createClient()
+  const { error } = await supabase.rpc("set_child_track_inventory", {
+    p_child_sku_id: id,
+    p_track: track,
+  })
+  if (error) return { ok: false, error: dbError(error) }
+  revalidateCatalog(productId)
+  revalidatePath("/inventory/by-parent")
+  return { ok: true }
+}
+
 // ---------------------------------------------------------------------------
 // Re-parenting a child SKU (manual product mapping)
 // ---------------------------------------------------------------------------
