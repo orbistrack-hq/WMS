@@ -1,7 +1,8 @@
 import Link from "next/link"
-import { Plus, ClipboardList } from "lucide-react"
+import { Plus, ClipboardList, Clock } from "lucide-react"
 
 import { createClient } from "@/lib/supabase/server"
+import { cn } from "@/lib/utils"
 import { PageHeader } from "@/components/page-header"
 import { Pagination } from "@/components/pagination"
 import { buttonVariants } from "@/components/ui/button"
@@ -111,11 +112,33 @@ export default async function OrdersPage({
     // the range slice, not the count.
     .select(ORDERS_SELECT, isComputedSort ? undefined : { count: "estimated" })
   if (sp.status) base = base.eq("status", sp.status)
+  // Hide held (pending_payment) orders from the default list — they aren't
+  // active work and reserve no stock. They stay reachable via the status filter,
+  // and the chip below advertises the count so they're never lost.
+  else base = base.neq("status", "pending_payment")
   if (sp.site) base = base.eq("site_id", sp.site)
   if (sp.channel) base = base.eq("channel", sp.channel)
   if (sp.hold === "true") base = base.eq("on_hold", true)
   if (sp.hold === "false") base = base.eq("on_hold", false)
   if (sp.q) base = base.ilike("order_number", `%${sp.q}%`)
+
+  // Count held (pending_payment) orders — under the same site/channel filters —
+  // so we can surface them even though they're hidden from the default list.
+  let heldCountQuery = supabase
+    .from("orders")
+    .select("id", { count: "estimated", head: true })
+    .eq("status", "pending_payment")
+  if (sp.site) heldCountQuery = heldCountQuery.eq("site_id", sp.site)
+  if (sp.channel) heldCountQuery = heldCountQuery.eq("channel", sp.channel)
+  const { count: heldCount } = await heldCountQuery
+
+  // Link to the held-orders view, preserving the current non-status filters.
+  const heldParams = new URLSearchParams()
+  if (sp.site) heldParams.set("site", sp.site)
+  if (sp.channel) heldParams.set("channel", sp.channel)
+  if (sp.q) heldParams.set("q", sp.q)
+  heldParams.set("status", "pending_payment")
+  const heldHref = `/orders?${heldParams.toString()}`
 
   const withTotals = (o: OrderRow) => ({
     ...o,
@@ -172,6 +195,31 @@ export default async function OrdersPage({
       />
 
       <OrdersFilters sites={sites ?? []} />
+
+      {sp.status !== "pending_payment" && heldCount ? (
+        <Link
+          href={heldHref}
+          className={cn(
+            buttonVariants({ variant: "outline", size: "sm" }),
+            "w-fit gap-2 border-amber-300 text-amber-800 dark:border-amber-800 dark:text-amber-300",
+          )}
+        >
+          <Clock className="size-4" />
+          {heldCount} order{heldCount === 1 ? "" : "s"} pending payment — view
+        </Link>
+      ) : null}
+
+      {sp.status === "pending_payment" ? (
+        <Link
+          href="/orders"
+          className={cn(
+            buttonVariants({ variant: "ghost", size: "sm" }),
+            "w-fit",
+          )}
+        >
+          ← Back to active orders
+        </Link>
+      ) : null}
 
       {error ? (
         <Card>

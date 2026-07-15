@@ -15,20 +15,23 @@ import {
 } from "./types"
 
 describe("deriveWooPaid", () => {
-  it("treats processing and completed as paid (ready to ship)", () => {
+  it("treats processing and completed as ready to ship", () => {
     expect(deriveWooPaid("processing")).toBe(true)
     expect(deriveWooPaid("completed")).toBe(true)
   })
 
-  it("treats pending and on-hold as NOT paid (held)", () => {
-    expect(deriveWooPaid("pending")).toBe(false)
-    expect(deriveWooPaid("on-hold")).toBe(false)
+  it("treats on-hold as ready — ShipStation ships it, so WMS must not hide it", () => {
+    expect(deriveWooPaid("on-hold")).toBe(true)
   })
 
-  it("treats unknown/blank status as NOT paid (hold, don't guess)", () => {
-    expect(deriveWooPaid(undefined)).toBe(false)
-    expect(deriveWooPaid("")).toBe(false)
-    expect(deriveWooPaid("weird-status")).toBe(false)
+  it("holds ONLY pending (pending payment)", () => {
+    expect(deriveWooPaid("pending")).toBe(false)
+  })
+
+  it("treats unknown/blank status as ready (never hide an order on a guess)", () => {
+    expect(deriveWooPaid(undefined)).toBe(true)
+    expect(deriveWooPaid("")).toBe(true)
+    expect(deriveWooPaid("weird-status")).toBe(true)
   })
 })
 

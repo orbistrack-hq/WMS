@@ -212,19 +212,24 @@ export function effectiveWooLifecycle(
 }
 
 /**
- * Whether a Woo order's payment has cleared, deciding if an OPEN order enters
- * the pick/pack flow now or is held as pending_payment until paid.
+ * Whether a Woo order is ready to enter the pick/pack flow now, or should be
+ * held as pending_payment. The rule tracks what ShipStation ships, so WMS's
+ * active list matches it:
  *
- * Per the team: ONLY fully-paid ships. Woo `processing` and `completed` mean the
- * payment gateway captured funds; `pending` (pending payment) and `on-hold`
- * (awaiting bank transfer / manual review) do not. `failed`/`cancelled`/
- * `refunded` never reach here as "open" — deriveWooLifecycle maps them to
- * cancelled. Unknown/blank status is treated as NOT paid, so it's held rather
- * than shipped on a guess.
+ *   * `processing` / `completed` — paid, ships.
+ *   * `on-hold` — awaiting bank transfer / manual review. NOT captured yet, but
+ *     the store still sends these to ShipStation, so WMS must NOT hold them —
+ *     holding would drop them from the list ShipStation is working.
+ *   * `pending` (pending payment) — the ONLY held state: unpaid and excluded
+ *     from ShipStation.
+ *
+ * `failed`/`cancelled`/`refunded` never reach here as "open" — deriveWooLifecycle
+ * maps them to cancelled. Unknown/blank status is treated as ready (don't hide
+ * an order on a guess); only an explicit `pending` holds.
  */
 export function deriveWooPaid(status: string | null | undefined): boolean {
   const s = (status ?? "").toLowerCase()
-  return s === "processing" || s === "completed"
+  return s !== "pending"
 }
 
 export type NormalizedStoreOrder = {
