@@ -276,6 +276,43 @@ export async function bulkFulfill(orderIds: string[]): Promise<BulkResult> {
   return { ok: true, succeeded, failed }
 }
 
+/**
+ * Bulk force-fulfill backordered orders that already shipped — admin/manager
+ * only (the DB gates the role, so a non-elevated caller gets every order back
+ * as a failure rather than a silent bypass). Inventory-neutral per order; the
+ * same reason is written to each order's audit log. Skip + report like the other
+ * bulk actions.
+ */
+export async function bulkForceFulfill(
+  orderIds: string[],
+  reason: string,
+): Promise<BulkResult> {
+  if (!orderIds?.length) return { ok: false, error: "No orders selected." }
+  const trimmed = reason?.trim()
+  if (!trimmed) return { ok: false, error: "A reason is required to force-fulfill." }
+
+  const supabase = await createClient()
+  const succeeded: string[] = []
+  const failed: BulkFailure[] = []
+
+  for (const orderId of orderIds) {
+    const { error } = await supabase.rpc("force_fulfill_order", {
+      p_order_id: orderId,
+      p_reason: trimmed,
+    })
+    if (error) failed.push({ orderId, error: rpcError(error) })
+    else succeeded.push(orderId)
+  }
+
+  if (succeeded.length) {
+    revalidatePath("/orders")
+    revalidatePath("/inventory")
+    revalidatePath("/reports/backorders")
+    await kickOutboundDrain()
+  }
+  return { ok: true, succeeded, failed }
+}
+
 /** Bulk label move (created/picking/packed) via set_order_status. */
 export async function bulkSetStatus(
   orderIds: string[],

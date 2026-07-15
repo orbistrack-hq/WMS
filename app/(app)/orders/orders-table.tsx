@@ -3,7 +3,7 @@
 import { useMemo, useState, useTransition } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { CheckCheck, Loader2, PauseCircle, PlayCircle } from "lucide-react"
+import { CheckCheck, Loader2, PauseCircle, PlayCircle, Zap } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -25,6 +25,7 @@ import {
   type OrderChannel,
 } from "@/lib/orders/types"
 import {
+  bulkForceFulfill,
   bulkFulfill,
   bulkSetHold,
   bulkSetStatus,
@@ -55,7 +56,13 @@ type Summary = { verb: string; succeeded: number; failed: { number: string; erro
  * bulk server action across the selection. Terminal actions (fulfil) skip +
  * report per order; the summary names any order that couldn't be moved.
  */
-export function OrdersTable({ rows }: { rows: OrderTableRow[] }) {
+export function OrdersTable({
+  rows,
+  canForceFulfill = false,
+}: {
+  rows: OrderTableRow[]
+  canForceFulfill?: boolean
+}) {
   const router = useRouter()
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [pending, startTransition] = useTransition()
@@ -90,6 +97,9 @@ export function OrdersTable({ rows }: { rows: OrderTableRow[] }) {
 
   const selectedIds = [...selected]
   const selectedCount = selectedIds.length
+  // Force-fulfill only applies to backordered orders (normal fulfill covers the
+  // rest); target just those in the selection.
+  const selectedBackordered = selectedIds.filter((id) => byId.get(id)?.backordered)
 
   function run(verb: string, fn: () => Promise<BulkResult>) {
     setSummary(null)
@@ -267,6 +277,39 @@ export function OrdersTable({ rows }: { rows: OrderTableRow[] }) {
             >
               Packed
             </Button>
+            {canForceFulfill ? (
+              <Button
+                size="sm"
+                variant="outline"
+                className="border-amber-500/50 text-amber-700 hover:bg-amber-500/10"
+                disabled={pending}
+                onClick={() => {
+                  if (selectedBackordered.length === 0) {
+                    setSummary({
+                      verb: "force-fulfilled",
+                      succeeded: 0,
+                      failed: [
+                        {
+                          number: "—",
+                          error:
+                            "Select at least one backordered order to force-fulfill.",
+                        },
+                      ],
+                    })
+                    return
+                  }
+                  const reason = window.prompt(
+                    `Force-fulfill ${selectedBackordered.length} backordered order(s)?\n\nRecords them as shipped and clears the backorder but leaves on-hand alone (recount separately). Enter a reason (saved to the audit log):`,
+                  )
+                  if (reason && reason.trim())
+                    run("force-fulfilled", () =>
+                      bulkForceFulfill(selectedBackordered, reason),
+                    )
+                }}
+              >
+                <Zap className="size-4" /> Force fulfill
+              </Button>
+            ) : null}
             <Button
               size="sm"
               variant="outline"

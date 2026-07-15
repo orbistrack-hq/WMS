@@ -97,27 +97,34 @@ export const NAV_TREE: NavEntry[] = [
   },
   {
     label: "Analytics",
-    href: "/reports",
     icon: BarChart3,
-    description: "COGS, landed margin, and sales trends",
-  },
-  {
-    label: "Returns",
-    href: "/reports/returns",
-    icon: Undo2,
-    description: "Bounced orders, restocked and logged per site",
-  },
-  {
-    label: "Packaging gaps",
-    href: "/reports/packaging-gaps",
-    icon: PackageX,
-    description: "Fulfilled store orders missing packaging costs",
-  },
-  {
-    label: "Backorders",
-    href: "/reports/backorders",
-    icon: Clock,
-    description: "Open orders awaiting stock — units owed per SKU",
+    description: "Sales, margin, and operational reports",
+    children: [
+      {
+        label: "Overview",
+        href: "/reports",
+        icon: BarChart3,
+        description: "COGS, landed margin, and sales trends",
+      },
+      {
+        label: "Returns",
+        href: "/reports/returns",
+        icon: Undo2,
+        description: "Bounced orders, restocked and logged per site",
+      },
+      {
+        label: "Packaging gaps",
+        href: "/reports/packaging-gaps",
+        icon: PackageX,
+        description: "Fulfilled store orders missing packaging costs",
+      },
+      {
+        label: "Backorders",
+        href: "/reports/backorders",
+        icon: Clock,
+        description: "Open orders awaiting stock — units owed per SKU",
+      },
+    ],
   },
   {
     label: "Integrations",

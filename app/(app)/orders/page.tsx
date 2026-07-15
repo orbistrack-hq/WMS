@@ -84,6 +84,16 @@ export default async function OrdersPage({
     .select("id, name")
     .order("name")
 
+  // Role gate for the bulk force-fulfill action (backorder-guard override).
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  const { data: profile } = user
+    ? await supabase.from("profiles").select("role").eq("id", user.id).maybeSingle()
+    : { data: null }
+  const canForceFulfill =
+    profile?.role === "admin" || profile?.role === "manager"
+
   const sort = sp.sort ?? "entered_at"
   const dir: "asc" | "desc" = sp.dir === "asc" ? "asc" : "desc"
   const dbSort = DB_SORTS.has(sort) ? sort : "entered_at"
@@ -188,6 +198,7 @@ export default async function OrdersPage({
       ) : (
         <div className="flex flex-col gap-3">
           <OrdersTable
+            canForceFulfill={canForceFulfill}
             rows={orders.map((o) => ({
               id: o.id,
               order_number: o.order_number,
