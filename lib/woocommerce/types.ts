@@ -192,6 +192,41 @@ export function deriveWooLifecycle(status: string | null | undefined): WooLifecy
   return "open"
 }
 
+/**
+ * The lifecycle a webhook should actually apply, accounting for its topic.
+ *
+ * A Woo `order.deleted` (trash/permanent-delete) webhook carries only an id —
+ * no `status` — so normalizeWooOrder + deriveWooLifecycle default it to "open"
+ * and the reconcile no-ops, leaving the WMS order stuck at `created` with its
+ * stock still reserved. But a store-side delete is exactly the signal we
+ * subscribe to order.deleted for: it must CANCEL the WMS order (release the
+ * reservation). So a delete always resolves to "cancelled"; every other topic
+ * uses the status-derived lifecycle unchanged.
+ */
+export function effectiveWooLifecycle(
+  topic: string,
+  statusLifecycle: WooLifecycle,
+): WooLifecycle {
+  if (topic === "order.deleted") return "cancelled"
+  return statusLifecycle
+}
+
+/**
+ * Whether a Woo order's payment has cleared, deciding if an OPEN order enters
+ * the pick/pack flow now or is held as pending_payment until paid.
+ *
+ * Per the team: ONLY fully-paid ships. Woo `processing` and `completed` mean the
+ * payment gateway captured funds; `pending` (pending payment) and `on-hold`
+ * (awaiting bank transfer / manual review) do not. `failed`/`cancelled`/
+ * `refunded` never reach here as "open" — deriveWooLifecycle maps them to
+ * cancelled. Unknown/blank status is treated as NOT paid, so it's held rather
+ * than shipped on a guess.
+ */
+export function deriveWooPaid(status: string | null | undefined): boolean {
+  const s = (status ?? "").toLowerCase()
+  return s === "processing" || s === "completed"
+}
+
 export type NormalizedStoreOrder = {
   externalOrderId: string
   number: string | null
@@ -200,6 +235,9 @@ export type NormalizedStoreOrder = {
   // keeps its real sale date instead of "now".
   createdAt: string | null
   lifecycle: WooLifecycle
+  // Whether payment has cleared. When lifecycle is "open" and this is false the
+  // order is held as pending_payment (reserves no stock) until payment lands.
+  paid: boolean
   // Best-effort fulfillment time (date_completed, else date_created); null
   // unless lifecycle is "fulfilled".
   fulfilledAt: string | null
@@ -247,6 +285,7 @@ export function normalizeWooOrder(
     note: str(payload.customer_note),
     createdAt,
     lifecycle,
+    paid: deriveWooPaid(payload.status),
     fulfilledAt:
       lifecycle === "fulfilled" ? (str(payload.date_completed) ?? createdAt) : null,
     customer: bill

@@ -640,6 +640,7 @@ const pastOrdersQuery = (sinceDate?: string | null) => `
         note
         createdAt
         displayFulfillmentStatus
+        displayFinancialStatus
         closed
         closedAt
         cancelledAt

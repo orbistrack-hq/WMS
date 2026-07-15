@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 import {
+  effectiveWooLifecycle,
   normalizeWooOrder,
   type WooOrderPayload,
   type WooProduct,
@@ -101,11 +102,24 @@ async function handleOrderUpdate(
   if (!conn) return { status: "no_connection" }
 
   const order = normalizeWooOrder(payload)
+  // A delete/trash webhook has no status, so the derived lifecycle is "open".
+  // Resolve the topic-aware lifecycle so a store-side delete cancels the WMS
+  // order (releases its reservation) instead of no-opping.
+  order.lifecycle = effectiveWooLifecycle(topic, order.lifecycle)
   const life = await applyWooLifecycleUpdate(supabase, source, order)
 
   // Update for an order we never imported -> treat as a create (self-healing).
   // The cutoff still applies, so editing a pre-go-live order can't sneak it in.
+  // Exception: a delete for an order we never had is a genuine no-op — never
+  // import from a delete (its payload has no line items anyway).
   if (life.status === "not_found") {
+    if (topic === "order.deleted") {
+      return {
+        status: "lifecycle",
+        result: "noop",
+        reason: "deleted order not in WMS",
+      }
+    }
     const outcome = await importWooOrder(
       supabase,
       conn.siteId,

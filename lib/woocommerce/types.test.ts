@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest"
 
 import {
   deriveWooLifecycle,
+  deriveWooPaid,
+  effectiveWooLifecycle,
   normalizeWooOrder,
   normalizeWooSource,
   verifyWooSignature,
@@ -11,6 +13,51 @@ import {
   wooLineVariantId,
   wooVariantName,
 } from "./types"
+
+describe("deriveWooPaid", () => {
+  it("treats processing and completed as paid (ready to ship)", () => {
+    expect(deriveWooPaid("processing")).toBe(true)
+    expect(deriveWooPaid("completed")).toBe(true)
+  })
+
+  it("treats pending and on-hold as NOT paid (held)", () => {
+    expect(deriveWooPaid("pending")).toBe(false)
+    expect(deriveWooPaid("on-hold")).toBe(false)
+  })
+
+  it("treats unknown/blank status as NOT paid (hold, don't guess)", () => {
+    expect(deriveWooPaid(undefined)).toBe(false)
+    expect(deriveWooPaid("")).toBe(false)
+    expect(deriveWooPaid("weird-status")).toBe(false)
+  })
+})
+
+describe("effectiveWooLifecycle", () => {
+  it("cancels on order.deleted even though the payload has no status", () => {
+    // A delete webhook is {id} only -> normalizeWooOrder derives "open".
+    const derived = deriveWooLifecycle(undefined)
+    expect(derived).toBe("open")
+    expect(effectiveWooLifecycle("order.deleted", derived)).toBe("cancelled")
+  })
+
+  it("passes a cancelled order.updated straight through", () => {
+    expect(
+      effectiveWooLifecycle("order.updated", deriveWooLifecycle("cancelled")),
+    ).toBe("cancelled")
+  })
+
+  it("leaves a still-open processing update untouched", () => {
+    expect(
+      effectiveWooLifecycle("order.updated", deriveWooLifecycle("processing")),
+    ).toBe("open")
+  })
+
+  it("does not fulfil-cancel a completed update", () => {
+    expect(
+      effectiveWooLifecycle("order.updated", deriveWooLifecycle("completed")),
+    ).toBe("fulfilled")
+  })
+})
 
 describe("normalizeWooSource", () => {
   it("lowercases the host and preserves the scheme", () => {

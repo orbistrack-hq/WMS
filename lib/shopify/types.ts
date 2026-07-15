@@ -83,6 +83,9 @@ export type ShopifyOrderPayload = {
   fulfillment_status?: string | null
   closed_at?: string | null
   cancelled_at?: string | null
+  // Payment signal: "pending" | "authorized" | "partially_paid" | "paid" |
+  // "partially_refunded" | "refunded" | "voided". Decides hold vs ship.
+  financial_status?: string | null
   customer?: ShopifyCustomer | null
   shipping_address?: ShopifyAddress | null
   line_items?: ShopifyLineItem[] | null
@@ -117,6 +120,25 @@ function deriveLifecycle(opts: {
 }
 
 /**
+ * Whether a Shopify order's payment has cleared, deciding if an OPEN order
+ * enters the pick/pack flow now or is held as pending_payment until paid.
+ *
+ * Per the team: ONLY fully-paid ships. `paid` (and `partially_refunded`, which
+ * was fully paid then partially returned) count as paid; `pending`,
+ * `authorized` (funds held, not captured), `partially_paid`, and `voided` do
+ * not. Accepts REST snake_case and GraphQL SCREAMING_CASE. A missing status is
+ * treated as paid so a payload without the field doesn't silently hold every
+ * order (Shopify always sends it on real order webhooks).
+ */
+export function deriveShopifyPaid(
+  financialStatus: string | null | undefined,
+): boolean {
+  const s = (financialStatus ?? "").toLowerCase()
+  if (s === "") return true
+  return s === "paid" || s === "partially_refunded"
+}
+
+/**
  * Verify a Shopify webhook HMAC (base64 of HMAC-SHA256 over the raw body).
  * Constant-time comparison; returns false on any malformed input.
  */
@@ -146,6 +168,9 @@ export type NormalizedShopifyOrder = {
   createdAt: string | null
   // Lifecycle the WMS order should land in (see ShopifyLifecycle).
   lifecycle: ShopifyLifecycle
+  // Whether payment has cleared. When lifecycle is "open" and this is false the
+  // order is held as pending_payment (reserves no stock) until payment lands.
+  paid: boolean
   // Best-effort fulfillment timestamp (closed_at, else created_at) used to
   // backdate fulfill_order; null unless `lifecycle` is "fulfilled".
   fulfilledAt: string | null
@@ -200,6 +225,7 @@ export function normalizeShopifyOrder(
     note: str(payload.note),
     createdAt,
     lifecycle,
+    paid: deriveShopifyPaid(payload.financial_status),
     fulfilledAt: lifecycle === "fulfilled" ? (closedAt ?? createdAt) : null,
     customer: cust
       ? {
@@ -254,6 +280,7 @@ export type ShopifyGraphqlOrder = {
   createdAt?: string | null
   // Lifecycle signals (GraphQL spellings).
   displayFulfillmentStatus?: string | null // FULFILLED | PARTIALLY_FULFILLED | ...
+  displayFinancialStatus?: string | null // PAID | PENDING | AUTHORIZED | ...
   closed?: boolean | null
   closedAt?: string | null
   cancelledAt?: string | null
@@ -316,6 +343,7 @@ export function normalizeGraphqlOrder(
     note: str(node.note),
     createdAt,
     lifecycle,
+    paid: deriveShopifyPaid(node.displayFinancialStatus),
     fulfilledAt: lifecycle === "fulfilled" ? (closedAt ?? createdAt) : null,
     customer: cust
       ? {

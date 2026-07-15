@@ -3,10 +3,32 @@ import crypto from "node:crypto"
 import { describe, expect, it } from "vitest"
 
 import {
+  deriveShopifyPaid,
   normalizeShopifyOrder,
   variantProductName,
   verifyShopifyHmac,
 } from "./types"
+
+describe("deriveShopifyPaid", () => {
+  it("treats paid and partially_refunded as paid (ready to ship)", () => {
+    expect(deriveShopifyPaid("paid")).toBe(true)
+    expect(deriveShopifyPaid("partially_refunded")).toBe(true)
+    expect(deriveShopifyPaid("PAID")).toBe(true) // GraphQL SCREAMING_CASE
+  })
+
+  it("treats pending, authorized and partially_paid as NOT paid (held)", () => {
+    expect(deriveShopifyPaid("pending")).toBe(false)
+    expect(deriveShopifyPaid("authorized")).toBe(false)
+    expect(deriveShopifyPaid("partially_paid")).toBe(false)
+    expect(deriveShopifyPaid("voided")).toBe(false)
+  })
+
+  it("treats a MISSING status as paid (real webhooks always send it)", () => {
+    expect(deriveShopifyPaid(undefined)).toBe(true)
+    expect(deriveShopifyPaid(null)).toBe(true)
+    expect(deriveShopifyPaid("")).toBe(true)
+  })
+})
 
 describe("variantProductName", () => {
   it("appends a real variant title", () => {

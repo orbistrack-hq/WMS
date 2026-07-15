@@ -2,7 +2,7 @@
 -- backorder guard (releases reserved, leaves on_hand, clears backorder, audits
 -- the reason, charges the pick fee). Plus the backorder_report view.
 begin;
-select plan(14);
+select plan(15);
 
 \set SKU  '''a0000000-0000-0000-0000-000000000003'''
 \set SKU2 '''a0000000-0000-0000-0000-000000000002'''
@@ -46,6 +46,7 @@ select lives_ok(
 reset role;
 
 select is((select status from orders where id=:O1), 'fulfilled', 'status = fulfilled');
+select is((select force_fulfilled from orders where id=:O1), true, 'force_fulfilled marker set');
 select is((select on_hand from inventory_levels where child_sku_id=:SKU)::int, 80,
   'on_hand UNCHANGED (inventory-neutral)');
 select is((select reserved from inventory_levels where child_sku_id=:SKU)::int, 0,

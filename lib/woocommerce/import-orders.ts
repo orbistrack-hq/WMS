@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { storeAutoFulfillEnabled } from "../store-sync/config"
 import { isBeforeSyncCutoff } from "../store-sync/cutoff"
+import { applyToHeldOrder } from "../store-sync/promote"
 import type { NormalizedStoreOrder } from "./types"
 
 export type OrderImportOutcome =
@@ -78,6 +79,7 @@ export async function applyWooOrderMeta(
 export type LifecycleUpdateOutcome =
   | { status: "fulfilled"; wmsOrderId: string }
   | { status: "cancelled"; wmsOrderId: string }
+  | { status: "activated"; wmsOrderId: string }
   | { status: "noop"; reason: string }
   | { status: "not_found" }
   | { status: "error"; error: string }
@@ -114,10 +116,6 @@ export async function applyWooLifecycleUpdate(
   const wmsOrderId = imp?.wms_order_id as string | undefined
   if (!wmsOrderId) return { status: "not_found" }
 
-  if (order.lifecycle === "open") {
-    return { status: "noop", reason: "store order still open" }
-  }
-
   const { data: current } = await client
     .from("orders")
     .select("status")
@@ -127,6 +125,16 @@ export async function applyWooLifecycleUpdate(
   if (!status) return { status: "not_found" }
   if (status === "fulfilled" || status === "cancelled") {
     return { status: "noop", reason: `already ${status}` }
+  }
+
+  // Held awaiting payment: promote / cancel per the store's transition.
+  if (status === "pending_payment") {
+    return applyToHeldOrder(client, wmsOrderId, order)
+  }
+
+  // Active order (created/picking/packed) — already reserved.
+  if (order.lifecycle === "open") {
+    return { status: "noop", reason: "store order still open" }
   }
 
   if (order.lifecycle === "fulfilled") {
@@ -299,6 +307,11 @@ export async function importWooOrder(
   const saleDate = order.createdAt ? order.createdAt.slice(0, 10) : null
   const label = order.number ?? order.externalOrderId
 
+  // Hold an unpaid open order: it's created as pending_payment and reserves no
+  // stock until payment clears (activate_pending_order). Fulfilled/cancelled
+  // orders are never held — their lifecycle is applied straight away.
+  const hold = order.lifecycle === "open" && !order.paid
+
   const { data: newOrderId, error: createErr } = await client.rpc(
     "create_order",
     {
@@ -310,6 +323,7 @@ export async function importWooOrder(
       // Store sale already happened; never lose it to short stock — backorder
       // the shortfall instead of failing (manual orders still hard-fail).
       p_allow_backorder: true,
+      p_hold: hold,
       p_sale_date: saleDate,
       p_entered_at: order.createdAt ?? null,
       p_ship_to_name: order.shipTo?.name ?? null,

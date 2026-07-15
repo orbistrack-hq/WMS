@@ -8,6 +8,7 @@ import type { Badge } from "@/components/ui/badge"
 // fulfill_order() / cancel_order() RPCs — never a bare status update.
 // ---------------------------------------------------------------------------
 export const ORDER_STATUSES = [
+  "pending_payment",
   "created",
   "picking",
   "packed",
@@ -35,6 +36,7 @@ export const STATUS_BADGE: Record<
   OrderStatus,
   { label: string; variant: BadgeVariant }
 > = {
+  pending_payment: { label: "Pending payment", variant: "warning" },
   created: { label: "Created", variant: "secondary" },
   picking: { label: "Picking", variant: "info" },
   packed: { label: "Packed", variant: "warning" },
@@ -54,10 +56,15 @@ export const ORDER_TYPE_LABEL: Record<OrderType, string> = {
   layaway: "Layaway",
 }
 
-/** Can this order still take label-only status moves? */
+/** Can this order still take label-only status moves? A held (pending_payment)
+ *  order cannot — it must be activated (payment cleared) first, which reserves
+ *  stock, so set_order_status refuses it. */
 export function isActive(status: OrderStatus): boolean {
   return (
-    status !== "fulfilled" && status !== "cancelled" && status !== "returned"
+    status !== "pending_payment" &&
+    status !== "fulfilled" &&
+    status !== "cancelled" &&
+    status !== "returned"
   )
 }
 
