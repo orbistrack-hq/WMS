@@ -10,6 +10,7 @@ import {
   BarChart3,
   Undo2,
   PackageX,
+  Clock,
   Store,
   ShoppingCart,
   Plug,
@@ -111,6 +112,12 @@ export const NAV_TREE: NavEntry[] = [
     href: "/reports/packaging-gaps",
     icon: PackageX,
     description: "Fulfilled store orders missing packaging costs",
+  },
+  {
+    label: "Backorders",
+    href: "/reports/backorders",
+    icon: Clock,
+    description: "Open orders awaiting stock — units owed per SKU",
   },
   {
     label: "Integrations",

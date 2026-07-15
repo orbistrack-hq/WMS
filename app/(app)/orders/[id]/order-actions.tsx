@@ -12,6 +12,7 @@ import {
   Undo2,
   RotateCcw,
   PackageCheck,
+  Zap,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -19,6 +20,7 @@ import { Badge } from "@/components/ui/badge"
 import {
   cancelOrder,
   combineOrders,
+  forceFulfillOrder,
   fulfillOrder,
   markCompletedAtStore,
   reopenOrder,
@@ -39,11 +41,15 @@ export function OrderActions({
   orderId,
   status,
   onHold,
+  backordered,
+  canForceFulfill,
   combinable,
 }: {
   orderId: string
   status: OrderStatus
   onHold: boolean
+  backordered: boolean
+  canForceFulfill: boolean
   combinable: Combinable[]
 }) {
   const router = useRouter()
@@ -228,6 +234,36 @@ export function OrderActions({
           </Button>
         </div>
       </div>
+
+      {/* Force fulfill — admin/manager override of the backorder guard */}
+      {canForceFulfill && backordered ? (
+        <div className="flex flex-col gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3">
+          <div className="flex items-center gap-1.5 text-sm font-medium">
+            <Zap className="size-4 text-amber-600" /> Force fulfill
+          </div>
+          <p className="text-xs text-muted-foreground">
+            This order is backordered, so normal fulfill is blocked. Use this
+            only if it already shipped. It records the shipment and clears the
+            backorder but leaves on-hand alone (recount stock separately). The
+            reason is written to the audit log.
+          </p>
+          <Button
+            size="sm"
+            variant="outline"
+            className="w-fit border-amber-500/50"
+            disabled={isPending}
+            onClick={() => {
+              const reason = window.prompt(
+                "Force-fulfill this backordered order?\n\nEnter a reason (saved to the audit log) — e.g. \"shipped from overflow stock not yet in WMS\":",
+              )
+              if (reason && reason.trim())
+                run(() => forceFulfillOrder(orderId, reason))
+            }}
+          >
+            <Zap data-icon="inline-start" /> Force fulfill
+          </Button>
+        </div>
+      ) : null}
 
       {/* Combine candidates */}
       {combinable.length > 0 ? (

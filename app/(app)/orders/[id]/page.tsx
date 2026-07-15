@@ -88,6 +88,16 @@ export default async function OrderDetailPage({
   const { id } = await params
   const supabase = await createClient()
 
+  // Role gate for the force-fulfill control (backorder-guard override).
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  const { data: profile } = user
+    ? await supabase.from("profiles").select("role").eq("id", user.id).maybeSingle()
+    : { data: null }
+  const canForceFulfill =
+    profile?.role === "admin" || profile?.role === "manager"
+
   const { data } = await supabase
     .from("orders")
     .select(
@@ -267,6 +277,8 @@ export default async function OrderDetailPage({
                 orderId={order.id}
                 status={order.status}
                 onHold={order.on_hold}
+                backordered={order.backordered}
+                canForceFulfill={canForceFulfill}
                 combinable={combinable}
               />
             </CardContent>

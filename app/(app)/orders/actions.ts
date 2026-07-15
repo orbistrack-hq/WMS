@@ -106,6 +106,35 @@ export async function fulfillOrder(orderId: string): Promise<ActionResult> {
   return { ok: true }
 }
 
+/**
+ * Force-fulfill a backordered order that already shipped — admin/manager only.
+ * Inventory-neutral: releases each line's reserved portion and clears the
+ * backorder but leaves on_hand alone (the shelf is recounted separately). The
+ * reason is required and written to the audit log. The DB gates the role, so a
+ * non-elevated caller gets a clean "requires the admin or manager role" error.
+ */
+export async function forceFulfillOrder(
+  orderId: string,
+  reason: string,
+): Promise<ActionResult> {
+  const trimmed = reason?.trim()
+  if (!trimmed) return { ok: false, error: "A reason is required to force-fulfill." }
+
+  const supabase = await createClient()
+  const { error } = await supabase.rpc("force_fulfill_order", {
+    p_order_id: orderId,
+    p_reason: trimmed,
+  })
+  if (error) return { ok: false, error: rpcError(error) }
+
+  revalidatePath(`/orders/${orderId}`)
+  revalidatePath("/orders")
+  revalidatePath("/inventory")
+  revalidatePath("/reports/backorders")
+  await kickOutboundDrain()
+  return { ok: true }
+}
+
 export async function cancelOrder(orderId: string): Promise<ActionResult> {
   const supabase = await createClient()
   const { error } = await supabase.rpc("cancel_order", { p_order_id: orderId })
