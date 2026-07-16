@@ -49,6 +49,19 @@ export async function applyShopifyOrderMeta(
     }
   }
 
+  // Held orders: record why for the display label only (Shopify holds = pending).
+  if (order.holdReason) {
+    const { error } = await client
+      .from("orders")
+      .update({ hold_reason: order.holdReason })
+      .eq("id", wmsOrderId)
+    if (error) {
+      console.error(
+        `[shopify] could not set hold_reason for ${wmsOrderId}: ${error.message}`,
+      )
+    }
+  }
+
   if (order.lifecycle === "fulfilled") {
     if (storeAutoFulfillEnabled()) {
       const { error } = await client.rpc("fulfill_order", {

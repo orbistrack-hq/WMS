@@ -4,7 +4,6 @@ import { describe, expect, it } from "vitest"
 
 import {
   deriveWooLifecycle,
-  deriveWooOnHold,
   deriveWooPaid,
   effectiveWooLifecycle,
   normalizeWooOrder,
@@ -15,34 +14,21 @@ import {
   wooVariantName,
 } from "./types"
 
-describe("deriveWooOnHold", () => {
-  it("flags on-hold, nothing else", () => {
-    expect(deriveWooOnHold("on-hold")).toBe(true)
-    expect(deriveWooOnHold("processing")).toBe(false)
-    expect(deriveWooOnHold("pending")).toBe(false)
-    expect(deriveWooOnHold("completed")).toBe(false)
-    expect(deriveWooOnHold(undefined)).toBe(false)
-  })
-})
-
 describe("deriveWooPaid", () => {
-  it("treats processing and completed as ready to ship", () => {
+  it("treats processing and completed as ready (on the packing screen)", () => {
     expect(deriveWooPaid("processing")).toBe(true)
     expect(deriveWooPaid("completed")).toBe(true)
   })
 
-  it("treats on-hold as ready — ShipStation ships it, so WMS must not hide it", () => {
-    expect(deriveWooPaid("on-hold")).toBe(true)
-  })
-
-  it("holds ONLY pending (pending payment)", () => {
+  it("holds pending AND on-hold (unpaid; not on ShipStation until processing)", () => {
     expect(deriveWooPaid("pending")).toBe(false)
+    expect(deriveWooPaid("on-hold")).toBe(false)
   })
 
-  it("treats unknown/blank status as ready (never hide an order on a guess)", () => {
-    expect(deriveWooPaid(undefined)).toBe(true)
-    expect(deriveWooPaid("")).toBe(true)
-    expect(deriveWooPaid("weird-status")).toBe(true)
+  it("holds unknown/blank too — only captured orders are ready", () => {
+    expect(deriveWooPaid(undefined)).toBe(false)
+    expect(deriveWooPaid("")).toBe(false)
+    expect(deriveWooPaid("checkout-draft")).toBe(false)
   })
 })
 

@@ -20,7 +20,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import {
-  STATUS_BADGE,
+  orderBadge,
   CHANNEL_LABEL,
   ORDER_TYPE_LABEL,
   computeOrderTotals,
@@ -54,6 +54,7 @@ type OrderDetail = {
   on_hold: boolean
   backordered: boolean
   force_fulfilled: boolean
+  hold_reason: string | null
   order_type: OrderType
   channel: OrderChannel
   sale_date: string
@@ -102,7 +103,7 @@ export default async function OrderDetailPage({
   const { data } = await supabase
     .from("orders")
     .select(
-      `id, order_number, status, on_hold, backordered, force_fulfilled, order_type, channel, sale_date, entered_at,
+      `id, order_number, status, on_hold, backordered, force_fulfilled, hold_reason, order_type, channel, sale_date, entered_at,
        fulfilled_at, cancelled_at, notes, group_id,
        ship_to_name, ship_to_address1, ship_to_address2, ship_to_city,
        ship_to_region, ship_to_postal, ship_to_country,
@@ -133,7 +134,7 @@ export default async function OrderDetailPage({
     .eq("order_id", id)
     .maybeSingle()
 
-  const badge = STATUS_BADGE[order.status]
+  const badge = orderBadge(order.status, order.hold_reason)
   const { itemsSubtotal, total } = computeOrderTotals(order.order_line_items)
   const totalDue = summary ? Number(summary.total_due) : total
   const paid = summary ? Number(summary.amount_paid) : 0

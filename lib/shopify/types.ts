@@ -123,11 +123,13 @@ function deriveLifecycle(opts: {
  * Whether a Shopify order's payment has cleared, deciding if an OPEN order
  * enters the pick/pack flow now or is held as pending_payment until paid.
  *
- * Per the team: ONLY fully-paid ships. `paid` (and `partially_refunded`, which
- * was fully paid then partially returned) count as paid; `pending`,
- * `authorized` (funds held, not captured), `partially_paid`, and `voided` do
- * not. Accepts REST snake_case and GraphQL SCREAMING_CASE. A missing status is
- * treated as paid so a payload without the field doesn't silently hold every
+ * Tracks what ShipStation ships (so OT's packing screen matches it). `paid`,
+ * `partially_refunded` (was fully paid, partially returned), and `authorized`
+ * (funds authorized, captured at fulfilment — ShipStation lists these as
+ * awaiting shipment) count as READY. `pending`, `partially_paid`, and `voided`
+ * do NOT — they hold as pending_payment and auto-promote when the order is
+ * paid. Accepts REST snake_case and GraphQL SCREAMING_CASE. A missing status is
+ * treated as ready so a payload without the field doesn't silently hold every
  * order (Shopify always sends it on real order webhooks).
  */
 export function deriveShopifyPaid(
@@ -135,7 +137,7 @@ export function deriveShopifyPaid(
 ): boolean {
   const s = (financialStatus ?? "").toLowerCase()
   if (s === "") return true
-  return s === "paid" || s === "partially_refunded"
+  return s === "paid" || s === "partially_refunded" || s === "authorized"
 }
 
 /**
@@ -171,6 +173,9 @@ export type NormalizedShopifyOrder = {
   // Whether payment has cleared. When lifecycle is "open" and this is false the
   // order is held as pending_payment (reserves no stock) until payment lands.
   paid: boolean
+  // Why it's held, for the display label only. Shopify holds are always
+  // "pending" (authorized is treated as ready). Null unless held.
+  holdReason: "pending" | "on_hold" | null
   // Best-effort fulfillment timestamp (closed_at, else created_at) used to
   // backdate fulfill_order; null unless `lifecycle` is "fulfilled".
   fulfilledAt: string | null
@@ -226,6 +231,10 @@ export function normalizeShopifyOrder(
     createdAt,
     lifecycle,
     paid: deriveShopifyPaid(payload.financial_status),
+    holdReason:
+      lifecycle === "open" && !deriveShopifyPaid(payload.financial_status)
+        ? "pending"
+        : null,
     fulfilledAt: lifecycle === "fulfilled" ? (closedAt ?? createdAt) : null,
     customer: cust
       ? {
@@ -344,6 +353,10 @@ export function normalizeGraphqlOrder(
     createdAt,
     lifecycle,
     paid: deriveShopifyPaid(node.displayFinancialStatus),
+    holdReason:
+      lifecycle === "open" && !deriveShopifyPaid(node.displayFinancialStatus)
+        ? "pending"
+        : null,
     fulfilledAt: lifecycle === "fulfilled" ? (closedAt ?? createdAt) : null,
     customer: cust
       ? {

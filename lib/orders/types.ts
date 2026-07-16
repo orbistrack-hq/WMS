@@ -45,6 +45,22 @@ export const STATUS_BADGE: Record<
   returned: { label: "Returned", variant: "warning" },
 }
 
+/**
+ * Badge for an order. Held orders all share the pending_payment status, so the
+ * label is refined by hold_reason: a Woo on-hold order reads "On hold" while a
+ * pending-payment order reads "Pending payment". Display-only — they behave
+ * identically underneath. Every other status uses STATUS_BADGE directly.
+ */
+export function orderBadge(
+  status: OrderStatus,
+  holdReason?: string | null,
+): { label: string; variant: BadgeVariant } {
+  if (status === "pending_payment" && holdReason === "on_hold") {
+    return { label: "On hold", variant: "warning" }
+  }
+  return STATUS_BADGE[status]
+}
+
 export const CHANNEL_LABEL: Record<OrderChannel, string> = {
   manual: "Manual",
   shopify: "Shopify",

@@ -10,15 +10,16 @@ import {
 } from "./types"
 
 describe("deriveShopifyPaid", () => {
-  it("treats paid and partially_refunded as paid (ready to ship)", () => {
+  it("treats paid, partially_refunded and authorized as ready to ship", () => {
     expect(deriveShopifyPaid("paid")).toBe(true)
     expect(deriveShopifyPaid("partially_refunded")).toBe(true)
+    expect(deriveShopifyPaid("authorized")).toBe(true) // ShipStation lists these
     expect(deriveShopifyPaid("PAID")).toBe(true) // GraphQL SCREAMING_CASE
+    expect(deriveShopifyPaid("AUTHORIZED")).toBe(true)
   })
 
-  it("treats pending, authorized and partially_paid as NOT paid (held)", () => {
+  it("holds pending, partially_paid and voided", () => {
     expect(deriveShopifyPaid("pending")).toBe(false)
-    expect(deriveShopifyPaid("authorized")).toBe(false)
     expect(deriveShopifyPaid("partially_paid")).toBe(false)
     expect(deriveShopifyPaid("voided")).toBe(false)
   })

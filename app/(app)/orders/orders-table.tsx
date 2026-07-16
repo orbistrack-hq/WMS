@@ -18,7 +18,7 @@ import {
 } from "@/components/ui/table"
 import { formatCurrency, formatDate } from "@/lib/format"
 import {
-  STATUS_BADGE,
+  orderBadge,
   CHANNEL_LABEL,
   isActive,
   type OrderStatus,
@@ -41,6 +41,7 @@ export type OrderTableRow = {
   auto_fulfilled: boolean
   force_fulfilled: boolean
   store_completed_at: string | null
+  hold_reason: string | null
   order_type: "standard" | "layaway"
   channel: OrderChannel
   sale_date: string
@@ -153,7 +154,7 @@ export function OrdersTable({
           </TableHeader>
           <TableBody>
             {rows.map((o) => {
-              const badge = STATUS_BADGE[o.status]
+              const badge = orderBadge(o.status, o.hold_reason)
               const selectable = isActive(o.status)
               const isSelected = selected.has(o.id)
               return (
