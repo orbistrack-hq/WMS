@@ -113,6 +113,21 @@ describe("aggregatePickLines", () => {
     expect(aggregatePickLines(orders).totalUnits).toBe(7)
   })
 
+  it("skips a held (on_hold) order even when its status is active", () => {
+    const withHeld: PickOrderRow[] = [
+      ...orders,
+      {
+        order_number: "ORD-HOLD",
+        status: "created",
+        on_hold: true,
+        order_line_items: [childLine("c1", "S1", "B2", "Prod One", 4)],
+      },
+    ]
+    const { orderNumbers, totalUnits } = aggregatePickLines(withHeld)
+    expect(orderNumbers).toEqual(["ORD-1", "ORD-2"]) // ORD-HOLD excluded
+    expect(totalUnits).toBe(7) // held units not added
+  })
+
   it("returns an empty result when nothing is active", () => {
     const result = aggregatePickLines([
       { order_number: "ORD-X", status: "shipped", order_line_items: [] },

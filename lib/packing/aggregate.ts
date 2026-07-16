@@ -38,6 +38,13 @@ function toGrams(v: number | string | null | undefined): number | null {
 export type PickOrderRow = {
   order_number: string
   status: string
+  /**
+   * A held order is paused (e.g. awaiting payment clearance): its stock stays
+   * reserved but it must NOT be picked/packed until released. Optional so
+   * callers that don't select it default to not-held. When true, the order is
+   * skipped everywhere pick lines are built.
+   */
+  on_hold?: boolean
   order_line_items: PickLineItemRow[]
 }
 
@@ -95,6 +102,7 @@ export function aggregatePickLines(orders: PickOrderRow[]): AggregatedPick {
 
   for (const o of orders) {
     if (!ACTIVE_PICK_STATUSES.has(o.status)) continue
+    if (o.on_hold) continue // paused — don't pick a held order
     orderNumbers.push(o.order_number)
     for (const li of o.order_line_items) {
       // Prefer the child SKU id; fall back to a sku-based key for orphaned lines
@@ -190,6 +198,7 @@ export function aggregateWave(groups: WaveGroupInput[]): AggregatedWave {
   for (const g of groups) {
     for (const o of g.orders) {
       if (!ACTIVE_PICK_STATUSES.has(o.status)) continue
+      if (o.on_hold) continue // paused — don't pick a held order
       orderNumbers.push(o.order_number)
       for (const li of o.order_line_items) {
         if (li.quantity <= 0) continue

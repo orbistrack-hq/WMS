@@ -29,7 +29,7 @@ export default async function PickPage({
         `id, status,
          customer:customers(name),
          site:sites(name),
-         orders(order_number, status,
+         orders(order_number, status, on_hold,
            order_line_items(quantity,
              child_sku:child_skus(id, sku, bin_location, barcode, product:products(name))))`,
       )

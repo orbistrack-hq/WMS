@@ -76,7 +76,7 @@ export default async function WavePage({
         `id, status, site_id,
          customer:customers(name),
          site:sites(name),
-         orders(order_number, status,
+         orders(order_number, status, on_hold,
            order_line_items(quantity,
              child_sku:child_skus(id, sku, bin_location, barcode, grams_per_unit, product:products(name)))),
          packaging_usage(quantity, unit_cost_snapshot, packaging_type_id)`,

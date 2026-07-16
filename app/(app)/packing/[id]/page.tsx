@@ -103,7 +103,7 @@ export default async function PackDetailPage({
         `id, status, packing_notes,
          customer:customers(name),
          site:sites(name),
-         orders(id, order_number, status,
+         orders(id, order_number, status, on_hold,
            order_line_items(id, quantity,
              child_sku:child_skus(id, product_id, sku, bin_location, barcode, grams_per_unit, variant_label, product:products(name)))),
          packaging_usage(id, quantity, unit_cost_snapshot,
