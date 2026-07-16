@@ -52,7 +52,7 @@ type SsOrder = {
   orderNumber?: string | null
   orderStatus?: string | null
   advancedOptions?: { storeId?: number }
-  items?: { quantity?: number | null }[]
+  items?: { quantity?: number | null; name?: string | null }[]
   shipTo?: { name?: string | null; postalCode?: string | null }
 }
 
@@ -64,8 +64,17 @@ type OtOrder = {
   entered_at: string | null
   ship_to_name: string | null
   ship_to_postal: string | null
-  order_line_items: { quantity: number | null }[]
+  order_line_items: {
+    quantity: number | null
+    child_sku: { track_inventory: boolean | null } | null
+  }[]
 }
+
+// Non-inventory service lines (Route "Shipping Protection") must not count toward
+// the physical-unit comparison. OT flags them with track_inventory=false (name
+// pattern `shipping protection%`, migration 0068); ShipStation has no such flag,
+// so match its item name to the same keyword.
+const NONINVENTORY_ITEM = /shipping protection/i
 
 // --- order-number matching -------------------------------------------------
 function keysFor(raw: string | null | undefined): { alnum: string; digits: string } {
@@ -127,11 +136,29 @@ async function fetchSs(
 function ssStoreLabel(o: SsOrder): string | null {
   return o.advancedOptions?.storeId ? `SS store ${o.advancedOptions.storeId}` : null
 }
+// Physical units only — exclude non-inventory / service lines on both sides.
 function ssUnits(o: SsOrder): number {
-  return (o.items ?? []).reduce((n, i) => n + (i.quantity ?? 0), 0)
+  return (o.items ?? []).reduce(
+    (n, i) => n + (NONINVENTORY_ITEM.test(i.name ?? "") ? 0 : (i.quantity ?? 0)),
+    0,
+  )
 }
 function otUnits(o: OtOrder): number {
-  return o.order_line_items.reduce((n, li) => n + (li.quantity ?? 0), 0)
+  return o.order_line_items.reduce(
+    (n, li) => n + (li.child_sku?.track_inventory === false ? 0 : (li.quantity ?? 0)),
+    0,
+  )
+}
+
+// Postal match tolerant of ZIP+4: "34761" and "34761-4029" are the same place.
+// True when equal, or the shorter (≥4 chars) is a prefix of the longer.
+function postalMatch(a: string | null | undefined, b: string | null | undefined): boolean {
+  const x = norm(a)
+  const y = norm(b)
+  if (!x || !y) return true // nothing to compare — don't flag
+  if (x === y) return true
+  const [short, long] = x.length <= y.length ? [x, y] : [y, x]
+  return short.length >= 4 && long.startsWith(short)
 }
 
 /** Run the full OT ⇄ ShipStation reconciliation. `db` must be service-role. */
@@ -153,7 +180,7 @@ export async function reconcileShipStation(
     const { data, error } = await db
       .from("orders")
       .select(
-        "order_number, channel, status, on_hold, entered_at, ship_to_name, ship_to_postal, order_line_items(quantity)",
+        "order_number, channel, status, on_hold, entered_at, ship_to_name, ship_to_postal, order_line_items(quantity, child_sku:child_skus(track_inventory))",
       )
       .in("channel", ["shopify", "woocommerce"])
       .gte("entered_at", otSince)
@@ -226,9 +253,7 @@ export async function reconcileShipStation(
     const ssQ = ssUnits(s)
     if (ssQ > 0 && otQ !== ssQ)
       qtyMismatch.push(rowOt(o, `OT ${otQ} vs ShipStation ${ssQ} units`))
-    const otP = norm(o.ship_to_postal)
-    const ssP = norm(s.shipTo?.postalCode)
-    if (otP && ssP && otP !== ssP)
+    if (!postalMatch(o.ship_to_postal, s.shipTo?.postalCode))
       addressMismatch.push(rowOt(o, `postal ${o.ship_to_postal} vs ${s.shipTo?.postalCode}`))
   }
 
