@@ -14,6 +14,7 @@ import {
   Store,
   ShoppingCart,
   Plug,
+  Truck,
   Settings,
 } from "lucide-react"
 
@@ -142,6 +143,12 @@ export const NAV_TREE: NavEntry[] = [
         href: "/integrations/woocommerce",
         icon: ShoppingCart,
         description: "Import WooCommerce orders via webhooks",
+      },
+      {
+        label: "ShipStation",
+        href: "/integrations/shipstation",
+        icon: Truck,
+        description: "Check OT orders line up with ShipStation",
       },
     ],
   },
