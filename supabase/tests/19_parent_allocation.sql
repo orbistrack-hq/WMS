@@ -16,7 +16,7 @@ select is( to_grams(1,  'kg'),  1000::numeric,'1 kg  = 1000 g');
 select throws_ok( $$ select to_grams(1, 'furlong') $$, '23514', NULL,
   'unsupported UoM is rejected' );
 
--- ---- child weight-variant uniqueness (still per product+site) --------------
+-- ---- child identity: coded by SKU; un-coded unique per (product, site, weight)
 select lives_ok(
   $$ insert into child_skus (product_id, site_id, sku, grams_per_unit, variant_label)
      values ('33333333-0000-0000-0000-000000000001',
@@ -27,16 +27,22 @@ select lives_ok(
      values ('33333333-0000-0000-0000-000000000001',
              '11111111-1111-1111-1111-111111111111','WF-7G', 7, '7g') $$,
   'second weight variant (7g) coexists at same product+site' );
-select throws_ok(
+-- Post-0057: SKU is the child identity. A second same-weight child with its own
+-- SKU (an "ounce special") now coexists; only UN-CODED (null-sku) duplicates at
+-- the same (product, site, weight) are blocked by child_skus_null_variant_key.
+select lives_ok(
   $$ insert into child_skus (product_id, site_id, sku, grams_per_unit)
      values ('33333333-0000-0000-0000-000000000001',
              '11111111-1111-1111-1111-111111111111','WF-3_5G-DUP', 3.5) $$,
-  '23505', NULL, 'duplicate 3.5g variant at same product+site is rejected' );
+  'second 3.5g variant with its own SKU coexists (post-0057 ounce special)' );
 select throws_ok(
-  $$ insert into child_skus (product_id, site_id, sku)
-     values ('33333333-0000-0000-0000-000000000001',
-             '11111111-1111-1111-1111-111111111111','WF-SECOND-NULL') $$,
-  '23505', NULL, 'second non-weight child at same product+site is rejected' );
+  $$ insert into child_skus (product_id, site_id, sku, grams_per_unit) values
+       ('33333333-0000-0000-0000-000000000001',
+        '11111111-1111-1111-1111-111111111111', null, 99),
+       ('33333333-0000-0000-0000-000000000001',
+        '11111111-1111-1111-1111-111111111111', null, 99) $$,
+  '23505', NULL,
+  'two un-coded (null-sku) children at the same product+site+weight are rejected' );
 
 -- ---- central parent inventory primitives -----------------------------------
 select lives_ok(

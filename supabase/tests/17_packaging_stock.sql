@@ -1,8 +1,9 @@
 -- Packaging stock (central, migration 0047): receive/adjust into one pool per
 -- type (no site), auto-consume on packing, reversal on edit/delete, and
 -- negative-on-over-consume. Uses seeded packaging type Standard Box (0.85).
--- Runs as the DB owner (no JWT) so the ops-role gate is a no-op here; the
--- client/operator gate itself is covered in 24_client_scoped_packaging_merge.
+-- Runs as the DB owner (RLS bypassed) but authenticates as an OPERATOR via the
+-- JWT, since receive_packaging/adjust_packaging now gate on is_operator(); the
+-- client/operator denial itself is covered in 24_client_scoped_packaging_merge.
 begin;
 select plan(12);
 \set BOX  '''11111111-0000-0000-0000-000000000001'''
@@ -10,6 +11,13 @@ select plan(12);
 \set G    '''c0000000-0000-0000-0000-000000000001'''
 \set O    '''c0000000-1111-0000-0000-000000000001'''
 \set SKU  '''a0000000-0000-0000-0000-000000000001'''
+
+-- Authenticate as an operator so the ops-role gate passes (auth.uid() reads the
+-- JWT claim; the DB role stays owner, so table-level RLS is still bypassed).
+insert into auth.users(id, email) values
+  ('00000000-0000-0000-0000-0000000000f7', 'pkg-ops@example.com');
+update profiles set role='operator' where id='00000000-0000-0000-0000-0000000000f7';
+set local request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000f7"}';
 
 -- 1. receive into the central pool
 select receive_packaging(:BOX, 100, 'initial stock');

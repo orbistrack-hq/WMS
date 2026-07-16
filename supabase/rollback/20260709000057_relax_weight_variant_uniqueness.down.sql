@@ -144,7 +144,7 @@ $$;
 comment on function public.upsert_store_weight_variant is
   'Map one store variant recognized as a weight (grams_per_unit) to a shared strain parent + weight-variant child SKU. Groups weights across clients by exact strain name. Store owns name/price/sku; cost is seed-only; on_hand syncs via set_on_hand_to.';
 
--- ---- 2. Restore the 0039 merge_products conflict rule (per-weight) ----------
+-- ---- 2. Restore the 0039 merge_products conflict rule (per-weight) --------
 create or replace function public.merge_products(
   p_survivor uuid,
   p_losers   uuid[],
@@ -152,4 +152,141 @@ create or replace function public.merge_products(
 ) returns jsonb
 language plpgsql security definer set search_path = '' as $$
 declare
-  v
+  v_losers     uuid[];
+  v_conflicts  jsonb;
+  v_moved      integer := 0;
+  v_absorbed   uuid[];
+  v_bad_site   uuid;
+begin
+  -- ---- authorization ------------------------------------------------------
+  -- No role gate: any signed-in user may merge, but the site-access check below
+  -- is the real guard — the caller must own every site involved. Clients can
+  -- thus consolidate their own duplicate masters without an operator.
+  if auth.uid() is null then
+    raise exception 'merge_products: not authenticated';
+  end if;
+
+  -- ---- validate inputs ----------------------------------------------------
+  if p_survivor is null then
+    raise exception 'merge_products: survivor is required';
+  end if;
+  if p_losers is null or array_length(p_losers, 1) is null then
+    raise exception 'merge_products: pick at least one product to merge in';
+  end if;
+
+  select array_agg(distinct l) into v_losers
+    from unnest(p_losers) as l
+   where l is not null and l <> p_survivor;
+
+  if v_losers is null or array_length(v_losers, 1) is null then
+    raise exception 'merge_products: nothing to merge (only the survivor was given)';
+  end if;
+
+  if (select count(*) from public.products p where p.id = p_survivor) = 0 then
+    raise exception 'merge_products: survivor product not found';
+  end if;
+  if (select count(*) from public.products p where p.id = any(v_losers))
+       <> array_length(v_losers, 1) then
+    raise exception 'merge_products: one or more products to merge no longer exist';
+  end if;
+
+  -- ---- site-access check: caller must own every site involved --------------
+  -- Now covers the SURVIVOR's children as well as the losers'. Previously only
+  -- losers were checked, which was safe only because operators see all sites; a
+  -- client must not be able to fold a duplicate into a master that also lives at
+  -- a site they can't access.
+  select cs.site_id into v_bad_site
+    from public.child_skus cs
+   where (cs.product_id = p_survivor or cs.product_id = any(v_losers))
+     and not public.can_access_site(cs.site_id)
+   limit 1;
+  if v_bad_site is not null then
+    raise exception 'merge_products: you do not have access to every site involved'
+      using errcode = '42501';
+  end if;
+
+  -- ---- conflict detection (one child per product per site PER WEIGHT) -----
+  with involved as (
+    select cs.site_id, cs.sku, cs.grams_per_unit,
+           coalesce(cs.grams_per_unit, -1) as wkey
+      from public.child_skus cs
+     where cs.product_id = p_survivor or cs.product_id = any(v_losers)
+  ),
+  clashes as (
+    select site_id, wkey,
+           max(grams_per_unit)                         as grams,
+           count(*)                                    as n,
+           array_remove(array_agg(sku order by sku), null) as skus
+      from involved
+     group by site_id, wkey
+    having count(*) > 1
+  )
+  select coalesce(
+           jsonb_agg(jsonb_build_object(
+             'site_id',   c.site_id,
+             'site_name', s.name,
+             'grams',     c.grams,
+             'skus',      to_jsonb(c.skus))),
+           '[]'::jsonb)
+    into v_conflicts
+    from clashes c
+    join public.sites s on s.id = c.site_id;
+
+  -- ---- stop here if there's a genuine (site, weight) collision -------------
+  if v_conflicts <> '[]'::jsonb then
+    if p_dry_run then
+      return jsonb_build_object(
+        'ok', false, 'dry_run', true, 'survivor_id', p_survivor,
+        'moved', 0, 'absorbed', '[]'::jsonb, 'conflicts', v_conflicts);
+    end if;
+    raise exception 'merge_products: site/weight conflicts must be resolved first (%)',
+      v_conflicts using errcode = '23505';
+  end if;
+
+  -- ---- dry run: report what WOULD happen, change nothing ------------------
+  if p_dry_run then
+    select count(*) into v_moved
+      from public.child_skus cs where cs.product_id = any(v_losers);
+    return jsonb_build_object(
+      'ok', true, 'dry_run', true, 'survivor_id', p_survivor,
+      'moved', v_moved, 'absorbed', to_jsonb(v_losers), 'conflicts', '[]'::jsonb);
+  end if;
+
+  -- ---- commit -------------------------------------------------------------
+  with moved as (
+    update public.child_skus cs
+       set product_id = p_survivor
+     where cs.product_id = any(v_losers)
+    returning 1)
+  select count(*) into v_moved from moved;
+
+  update public.products set is_active = true where id = p_survivor;
+
+  with emptied as (
+    update public.products p
+       set is_active = false
+     where p.id = any(v_losers)
+       and not exists (
+         select 1 from public.child_skus c where c.product_id = p.id)
+    returning p.id)
+  select coalesce(array_agg(id), '{}'::uuid[]) into v_absorbed from emptied;
+
+  insert into public.product_merge_log
+    (sku, survivor_product_id, absorbed_product_ids, kind, merged_by)
+  values (null, p_survivor, v_absorbed, 'manual', auth.uid());
+
+  return jsonb_build_object(
+    'ok', true, 'dry_run', false, 'survivor_id', p_survivor,
+    'moved', v_moved, 'absorbed', to_jsonb(v_absorbed), 'conflicts', '[]'::jsonb);
+end;
+$$;
+
+comment on function public.merge_products(uuid, uuid[], boolean) is
+  'Manual product merge: move loser products'' child SKUs onto a survivor, deactivate the emptied losers, and log it. Any signed-in user may call it, but must can_access_site() EVERY site involved (survivor + losers). Weight-variant aware (0033); p_dry_run previews without writing.';
+
+-- ---- 3. Restore weight uniqueness; drop the null-sku partial guard --------
+drop index if exists public.child_skus_null_variant_key;
+create unique index if not exists child_skus_product_site_variant_key
+  on public.child_skus (product_id, site_id, coalesce(grams_per_unit, -1));
+
+commit;

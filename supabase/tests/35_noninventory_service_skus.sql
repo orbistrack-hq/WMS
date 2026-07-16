@@ -9,7 +9,7 @@
 --     fictional store stock;
 --   * is_noninventory_name matches the Route pattern only;
 --   * set_child_track_inventory flips the flag for admin/manager and is denied
---     to staff.
+--     to a non-privileged (client) role.
 -- MAIN = 1111... , real SKU WF-HONEY-MAIN a0..0001 (200 on hand), both seeded.
 begin;
 select plan(16);
@@ -21,9 +21,9 @@ select plan(16);
 -- Become an admin (passes is_operator + can_access_site for all sites).
 insert into auth.users(id, email) values
   ('00000000-0000-0000-0000-0000000000b8', 'ni-admin@example.com'),
-  ('00000000-0000-0000-0000-0000000000b9', 'ni-staff@example.com');
-update profiles set role='admin' where id='00000000-0000-0000-0000-0000000000b8';
-update profiles set role='staff' where id='00000000-0000-0000-0000-0000000000b9';
+  ('00000000-0000-0000-0000-0000000000b9', 'ni-client@example.com');
+update profiles set role='admin'  where id='00000000-0000-0000-0000-0000000000b8';
+update profiles set role='client' where id='00000000-0000-0000-0000-0000000000b9';
 set local request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000b8"}';
 
 -- Seed a fee (non-inventory) child SKU at MAIN with no real stock.
@@ -89,17 +89,20 @@ select is(public.is_noninventory_name('Wildflower Honey 500g'), false,
   'name helper ignores a real product');
 
 -- ---- 6. set_child_track_inventory toggle (admin) ---------------------------
-select lives_ok($$ select set_child_track_inventory(:FEE, true) $$,
+-- NB: psql does not interpolate :FEE inside a $$-quoted string, so use the
+-- literal id here (as test 7's throws_ok does).
+select lives_ok(
+  $$ select set_child_track_inventory('d2000000-0000-0000-0000-000000000001', true) $$,
   'admin can flip a fee SKU back to tracked inventory');
 select is((select track_inventory from child_skus where id=:FEE), true,
   'flag is now true after the toggle');
 
--- ---- 7. staff is denied the toggle -----------------------------------------
+-- ---- 7. a non-privileged (client) role is denied the toggle ----------------
 set local request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000b9"}';
 select throws_ok(
   $$ select set_child_track_inventory('d2000000-0000-0000-0000-000000000001', false) $$,
   '42501', NULL,
-  'staff is denied set_child_track_inventory (admin/manager only)');
+  'a client is denied set_child_track_inventory (admin/manager only)');
 
 select * from finish();
 rollback;

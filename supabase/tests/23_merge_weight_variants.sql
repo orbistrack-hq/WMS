@@ -1,7 +1,7 @@
--- merge_products is weight-variant aware (migration 0033).
--- Pre-0033 it grouped conflicts by SITE alone, so a parent's own weight
--- children at one site self-clashed and blocked the merge. Now a conflict is a
--- genuine duplicate (site, weight) cell; disjoint weights merge cleanly.
+-- merge_products conflict rules (migration 0033, relaxed by 0057).
+-- Disjoint weights merge cleanly. Since 0057 the child identity is the SKU, so
+-- CODED same-weight children fold cleanly too; the only remaining conflict is two
+-- UN-CODED (null-sku) children on the same (site, weight) cell of the survivor.
 -- MAIN = 1111..., EAST = 2222... (from seed).
 begin;
 select plan(8);
@@ -48,8 +48,11 @@ select is(
   (select is_active from products where id = :WB),
   false, 'emptied loser parent is deactivated');
 
--- ---- Case B: a genuine (site, weight) collision still blocks ----------------
--- Both parents hold a 3.5g child at EAST — the same physical cell.
+-- ---- Case B: two CODED same-weight children fold cleanly (post-0057) --------
+-- Both parents hold a 3.5g child at EAST, but each has its own SKU. Since 0057
+-- the child identity is the SKU (unique per site by child_skus_site_sku_key), so
+-- coded same-weight children never collide on a merge — an "ounce special" folds
+-- onto a parent that already holds that weight.
 insert into products(id, name) values
   ('c1000000-0000-0000-0000-0000000000a1', 'Collide Strain'),
   ('c1000000-0000-0000-0000-0000000000b1', 'Collide Strain');
@@ -59,14 +62,26 @@ insert into child_skus(product_id, site_id, sku, store_variant_id, price, grams_
 
 select is(
   ((public.merge_products(:CA, array[:CB]::uuid[], true))->>'ok'),
-  'false', 'dry run: same site+weight collision is refused');
+  'true', 'dry run: coded same-weight children fold cleanly (no conflict)');
+create temp table ca_res on commit drop as
+  select public.merge_products(:CA, array[:CB]::uuid[], false) as r;
 select is(
-  (select jsonb_array_length((public.merge_products(:CA, array[:CB]::uuid[], true))->'conflicts')),
-  1, 'dry run: exactly one colliding cell reported');
+  (select count(*)::int from child_skus where product_id = :CA),
+  2, 'survivor holds both coded 3.5g children after a clean merge');
+
+-- ---- Case C: two UN-CODED (null-sku) same-weight children still block -------
+-- The one collision 0057 preserves: two null-sku children that would land on the
+-- same (site, weight) cell of the survivor. child_skus_null_variant_key blocks it.
+insert into products(id, name) values
+  ('d1000000-0000-0000-0000-0000000000a1', 'Null Collide'),
+  ('d1000000-0000-0000-0000-0000000000b1', 'Null Collide');
+insert into child_skus(product_id, site_id, sku, price, grams_per_unit, variant_label) values
+  ('d1000000-0000-0000-0000-0000000000a1', :EAST, null, 10, 3.5, '3.5g'),
+  ('d1000000-0000-0000-0000-0000000000b1', :EAST, null, 10, 3.5, '3.5g');
 select throws_ok(
-  $$ select public.merge_products('c1000000-0000-0000-0000-0000000000a1',
-       array['c1000000-0000-0000-0000-0000000000b1']::uuid[], false) $$,
-  '23505', NULL, 'real merge raises on an unresolved collision');
+  $$ select public.merge_products('d1000000-0000-0000-0000-0000000000a1',
+       array['d1000000-0000-0000-0000-0000000000b1']::uuid[], false) $$,
+  '23505', NULL, 'real merge raises on an unresolved null-sku collision');
 
 select * from finish();
 rollback;

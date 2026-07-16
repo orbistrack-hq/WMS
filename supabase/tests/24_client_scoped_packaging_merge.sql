@@ -106,9 +106,11 @@ select lives_ok(
 set local role authenticated;
 set local request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000c1"}';
 
+-- Shared (site_id NULL) defaults: 5 from seed + 7 canonical from migrations
+-- 0046/0048 (Box, Label, 3.5g Jar, Jar Label, Vacuum Sealed Bag, two Mylar bags).
 select is(
   (select count(*)::int from packaging_types where site_id is null),
-  5, 'client: sees the five shared defaults');
+  12, 'client: sees all twelve shared defaults');
 select is(
   (select count(*)::int from packaging_types where id = :EASTPKG),
   0, 'client: cannot see another site''s owned type');

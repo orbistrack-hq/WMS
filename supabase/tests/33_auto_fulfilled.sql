@@ -6,6 +6,12 @@
 begin;
 select plan(4);
 
+-- The seed's only fee_schedule is effective_from = current_date, so a backdated
+-- fulfillment (2026-07-01) resolves no schedule and charge_order_pick_fee raises.
+-- Seed one effective before the backdated ship time so the pick fee resolves.
+insert into public.fee_schedules (effective_from, first_unit_rate, additional_unit_rate)
+values ('2026-06-01', 1.25, 0.25);
+
 -- A) Store-completed auto-fulfillment, backdated to the real ship time.
 create temp table o_auto as select create_order(
   '11111111-1111-1111-1111-111111111111'::uuid,
