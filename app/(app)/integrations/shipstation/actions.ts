@@ -28,8 +28,13 @@ export async function runShipStationReconcile(): Promise<ReconcileActionResult> 
     .select("role")
     .eq("id", user.id)
     .maybeSingle()
-  if (profile?.role !== "admin") {
-    return { ok: false, error: "Only an admin can run the ShipStation check." }
+  // Read-only check (no connection/secret management), so admin OR manager can
+  // run it — unlike integration *management*, which stays admin-only.
+  if (profile?.role !== "admin" && profile?.role !== "manager") {
+    return {
+      ok: false,
+      error: "Only an admin or manager can run the ShipStation check.",
+    }
   }
 
   const apiKey = process.env.SHIPSTATION_API_KEY
