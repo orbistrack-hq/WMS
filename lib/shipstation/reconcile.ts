@@ -8,8 +8,12 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 // ---------------------------------------------------------------------------
 
 const READY_STATUSES = ["created", "picking", "packed"]
-/** OT-not-in-SS orders newer than this are "probably still syncing" (benign). */
-export const SYNC_GRACE_MINUTES = 60
+/**
+ * OT-not-in-SS orders newer than this are "probably still syncing" (benign).
+ * ShipStation pulls from the stores roughly every 2-3 hours, so we wait ~3h
+ * before calling an order genuinely missing.
+ */
+export const SYNC_GRACE_MINUTES = 180
 /** OT ready orders older than this with no movement are flagged as aging. */
 export const AGING_DAYS = 3
 /** How far back to pull ShipStation "shipped" orders for the cross-check. */

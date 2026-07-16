@@ -3,11 +3,18 @@
 import { useState, useTransition } from "react"
 import { RefreshCw, CheckCircle2 } from "lucide-react"
 
-import { Button } from "@/components/ui/button"
+import Link from "next/link"
+
+import { Button, buttonVariants } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { cn } from "@/lib/utils"
 import { formatDateTime } from "@/lib/format"
 import { runShipStationReconcile } from "./actions"
 import type { ReconcileResult, ReconcileRow } from "@/lib/shipstation/reconcile"
+
+function graceText(m: number): string {
+  return m % 60 === 0 ? `${m / 60}h` : `${m}m`
+}
 
 function ageLabel(mins: number | null): string {
   if (mins == null) return ""
@@ -51,19 +58,32 @@ function Section({
   blurb,
   rows,
   tone,
+  packingLink,
 }: {
   title: string
   blurb: string
   rows: ReconcileRow[]
   tone: "alert" | "warn" | "muted"
+  /** Show a link to the packing screen (for orders the team should pack in OT). */
+  packingLink?: boolean
 }) {
   if (rows.length === 0) return null
   return (
     <Card>
       <CardHeader>
-        <CardTitle className={`text-base ${TONE[tone]}`}>
-          {title} ({rows.length})
-        </CardTitle>
+        <div className="flex items-start justify-between gap-3">
+          <CardTitle className={`text-base ${TONE[tone]}`}>
+            {title} ({rows.length})
+          </CardTitle>
+          {packingLink ? (
+            <Link
+              href="/packing"
+              className={cn(buttonVariants({ size: "sm" }), "shrink-0")}
+            >
+              Go to packing screen
+            </Link>
+          ) : null}
+        </div>
         <p className="text-sm text-muted-foreground">{blurb}</p>
       </CardHeader>
       <CardContent>
@@ -159,8 +179,9 @@ export function ReconcileView({ configured }: { configured: boolean }) {
           <Section
             tone="alert"
             title="Shipped in ShipStation, still to-pack in OT"
-            blurb="ShipStation shipped these but OT still shows them created/picking/packed. Risk of double-packing and count drift — mark them fulfilled in OT."
+            blurb="ShipStation shipped these but OT still shows them created/picking/packed. Process them through the packing screen as usual to reconcile — OT and ShipStation stay separate, so pack them in OT to capture packaging and close the order."
             rows={result.shippedNotFulfilled}
+            packingLink
           />
           <Section
             tone="alert"
@@ -199,7 +220,7 @@ export function ReconcileView({ configured }: { configured: boolean }) {
           <Section
             tone="warn"
             title="In OT, not in ShipStation"
-            blurb={`Older than ${result.graceMinutes}m — ShipStation should have these by now. Check the store connection / re-sync in ShipStation.`}
+            blurb={`Older than ${graceText(result.graceMinutes)} — ShipStation should have these by now. Check the store connection / re-sync in ShipStation.`}
             rows={result.missing}
           />
           <Section
@@ -219,7 +240,7 @@ export function ReconcileView({ configured }: { configured: boolean }) {
           <Section
             tone="muted"
             title="Probably still syncing"
-            blurb={`Created in the last ${result.graceMinutes}m — ShipStation likely just hasn't pulled them yet. Usually clears on its own.`}
+            blurb={`Created in the last ${graceText(result.graceMinutes)} — ShipStation likely just hasn't pulled them yet. Usually clears on its own.`}
             rows={result.syncing}
           />
         </>
