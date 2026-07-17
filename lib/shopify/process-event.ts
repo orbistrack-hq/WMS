@@ -9,6 +9,7 @@ import {
   importShopifyProduct,
   deactivateShopifyProduct,
 } from "./import-products"
+import { fetchVariantCosts } from "./rest"
 import {
   importNormalizedOrder,
   applyShopifyLifecycleUpdate,
@@ -158,8 +159,64 @@ async function handleProductUpsert(
 ): Promise<ProcessResult> {
   const conn = await connForShop(supabase, shopDomain)
   if (!conn) return { status: "no_connection" }
-  const result = await importShopifyProduct(supabase, conn.siteId, product)
-  return { status: "synced", ...result }
+
+  // Cost/COGS isn't in the product webhook payload — it lives on the Shopify
+  // InventoryItem — so the webhook alone lands variants with no cost. Fetch it
+  // via the Admin API (the same call the manual sync makes) and pass it in so
+  // the RPC can SEED it. Seed-only: the RPC writes cost only when the existing
+  // cost is 0/unset and never overwrites a cost already set in WMS. Stock is
+  // still left unwired here (inbound stock avoids echo loops). Best-effort: a
+  // missing token or a cost-fetch failure must not fail the catalog sync.
+  let costByInventoryItemId: Map<string, number> | undefined
+  let costSynced = false
+  const invItemIds = (product.variants ?? [])
+    .map((v) => (v.inventory_item_id != null ? String(v.inventory_item_id) : null))
+    .filter((id): id is string => Boolean(id))
+  if (invItemIds.length > 0) {
+    const token = await shopifyToken(supabase, shopDomain)
+    if (token) {
+      try {
+        const r = await fetchVariantCosts(shopDomain, token, invItemIds)
+        if (!r.unavailable) {
+          costByInventoryItemId = r.costs
+          costSynced = true
+        }
+      } catch {
+        costByInventoryItemId = undefined
+      }
+    }
+  }
+
+  const result = await importShopifyProduct(supabase, conn.siteId, product, {
+    costByInventoryItemId,
+  })
+  return { status: "synced", costSynced, ...result }
+}
+
+/**
+ * Admin API access token for a connected Shopify store, looked up by shop
+ * domain with the service-role client. Null when the store isn't connected or
+ * has no token stored. Cost needs the token's read_inventory scope.
+ */
+async function shopifyToken(
+  supabase: SupabaseClient,
+  shopDomain: string,
+): Promise<string | null> {
+  const { data: conn } = await supabase
+    .from("store_connections")
+    .select("id")
+    .eq("channel", "shopify")
+    .eq("source", shopDomain)
+    .eq("is_active", true)
+    .maybeSingle()
+  if (!conn?.id) return null
+
+  const { data: secret } = await supabase
+    .from("store_secrets")
+    .select("access_token")
+    .eq("connection_id", conn.id)
+    .maybeSingle()
+  return (secret?.access_token as string | null) ?? null
 }
 
 async function handleProductDelete(
