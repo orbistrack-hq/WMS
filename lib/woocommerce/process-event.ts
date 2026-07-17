@@ -228,6 +228,6 @@ async function handleProductDelete(
 ): Promise<ProcessResult> {
   const conn = await connForSource(supabase, source)
   if (!conn) return { status: "no_connection" }
-  const deactivated = await deactivateWooProduct(supabase, conn.siteId, product)
-  return { status: "deleted", deactivated }
+  const d = await deactivateWooProduct(supabase, conn.siteId, product)
+  return { status: "deleted", childSkus: d.childSkus, products: d.products }
 }

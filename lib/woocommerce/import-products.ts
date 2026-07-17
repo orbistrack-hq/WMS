@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { parseWeightGrams, stripWeightSuffix } from "../catalog/weight"
+import { deactivateChildlessProducts } from "../store-sync/deactivate"
 import {
   wooCost,
   wooVariantName,
@@ -193,22 +194,31 @@ export async function importWooProduct(
   return res
 }
 
-/** Deactivate child SKUs for a deleted Woo product (simple id + any variations). */
+/**
+ * Deactivate child SKUs for a deleted Woo product (simple id + any variations),
+ * then deactivate any parent product left with no active children so a
+ * store-deleted product doesn't linger as active. Returns both counts.
+ */
 export async function deactivateWooProduct(
   client: SupabaseClient,
   siteId: string,
   product: WooProduct,
-): Promise<number> {
+): Promise<{ childSkus: number; products: number }> {
   const ids: string[] = []
   if (product.id != null) ids.push(String(product.id))
   for (const vid of product.variations ?? []) ids.push(String(vid))
-  if (ids.length === 0) return 0
+  if (ids.length === 0) return { childSkus: 0, products: 0 }
 
   const { data } = await client
     .from("child_skus")
     .update({ is_active: false })
     .eq("site_id", siteId)
     .in("store_variant_id", ids)
-    .select("id")
-  return data?.length ?? 0
+    .select("id, product_id")
+
+  const products = await deactivateChildlessProducts(
+    client,
+    (data ?? []).map((r) => r.product_id as string | null),
+  )
+  return { childSkus: data?.length ?? 0, products }
 }

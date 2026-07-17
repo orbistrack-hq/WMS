@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { parseWeightGrams, stripWeightSuffix } from "../catalog/weight"
+import { deactivateChildlessProducts } from "../store-sync/deactivate"
 import { variantProductName, type ShopifyProduct } from "./types"
 
 export type ProductImportResult = {
@@ -126,22 +127,31 @@ export async function importShopifyProduct(
   return res
 }
 
-/** Deactivate the child SKUs for a deleted Shopify product (keeps history). */
+/**
+ * Deactivate the child SKUs for a deleted Shopify product (keeps history), then
+ * deactivate any parent product left with no active children so a store-deleted
+ * product doesn't linger as active. Returns both counts.
+ */
 export async function deactivateShopifyProduct(
   client: SupabaseClient,
   siteId: string,
   product: ShopifyProduct,
-): Promise<number> {
+): Promise<{ childSkus: number; products: number }> {
   const variantIds = (product.variants ?? [])
     .map((v) => (v.id != null ? String(v.id) : null))
     .filter((v): v is string => Boolean(v))
-  if (variantIds.length === 0) return 0
+  if (variantIds.length === 0) return { childSkus: 0, products: 0 }
 
   const { data } = await client
     .from("child_skus")
     .update({ is_active: false })
     .eq("site_id", siteId)
     .in("store_variant_id", variantIds)
-    .select("id")
-  return data?.length ?? 0
+    .select("id, product_id")
+
+  const products = await deactivateChildlessProducts(
+    client,
+    (data ?? []).map((r) => r.product_id as string | null),
+  )
+  return { childSkus: data?.length ?? 0, products }
 }

@@ -169,6 +169,6 @@ async function handleProductDelete(
 ): Promise<ProcessResult> {
   const conn = await connForShop(supabase, shopDomain)
   if (!conn) return { status: "no_connection" }
-  const deactivated = await deactivateShopifyProduct(supabase, conn.siteId, product)
-  return { status: "deleted", deactivated }
+  const d = await deactivateShopifyProduct(supabase, conn.siteId, product)
+  return { status: "deleted", childSkus: d.childSkus, products: d.products }
 }
