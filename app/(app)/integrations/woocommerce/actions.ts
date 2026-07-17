@@ -6,6 +6,7 @@ import { headers } from "next/headers"
 import { createClient } from "@/lib/supabase/server"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { importWooProduct } from "@/lib/woocommerce/import-products"
+import { fetchWooVariations } from "@/lib/woocommerce/rest"
 import {
   importWooOrder,
   applyWooLifecycleUpdate,
@@ -374,19 +375,13 @@ export async function syncProducts(connectionId: string): Promise<SyncResult> {
 
       for (const product of products) {
         // Variable products: pull their variations so each maps as a child SKU.
+        // Shared with the webhook self-heal via fetchWooVariations.
         let variations: WooVariation[] | undefined
         if ((product.type ?? "").toLowerCase() === "variable" && product.id != null) {
-          variations = []
-          for (let vp = 1; vp <= 20; vp++) {
-            const vr: Response = await fetch(
-              `${base}/products/${product.id}/variations?per_page=100&page=${vp}`,
-              { headers: auth },
-            )
-            if (!vr.ok) break
-            const batch = (await vr.json()) as WooVariation[]
-            if (!Array.isArray(batch) || batch.length === 0) break
-            variations.push(...batch)
-            if (batch.length < 100) break
+          try {
+            variations = await fetchWooVariations(base, auth, product.id)
+          } catch {
+            variations = [] // API hiccup on this product -> skip its variations
           }
         }
 

@@ -5,9 +5,11 @@ import {
   normalizeWooOrder,
   type WooOrderPayload,
   type WooProduct,
+  type WooVariation,
 } from "./types"
 import { importWooProduct, deactivateWooProduct } from "./import-products"
 import { importWooOrder, applyWooLifecycleUpdate } from "./import-orders"
+import { fetchWooVariations, wooApiBase, wooAuthHeader } from "./rest"
 
 /**
  * Shared WooCommerce webhook processor. Runs the actual DB work for one event
@@ -144,8 +146,79 @@ async function handleProductUpsert(
 ): Promise<ProcessResult> {
   const conn = await connForSource(supabase, source)
   if (!conn) return { status: "no_connection" }
-  const result = await importWooProduct(supabase, conn.siteId, product)
-  return { status: "synced", ...result }
+
+  // A variable product's webhook payload carries only variation IDs, so
+  // importWooProduct alone can't map them and would skip the product — which is
+  // why newly added variants never showed up from a webhook. Self-heal: pull
+  // the full variation objects from the Woo REST API (the same call the manual
+  // product sync makes) so each variant maps to a child SKU automatically.
+  //
+  // Stock is deliberately NOT synced here: inbound stock stays unwired so a
+  // webhook can't fight our own outbound stock pushes (see the Shopify
+  // inventory_levels/update note). We only reconcile catalog structure, price,
+  // and SKU.
+  const looksVariable =
+    (product.type ?? "").toLowerCase() === "variable" ||
+    (product.variations?.length ?? 0) > 0
+
+  let variations: WooVariation[] | undefined
+  let selfHealed = false
+  if (looksVariable && product.id != null) {
+    const creds = await wooRestCreds(supabase, source)
+    if (creds) {
+      try {
+        variations = await fetchWooVariations(
+          wooApiBase(creds.source),
+          { Authorization: wooAuthHeader(creds.key, creds.secret) },
+          product.id,
+        )
+        selfHealed = true
+      } catch {
+        // Store/API unreachable — fall back to id-only behaviour (product is
+        // skipped by importWooProduct). A later manual sync still catches it.
+        variations = undefined
+      }
+    }
+  }
+
+  const result = await importWooProduct(supabase, conn.siteId, product, {
+    variations,
+  })
+  return { status: "synced", selfHealed, ...result }
+}
+
+/**
+ * REST credentials for a connected Woo store, looked up by its canonical
+ * `source` with the service-role client. Returns null when the store isn't
+ * connected or has no consumer key/secret stored yet. Mirrors loadCreds in the
+ * integration action, but keyed by source (what the webhook carries) rather
+ * than connection id.
+ */
+async function wooRestCreds(
+  supabase: SupabaseClient,
+  source: string,
+): Promise<{ source: string; key: string; secret: string } | null> {
+  const { data: conn } = await supabase
+    .from("store_connections")
+    .select("id, source")
+    .eq("channel", "woocommerce")
+    .eq("source", source)
+    .eq("is_active", true)
+    .maybeSingle()
+  if (!conn?.id) return null
+
+  const { data: secret } = await supabase
+    .from("store_secrets")
+    .select("consumer_key, consumer_secret")
+    .eq("connection_id", conn.id)
+    .maybeSingle()
+  if (!secret?.consumer_key || !secret?.consumer_secret) return null
+
+  return {
+    source: (conn.source as string) ?? source,
+    key: secret.consumer_key as string,
+    secret: secret.consumer_secret as string,
+  }
 }
 
 async function handleProductDelete(

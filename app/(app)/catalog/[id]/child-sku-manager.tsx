@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { Fragment, useMemo, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import {
   AlertCircle,
@@ -119,6 +119,39 @@ export function ChildSkuManager({
   const [adding, setAdding] = useState(false)
   const [addSite, setAddSite] = useState(availableSites[0]?.id ?? "")
   const [addDraft, setAddDraft] = useState<Draft>(emptyDraft())
+
+  // A product carries a variant per site × weight, so the flat list gets long.
+  // Group by site (sites A→Z; within a site, lightest weight first) and print a
+  // site header once per group instead of repeating the site on every row.
+  const siteGroups = useMemo(() => {
+    const bySite = new Map<
+      string,
+      { site_id: string; site_name: string; items: ChildSku[] }
+    >()
+    for (const s of skus) {
+      let g = bySite.get(s.site_id)
+      if (!g) {
+        g = { site_id: s.site_id, site_name: s.site_name, items: [] }
+        bySite.set(s.site_id, g)
+      }
+      g.items.push(s)
+    }
+    const groups = [...bySite.values()]
+    groups.sort((a, b) => a.site_name.localeCompare(b.site_name))
+    for (const g of groups) {
+      g.items.sort(
+        (a, b) =>
+          (a.grams_per_unit ?? Number.POSITIVE_INFINITY) -
+            (b.grams_per_unit ?? Number.POSITIVE_INFINITY) ||
+          (a.sku ?? "").localeCompare(b.sku ?? ""),
+      )
+    }
+    return groups
+  }, [skus])
+
+  // Column count after dropping the per-row Site cell (the group header carries
+  // the site now). Keep in sync with the header row below.
+  const columnCount = SCANNING_ENABLED ? 11 : 10
 
   function handleDelete(s: ChildSku) {
     if (
@@ -241,7 +274,6 @@ export function ChildSkuManager({
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Site</TableHead>
               <TableHead>Weight</TableHead>
               <TableHead>SKU</TableHead>
               <TableHead>Bin</TableHead>
@@ -256,256 +288,276 @@ export function ChildSkuManager({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {skus.map((s) =>
-              editingId === s.id ? (
-                <TableRow key={s.id}>
-                  <TableCell className="font-medium">{s.site_name}</TableCell>
-                  <TableCell>
-                    <Input
-                      type="number"
-                      step="0.5"
-                      min="0"
-                      value={editDraft.weight}
-                      onChange={(e) =>
-                        setEditDraft({ ...editDraft, weight: e.target.value })
-                      }
-                      className="w-20"
-                      placeholder="g"
-                    />
-                  </TableCell>
-                  <TableCell>
-                    <Input
-                      value={editDraft.sku}
-                      onChange={(e) =>
-                        setEditDraft({ ...editDraft, sku: e.target.value })
-                      }
-                      className="w-32"
-                    />
-                  </TableCell>
-                  <TableCell>
-                    <Input
-                      value={editDraft.bin_location}
-                      onChange={(e) =>
-                        setEditDraft({
-                          ...editDraft,
-                          bin_location: e.target.value,
-                        })
-                      }
-                      className="w-24"
-                    />
-                  </TableCell>
-                  {SCANNING_ENABLED ? (
-                    <TableCell>
-                      <Input
-                        value={editDraft.barcode}
-                        onChange={(e) =>
-                          setEditDraft({ ...editDraft, barcode: e.target.value })
-                        }
-                        className="w-28"
-                      />
-                    </TableCell>
-                  ) : null}
-                  <TableCell>
-                    <Input
-                      value={editDraft.store_variant_id}
-                      onChange={(e) =>
-                        setEditDraft({
-                          ...editDraft,
-                          store_variant_id: e.target.value,
-                        })
-                      }
-                      className="w-28"
-                    />
-                  </TableCell>
-                  <TableCell>
-                    <Input
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      value={editDraft.price}
-                      onChange={(e) =>
-                        setEditDraft({ ...editDraft, price: e.target.value })
-                      }
-                      className="w-20 text-right"
-                    />
-                  </TableCell>
-                  <TableCell>
-                    <Input
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      value={editDraft.cost}
-                      onChange={(e) =>
-                        setEditDraft({ ...editDraft, cost: e.target.value })
-                      }
-                      className="w-20 text-right"
-                    />
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums text-muted-foreground">
-                    {s.on_hand}
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums text-muted-foreground">
-                    {s.available}
-                  </TableCell>
-                  <TableCell>
-                    <label className="flex items-center gap-1.5 text-xs">
-                      <input
-                        type="checkbox"
-                        className="size-4 accent-primary"
-                        checked={editDraft.is_active}
-                        onChange={(e) =>
-                          setEditDraft({
-                            ...editDraft,
-                            is_active: e.target.checked,
-                          })
-                        }
-                      />
-                      Active
-                    </label>
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex gap-1">
-                      <Button
-                        size="sm"
-                        disabled={isPending}
-                        onClick={() => saveEdit(s)}
-                      >
-                        Save
-                      </Button>
-                      <Button
-                        size="icon-sm"
-                        variant="ghost"
-                        aria-label="Cancel"
-                        onClick={() => setEditingId(null)}
-                      >
-                        <X />
-                      </Button>
-                    </div>
+            {siteGroups.map((group) => (
+              <Fragment key={group.site_id}>
+                <TableRow className="bg-muted/40 hover:bg-muted/40">
+                  <TableCell
+                    colSpan={columnCount}
+                    className="py-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+                  >
+                    {group.site_name} · {group.items.length} SKU
+                    {group.items.length === 1 ? "" : "s"}
                   </TableCell>
                 </TableRow>
-              ) : (
-                <TableRow key={s.id}>
-                  <TableCell className="font-medium">{s.site_name}</TableCell>
-                  <TableCell className="tabular-nums">
-                    {weightText(s)}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {s.sku ?? "—"}
-                  </TableCell>
-                  <TableCell className="tabular-nums text-muted-foreground">
-                    {s.bin_location ?? "—"}
-                  </TableCell>
-                  {SCANNING_ENABLED ? (
-                    <TableCell className="tabular-nums text-muted-foreground">
-                      {s.barcode ?? "—"}
-                    </TableCell>
-                  ) : null}
-                  <TableCell className="text-muted-foreground">
-                    {s.store_variant_id ?? "—"}
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums">
-                    {formatCurrency(s.price)}
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums">
-                    {formatCurrency(s.cost)}
-                  </TableCell>
-                  <TableCell
-                    className="text-right tabular-nums text-muted-foreground"
-                    title={
-                      s.track_inventory ? undefined : "Inventory not tracked (fee SKU)"
-                    }
-                  >
-                    {s.track_inventory ? s.on_hand : "—"}
-                  </TableCell>
-                  <TableCell
-                    className="text-right tabular-nums text-muted-foreground"
-                    title={
-                      s.track_inventory ? undefined : "Inventory not tracked (fee SKU)"
-                    }
-                  >
-                    {s.track_inventory ? s.available : "—"}
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex flex-wrap gap-1">
-                      {s.is_active ? (
-                        <Badge variant="success">Active</Badge>
-                      ) : (
-                        <Badge variant="muted">Inactive</Badge>
-                      )}
-                      {!s.track_inventory ? (
-                        <Badge
-                          variant="warning"
-                          title="Service/fee SKU: skips reservation, backorder, and stock — inventory ignored"
-                        >
-                          Fee · no stock
-                        </Badge>
+                {group.items.map((s) =>
+                  editingId === s.id ? (
+                    <TableRow key={s.id}>
+                      <TableCell>
+                        <Input
+                          type="number"
+                          step="0.5"
+                          min="0"
+                          value={editDraft.weight}
+                          onChange={(e) =>
+                            setEditDraft({ ...editDraft, weight: e.target.value })
+                          }
+                          className="w-20"
+                          placeholder="g"
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <Input
+                          value={editDraft.sku}
+                          onChange={(e) =>
+                            setEditDraft({ ...editDraft, sku: e.target.value })
+                          }
+                          className="w-32"
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <Input
+                          value={editDraft.bin_location}
+                          onChange={(e) =>
+                            setEditDraft({
+                              ...editDraft,
+                              bin_location: e.target.value,
+                            })
+                          }
+                          className="w-24"
+                        />
+                      </TableCell>
+                      {SCANNING_ENABLED ? (
+                        <TableCell>
+                          <Input
+                            value={editDraft.barcode}
+                            onChange={(e) =>
+                              setEditDraft({
+                                ...editDraft,
+                                barcode: e.target.value,
+                              })
+                            }
+                            className="w-28"
+                          />
+                        </TableCell>
                       ) : null}
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex gap-1">
-                      <Button
-                        size="icon-sm"
-                        variant="ghost"
-                        aria-label="Edit SKU"
-                        onClick={() => beginEdit(s)}
+                      <TableCell>
+                        <Input
+                          value={editDraft.store_variant_id}
+                          onChange={(e) =>
+                            setEditDraft({
+                              ...editDraft,
+                              store_variant_id: e.target.value,
+                            })
+                          }
+                          className="w-28"
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <Input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          value={editDraft.price}
+                          onChange={(e) =>
+                            setEditDraft({ ...editDraft, price: e.target.value })
+                          }
+                          className="w-20 text-right"
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <Input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          value={editDraft.cost}
+                          onChange={(e) =>
+                            setEditDraft({ ...editDraft, cost: e.target.value })
+                          }
+                          className="w-20 text-right"
+                        />
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums text-muted-foreground">
+                        {s.on_hand}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums text-muted-foreground">
+                        {s.available}
+                      </TableCell>
+                      <TableCell>
+                        <label className="flex items-center gap-1.5 text-xs">
+                          <input
+                            type="checkbox"
+                            className="size-4 accent-primary"
+                            checked={editDraft.is_active}
+                            onChange={(e) =>
+                              setEditDraft({
+                                ...editDraft,
+                                is_active: e.target.checked,
+                              })
+                            }
+                          />
+                          Active
+                        </label>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex gap-1">
+                          <Button
+                            size="sm"
+                            disabled={isPending}
+                            onClick={() => saveEdit(s)}
+                          >
+                            Save
+                          </Button>
+                          <Button
+                            size="icon-sm"
+                            variant="ghost"
+                            aria-label="Cancel"
+                            onClick={() => setEditingId(null)}
+                          >
+                            <X />
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    <TableRow key={s.id}>
+                      <TableCell className="tabular-nums">
+                        {weightText(s)}
+                      </TableCell>
+                      <TableCell className="text-muted-foreground">
+                        {s.sku ?? "—"}
+                      </TableCell>
+                      <TableCell className="tabular-nums text-muted-foreground">
+                        {s.bin_location ?? "—"}
+                      </TableCell>
+                      {SCANNING_ENABLED ? (
+                        <TableCell className="tabular-nums text-muted-foreground">
+                          {s.barcode ?? "—"}
+                        </TableCell>
+                      ) : null}
+                      <TableCell className="text-muted-foreground">
+                        {s.store_variant_id ?? "—"}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {formatCurrency(s.price)}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {formatCurrency(s.cost)}
+                      </TableCell>
+                      <TableCell
+                        className="text-right tabular-nums text-muted-foreground"
+                        title={
+                          s.track_inventory
+                            ? undefined
+                            : "Inventory not tracked (fee SKU)"
+                        }
                       >
-                        <Pencil />
-                      </Button>
-                      <Button
-                        size="icon-sm"
-                        variant="ghost"
-                        aria-label="Move SKU to another product"
-                        title="Move to another product"
-                        onClick={() => {
-                          setError(null)
-                          setEditingId(null)
-                          setMovingId(s.id)
-                        }}
+                        {s.track_inventory ? s.on_hand : "—"}
+                      </TableCell>
+                      <TableCell
+                        className="text-right tabular-nums text-muted-foreground"
+                        title={
+                          s.track_inventory
+                            ? undefined
+                            : "Inventory not tracked (fee SKU)"
+                        }
                       >
-                        <ArrowRightLeft />
-                      </Button>
-                      {canManageInventory ? (
-                        <Button
-                          size="icon-sm"
-                          variant="ghost"
-                          aria-label={
-                            s.track_inventory
-                              ? "Mark as fee / non-inventory SKU"
-                              : "Mark as tracked inventory SKU"
-                          }
-                          title={
-                            s.track_inventory
-                              ? "Mark as fee / non-inventory (skips stock & backorder)"
-                              : "Mark as tracked inventory"
-                          }
-                          className={
-                            s.track_inventory ? "text-amber-600 hover:text-amber-700" : ""
-                          }
-                          disabled={isPending}
-                          onClick={() => handleToggleTrack(s)}
-                        >
-                          {s.track_inventory ? <PackageX /> : <PackageCheck />}
-                        </Button>
-                      ) : null}
-                      {isAdmin ? (
-                        <Button
-                          size="icon-sm"
-                          variant="ghost"
-                          aria-label="Delete SKU"
-                          title="Delete SKU (admin)"
-                          className="text-destructive hover:text-destructive"
-                          disabled={isPending}
-                          onClick={() => handleDelete(s)}
-                        >
-                          <Trash2 />
-                        </Button>
-                      ) : null}
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ),
-            )}
+                        {s.track_inventory ? s.available : "—"}
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex flex-wrap gap-1">
+                          {s.is_active ? (
+                            <Badge variant="success">Active</Badge>
+                          ) : (
+                            <Badge variant="muted">Inactive</Badge>
+                          )}
+                          {!s.track_inventory ? (
+                            <Badge
+                              variant="warning"
+                              title="Service/fee SKU: skips reservation, backorder, and stock — inventory ignored"
+                            >
+                              Fee · no stock
+                            </Badge>
+                          ) : null}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex gap-1">
+                          <Button
+                            size="icon-sm"
+                            variant="ghost"
+                            aria-label="Edit SKU"
+                            onClick={() => beginEdit(s)}
+                          >
+                            <Pencil />
+                          </Button>
+                          <Button
+                            size="icon-sm"
+                            variant="ghost"
+                            aria-label="Move SKU to another product"
+                            title="Move to another product"
+                            onClick={() => {
+                              setError(null)
+                              setEditingId(null)
+                              setMovingId(s.id)
+                            }}
+                          >
+                            <ArrowRightLeft />
+                          </Button>
+                          {canManageInventory ? (
+                            <Button
+                              size="icon-sm"
+                              variant="ghost"
+                              aria-label={
+                                s.track_inventory
+                                  ? "Mark as fee / non-inventory SKU"
+                                  : "Mark as tracked inventory SKU"
+                              }
+                              title={
+                                s.track_inventory
+                                  ? "Mark as fee / non-inventory (skips stock & backorder)"
+                                  : "Mark as tracked inventory"
+                              }
+                              className={
+                                s.track_inventory
+                                  ? "text-amber-600 hover:text-amber-700"
+                                  : ""
+                              }
+                              disabled={isPending}
+                              onClick={() => handleToggleTrack(s)}
+                            >
+                              {s.track_inventory ? <PackageX /> : <PackageCheck />}
+                            </Button>
+                          ) : null}
+                          {isAdmin ? (
+                            <Button
+                              size="icon-sm"
+                              variant="ghost"
+                              aria-label="Delete SKU"
+                              title="Delete SKU (admin)"
+                              className="text-destructive hover:text-destructive"
+                              disabled={isPending}
+                              onClick={() => handleDelete(s)}
+                            >
+                              <Trash2 />
+                            </Button>
+                          ) : null}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ),
+                )}
+              </Fragment>
+            ))}
           </TableBody>
         </Table>
       )}
