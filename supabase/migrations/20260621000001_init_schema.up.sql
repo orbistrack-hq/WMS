@@ -492,7 +492,11 @@ create policy audit_log_read on public.audit_log for select using (auth.uid() is
 -- ----------------------------------------------------------------------------
 -- 14. Seed: the current pick-fee schedule (DECISION: $1.25 / $0.25, locked)
 -- ----------------------------------------------------------------------------
+-- effective_from is a fixed early date, NOT current_date: the migration may be
+-- applied while the container clock (UTC) has already rolled past Pacific
+-- midnight, which would seed the schedule as effective "tomorrow" and leave
+-- Pacific-dated orders with no effective schedule. A fixed past date is immune.
 insert into public.fee_schedules (effective_from, first_unit_rate, additional_unit_rate)
-values (current_date, 1.25, 0.25);
+values (date '2020-01-01', 1.25, 0.25);
 
 commit;

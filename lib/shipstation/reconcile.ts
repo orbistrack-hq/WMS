@@ -13,7 +13,7 @@ const READY_STATUSES = ["created", "picking", "packed"]
  * ShipStation pulls from the stores roughly every 2-3 hours, so we wait ~3h
  * before calling an order genuinely missing.
  */
-export const SYNC_GRACE_MINUTES = 180
+export const SYNC_GRACE_MINUTES = 360
 /** OT ready orders older than this with no movement are flagged as aging. */
 export const AGING_DAYS = 3
 /** How far back to pull ShipStation "shipped" orders for the cross-check. */
