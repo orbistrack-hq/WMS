@@ -30,9 +30,13 @@ function Brand() {
 
 export function AppShell({
   userEmail,
+  banner,
   children,
 }: {
   userEmail: string
+  // Optional portal-wide alert bar rendered directly under the top header
+  // (e.g. low packaging stock). Omitted/null renders nothing.
+  banner?: ReactNode
   children: ReactNode
 }) {
   const [mobileOpen, setMobileOpen] = useState(false)
@@ -88,6 +92,7 @@ export function AppShell({
           <ThemeToggle />
           <LogoutButton />
         </header>
+        {banner}
         <main className="print-shell-main flex-1 p-4 md:p-8">
           <div className="print-shell-main mx-auto w-full max-w-6xl">
             {children}

@@ -2,6 +2,7 @@ import { redirect } from "next/navigation"
 
 import { createClient } from "@/lib/supabase/server"
 import { AppShell } from "@/components/app-shell"
+import { PackagingLowStockBanner } from "@/components/packaging-low-stock-banner"
 
 export default async function AppLayout({
   children,
@@ -20,5 +21,9 @@ export default async function AppLayout({
 
   const email = typeof data.claims.email === "string" ? data.claims.email : ""
 
-  return <AppShell userEmail={email}>{children}</AppShell>
+  return (
+    <AppShell userEmail={email} banner={<PackagingLowStockBanner />}>
+      {children}
+    </AppShell>
+  )
 }

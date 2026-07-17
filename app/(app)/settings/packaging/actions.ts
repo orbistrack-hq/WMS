@@ -119,6 +119,42 @@ export async function deletePackagingType(id: string): Promise<ActionResult> {
 }
 
 // ---------------------------------------------------------------------------
+// Low-stock alert quantity (central reorder point, migration 0047). Setting it
+// drives the red portal-wide banner + the "low" badges. Passing null clears the
+// alert. The set_packaging_reorder_point RPC owns the manager-level gate
+// (admin/operator/manager via is_operator); this wrapper just revalidates the
+// pages that surface the threshold or the resulting alert.
+// ---------------------------------------------------------------------------
+
+export async function setPackagingReorderPoint(
+  packagingTypeId: string,
+  point: number | null,
+): Promise<ActionResult> {
+  if (!packagingTypeId) return { ok: false, error: "Pick a packaging type." }
+  const p = point === null || !Number.isFinite(point) ? null : Math.trunc(point)
+  if (p !== null && p < 0)
+    return { ok: false, error: "Alert quantity can't be negative." }
+
+  const supabase = await createClient()
+  const { error } = await supabase.rpc("set_packaging_reorder_point", {
+    p_type: packagingTypeId,
+    p_point: p,
+  })
+  if (error) {
+    if (error.code === "42501")
+      return {
+        ok: false,
+        error: "Only a manager or admin can set the alert quantity.",
+      }
+    return { ok: false, error: error.message || "Something went wrong." }
+  }
+
+  revalidatePath("/settings/packaging")
+  revalidatePath("/inventory/packaging")
+  return { ok: true }
+}
+
+// ---------------------------------------------------------------------------
 // Weight→packaging rule (FB-3, migration 0040). One global threshold: units at
 // or below it are jarred, heavier ones bagged. Admin-only (enforced by RLS on
 // packaging_rule); a non-admin update simply affects no rows.

@@ -13,6 +13,10 @@ import {
 } from "@/components/ui/card"
 import { JAR_MAX_GRAMS } from "@/lib/packing/packaging-rules"
 import { PackagingManager, type PackagingType } from "./packaging-manager"
+import {
+  PackagingThresholds,
+  type ThresholdRow,
+} from "./packaging-thresholds"
 import { PackagingRuleEditor } from "./packaging-rule-editor"
 import {
   PackagingRulesMapEditor,
@@ -34,6 +38,7 @@ export default async function PackagingSettingsPage() {
     operatorRes,
     weightRulesRes,
     orderDefaultsRes,
+    levelsRes,
   ] = await Promise.all([
     supabase
       .from("packaging_types")
@@ -58,6 +63,10 @@ export default async function PackagingSettingsPage() {
       .select(
         "id, qty, packaging_type:packaging_types(id, name, kind, unit_cost)",
       ),
+    // Central on-hand + alert quantity per type (no site) for the alert editor.
+    supabase
+      .from("packaging_levels")
+      .select("packaging_type_id, on_hand, reorder_point"),
   ])
 
   const ruleGrams = Number(ruleRes.data?.jar_max_grams)
@@ -92,6 +101,30 @@ export default async function PackagingSettingsPage() {
       kind: t.kind,
       unit_cost: t.unit_cost,
     })) as PkgType[]
+
+  // Alert-quantity editor rows: active types joined to their central level
+  // (on_hand + reorder_point). Missing level = never moved, so treat as zero.
+  const levelByType = new Map(
+    (levelsRes.data ?? []).map((l) => [
+      l.packaging_type_id,
+      {
+        on_hand: Number(l.on_hand),
+        reorder_point:
+          l.reorder_point === null ? null : Number(l.reorder_point),
+      },
+    ]),
+  )
+  const thresholdRows = types
+    .filter((t) => t.is_active)
+    .map((t) => {
+      const lvl = levelByType.get(t.id)
+      return {
+        id: t.id,
+        name: t.name,
+        on_hand: lvl?.on_hand ?? 0,
+        reorder_point: lvl?.reorder_point ?? null,
+      }
+    }) as ThresholdRow[]
 
   // FB-6 weight→packaging map + per-order defaults (migration 0046).
   const oneType = (v: unknown): PkgType | null => {
@@ -174,6 +207,21 @@ export default async function PackagingSettingsPage() {
               canManageShared={canManage}
               sites={sites}
             />
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Low-stock alerts</CardTitle>
+            <CardDescription>
+              Set the alert quantity for each packaging type. When on-hand stock
+              drops to or below it, a red banner appears at the top of the portal
+              for everyone until it&apos;s topped up. Managers and admins can edit
+              these.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <PackagingThresholds rows={thresholdRows} canManage={canManage} />
           </CardContent>
         </Card>
 
