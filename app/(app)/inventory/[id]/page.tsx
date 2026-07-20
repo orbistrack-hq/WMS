@@ -21,6 +21,7 @@ import {
 import { formatCurrency, formatDateTime } from "@/lib/format"
 import { reasonLabel, reasonBadge, formatDelta } from "@/lib/inventory/types"
 import { AdjustPanel } from "./adjust-panel"
+import { TransferPanel, type TransferSibling } from "./transfer-panel"
 
 export const dynamic = "force-dynamic"
 
@@ -85,6 +86,32 @@ export default async function InventoryItemPage({
   const sku = skuRes.data as
     | { product_id: string; is_active: boolean; store_variant_id: string | null }
     | null
+
+  // Sibling child SKUs = the same product at OTHER sites, the valid transfer
+  // destinations. Stock-tracked only; the RPC enforces the rest.
+  let siblings: TransferSibling[] = []
+  if (sku?.product_id) {
+    const { data: sibRows } = await supabase
+      .from("child_skus")
+      .select("id, sku, cost, track_inventory, sites(name)")
+      .eq("product_id", sku.product_id)
+      .neq("id", id)
+      .eq("is_active", true)
+    siblings = ((sibRows ?? []) as unknown as Array<{
+      id: string
+      sku: string | null
+      cost: number | string
+      track_inventory: boolean | null
+      sites: { name: string | null } | null
+    }>)
+      .filter((s) => s.track_inventory !== false)
+      .map((s) => ({
+        childId: s.id,
+        siteName: s.sites?.name ?? null,
+        sku: s.sku,
+        cost: Number(s.cost),
+      }))
+  }
 
   return (
     <>
@@ -182,6 +209,21 @@ export default async function InventoryItemPage({
               <AdjustPanel childSkuId={r.child_sku_id} onHand={r.on_hand} />
             </CardContent>
           </Card>
+
+          {siblings.length > 0 ? (
+            <Card>
+              <CardHeader>
+                <CardTitle>Transfer to another site</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <TransferPanel
+                  sourceChildId={r.child_sku_id}
+                  available={r.available}
+                  siblings={siblings}
+                />
+              </CardContent>
+            </Card>
+          ) : null}
 
           <Card>
             <CardHeader>

@@ -15,6 +15,8 @@ export type LedgerReason =
   | "manual_adjustment"
   | "receipt"
   | "correction"
+  | "transfer_out"
+  | "transfer_in"
 
 type BadgeVariant = ComponentProps<typeof Badge>["variant"]
 
@@ -26,6 +28,8 @@ export const REASON_LABEL: Record<LedgerReason, string> = {
   manual_adjustment: "Manual adjustment",
   receipt: "Stock received",
   correction: "Correction",
+  transfer_out: "Transferred out",
+  transfer_in: "Transferred in",
 }
 
 export const REASON_BADGE: Record<LedgerReason, BadgeVariant> = {
@@ -36,6 +40,8 @@ export const REASON_BADGE: Record<LedgerReason, BadgeVariant> = {
   manual_adjustment: "outline",
   receipt: "success",
   correction: "outline",
+  transfer_out: "warning",
+  transfer_in: "info",
 }
 
 export function reasonLabel(reason: string): string {

@@ -7,6 +7,13 @@ import { kickOutboundDrain } from "@/lib/store-sync/outbound"
 
 export type ActionResult = { ok: true } | { ok: false; error: string }
 
+/** Transfer result: success, a plain error, or a soft-warning gate the user
+ *  must acknowledge (cost/SKU mismatch) before the move is allowed. */
+export type TransferResult =
+  | { ok: true }
+  | { ok: false; error: string }
+  | { ok: false; needsAck: true; warnings: string[] }
+
 type PgError = { message?: string; details?: string; code?: string } | null
 
 function invError(error: PgError): string {
@@ -68,6 +75,56 @@ export async function adjustStock(
 
   revalidatePath(`/inventory/${childSkuId}`)
   revalidatePath("/inventory")
+  await kickOutboundDrain()
+  return { ok: true }
+}
+
+/**
+ * Transfer AVAILABLE units of a finished child SKU to the same product's child
+ * SKU at another site. The RPC guards conservation, reserved-safety, and the
+ * same-product rule. If source/dest cost or SKU differ it refuses (SQLSTATE
+ * WMS01) with the reasons, unless `ackWarnings` is true — the UI shows a
+ * confirm dialog, then resubmits with ackWarnings set. Both sites' stores are
+ * re-synced automatically by the inventory_levels trigger.
+ */
+export async function transferStock(
+  sourceChildId: string,
+  destChildId: string,
+  units: number,
+  note: string | null,
+  ackWarnings = false,
+): Promise<TransferResult> {
+  const n = Math.trunc(units)
+  if (!(n > 0)) return { ok: false, error: "Enter a positive quantity." }
+  if (sourceChildId === destChildId)
+    return { ok: false, error: "Pick a different destination site." }
+
+  const supabase = await createClient()
+  const { error } = await supabase.rpc("transfer_stock", {
+    p_source_child: sourceChildId,
+    p_dest_child: destChildId,
+    p_units: n,
+    p_note: note?.trim() || null,
+    p_ack_warnings: ackWarnings,
+  })
+
+  if (error) {
+    // WMS01 = soft warning gate; message is "WARN: reason | reason".
+    if (error.code === "WMS01") {
+      const warnings = (error.message ?? "")
+        .replace(/^.*?WARN:\s*/, "")
+        .split(" | ")
+        .map((s) => s.trim())
+        .filter(Boolean)
+      return { ok: false, needsAck: true, warnings }
+    }
+    return { ok: false, error: invError(error) }
+  }
+
+  revalidatePath(`/inventory/${sourceChildId}`)
+  revalidatePath(`/inventory/${destChildId}`)
+  revalidatePath("/inventory")
+  // Push the new available count out to both sites' stores (no-op otherwise).
   await kickOutboundDrain()
   return { ok: true }
 }
