@@ -41,6 +41,7 @@ export type ReconcileResult = {
   missing: ReconcileRow[]
   extra: ReconcileRow[]
   // Tier 1 — can cause a wrong shipment
+  shippedNotInOt: ReconcileRow[]
   shippedNotFulfilled: ReconcileRow[]
   cancelledButAwaiting: ReconcileRow[]
   // Tier 2 — data drift on matched orders
@@ -234,12 +235,26 @@ export async function reconcileShipStation(
     .filter((o) => o.orderNumber && !lookup(otReadyByKey, o.orderNumber))
     .map((o) => rowSs(o))
 
-  // Tier 1: SS shipped but OT still to-pack.
+  // Tier 1: SS shipped but WMS didn't record it. Two order-level gaps that a
+  // qty/awaiting comparison can't catch (a shipped order has already left
+  // awaiting_shipment), which is how "SS shipped N but WMS shows N-1" happens:
+  //   • shippedNotInOt      — shipped in SS with NO matching OT order at all
+  //                           (never imported). WMS can't count what it doesn't have.
+  //   • shippedNotFulfilled — OT has the order but its status isn't 'fulfilled'
+  //                           (still to-pack, held, or cancelled) — the ship
+  //                           never recorded on the OT side.
+  const shippedNotInOt: ReconcileRow[] = []
   const shippedNotFulfilled: ReconcileRow[] = []
   for (const s of ssShipped) {
     const o = lookup(otAll, s.orderNumber)
-    if (o && READY_STATUSES.includes(o.status))
-      shippedNotFulfilled.push(rowOt(o, "shipped in ShipStation"))
+    if (!o) {
+      shippedNotInOt.push(rowSs(s, "shipped in ShipStation, no OT order"))
+      continue
+    }
+    if (o.status !== "fulfilled")
+      shippedNotFulfilled.push(
+        rowOt(o, `shipped in ShipStation, OT ${o.status}${o.on_hold ? " (on hold)" : ""}`),
+      )
   }
 
   // Tier 1: OT cancelled but SS still awaiting.
@@ -313,6 +328,7 @@ export async function reconcileShipStation(
     syncing,
     missing,
     extra,
+    shippedNotInOt,
     shippedNotFulfilled,
     cancelledButAwaiting,
     qtyMismatch,

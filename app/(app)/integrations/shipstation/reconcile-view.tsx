@@ -124,6 +124,7 @@ export function ReconcileView({ configured }: { configured: boolean }) {
   const problemCount = result
     ? result.missing.length +
       result.extra.length +
+      result.shippedNotInOt.length +
       result.shippedNotFulfilled.length +
       result.cancelledButAwaiting.length +
       result.qtyMismatch.length +
@@ -178,8 +179,14 @@ export function ReconcileView({ configured }: { configured: boolean }) {
           {/* Tier 1 — can cause a wrong shipment */}
           <Section
             tone="alert"
-            title="Shipped in ShipStation, still to-pack in OT"
-            blurb="ShipStation shipped these but OT still shows them created/picking/packed. Process them through the packing screen as usual to reconcile — OT and ShipStation stay separate, so pack them in OT to capture packaging and close the order."
+            title="Shipped in ShipStation, missing from OT"
+            blurb="ShipStation shipped these but OT has no matching order at all — they were never imported, so OT can't count or bill them. This is the usual cause of 'ShipStation shipped more than WMS shows'. Check the store→OT sync for these order numbers."
+            rows={result.shippedNotInOt}
+          />
+          <Section
+            tone="alert"
+            title="Shipped in ShipStation, not fulfilled in OT"
+            blurb="ShipStation shipped these but OT hasn't recorded the ship — the note shows OT's current status (still to-pack, held, or cancelled). Pack/close them in OT to capture packaging and close the order; a cancelled one that shipped needs a second look."
             rows={result.shippedNotFulfilled}
             packingLink
           />
