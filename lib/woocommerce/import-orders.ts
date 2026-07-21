@@ -14,6 +14,38 @@ export type OrderImportOutcome =
   | { status: "error"; error: string }
 
 /**
+ * Import statuses that represent a NON-imported tombstone — a prior attempt that
+ * left a store_order_imports row but never produced a WMS order. These are
+ * retryable: a later webhook (payment, shipping, or after a product sync) should
+ * be able to re-run the import from its fresh payload rather than being swallowed
+ * by the order-level idempotency key.
+ *   • error         — the attempt threw (e.g. an early order.updated whose
+ *                     payload had no line items).
+ *   • needs_mapping — items weren't mapped to child SKUs yet (variable product
+ *                     not synced); a later sync can make them mappable.
+ * NOT retryable: `received` (an attempt may still be in flight — don't stomp it)
+ * or `skipped`/`duplicate`.
+ */
+export const RETRYABLE_IMPORT_STATUSES = ["error", "needs_mapping"] as const
+
+/**
+ * Decide, on an idempotency-key clash, whether the incoming webhook is a plain
+ * duplicate or should retry the earlier attempt. A row that already produced a
+ * WMS order (wms_order_id set) is a genuine duplicate and must never re-import;
+ * a non-imported tombstone in a retryable status should be retried so the order
+ * can still land. Exported for unit testing — this is the crux of the fix.
+ */
+export function shouldRetryImport(
+  existing: { status: string | null; wms_order_id: string | null } | null | undefined,
+): boolean {
+  if (!existing) return false
+  if (existing.wms_order_id) return false
+  return (RETRYABLE_IMPORT_STATUSES as readonly string[]).includes(
+    existing.status ?? "",
+  )
+}
+
+/**
  * After a Woo order is created, stamp it with the Woo order number and move it
  * to its lifecycle state. Shared by the webhook and the backfill so both behave
  * identically.
@@ -226,7 +258,16 @@ export async function importWooOrder(
     return { status: "skipped", reason: "before sync cutoff" }
   }
 
-  // Idempotency: a re-run (or Woo retry) hits the unique key and is skipped.
+  // Idempotency on (channel, source, external_order_id). A fresh insert claims
+  // the key; a clash (23505) normally means "already handled" and we stop. But a
+  // prior attempt can leave a NON-imported tombstone (error / needs_mapping, no
+  // wms_order_id) — e.g. an early order.updated whose payload had no line items,
+  // or items not yet mapped. Those MUST be retryable, or a later webhook that
+  // carries the complete order (the store shipped it!) is silently swallowed and
+  // the order never reaches WMS. So on a clash we inspect the existing row: a
+  // real duplicate stops here; a retryable tombstone is reset to the fresh
+  // payload and re-run through the same code below.
+  let importId: string
   const { data: importRow, error: insErr } = await client
     .from("store_order_imports")
     .insert({
@@ -240,12 +281,40 @@ export async function importWooOrder(
     .select("id")
     .single()
 
-  if (insErr) {
-    if (insErr.code === "23505") return { status: "duplicate" }
+  if (!insErr) {
+    importId = importRow.id as string
+  } else if (insErr.code !== "23505") {
     return { status: "error", error: insErr.message }
+  } else {
+    const { data: existing } = await client
+      .from("store_order_imports")
+      .select("id, status, wms_order_id")
+      .eq("channel", "woocommerce")
+      .eq("source", source)
+      .eq("external_order_id", order.externalOrderId)
+      .maybeSingle()
+    if (!shouldRetryImport(existing)) return { status: "duplicate" }
+    // Reset the tombstone to the fresh payload and re-run. The `wms_order_id IS
+    // NULL` guard + returned row makes this safe against a concurrent import that
+    // may have claimed the row between our read and write: if it matches nothing,
+    // someone else already imported it, so treat as a duplicate.
+    const { data: reset, error: resetErr } = await client
+      .from("store_order_imports")
+      .update({
+        topic,
+        status: "received",
+        payload: rawPayload,
+        error: null,
+        processed_at: null,
+      })
+      .eq("id", existing!.id as string)
+      .is("wms_order_id", null)
+      .select("id")
+      .maybeSingle()
+    if (resetErr) return { status: "error", error: resetErr.message }
+    if (!reset) return { status: "duplicate" }
+    importId = reset.id as string
   }
-
-  const importId = importRow.id as string
   const finish = (
     status: string,
     extra: { error?: string; wms_order_id?: string } = {},
