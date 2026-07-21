@@ -17,7 +17,9 @@ export type ReconcileActionResult =
  * ShipStation's API is paginated + rate-limited, so this runs on a button press,
  * not on every page load.
  */
-export async function runShipStationReconcile(): Promise<ReconcileActionResult> {
+export async function runShipStationReconcile(
+  opts?: { ignoreBefore?: string | null },
+): Promise<ReconcileActionResult> {
   const supabase = await createClient()
   const {
     data: { user },
@@ -49,7 +51,27 @@ export async function runShipStationReconcile(): Promise<ReconcileActionResult> 
 
   try {
     const admin = createAdminClient()
-    const result = await reconcileShipStation(admin, apiKey, apiSecret)
+    // Go-live floor: hide orders placed before OT launched from the SS-only
+    // presence buckets (those orders were never meant to import). Default to the
+    // LATEST store connection cutoff (sync_orders_since) so pre-launch noise is
+    // gone out of the box; the caller can override — an explicit "" clears the
+    // floor to show everything, an explicit date sets a custom one.
+    let ignoreBefore: string | null
+    if (opts && "ignoreBefore" in opts) {
+      ignoreBefore = opts.ignoreBefore ? opts.ignoreBefore : null
+    } else {
+      const { data: conns } = await admin
+        .from("store_connections")
+        .select("sync_orders_since")
+        .eq("is_active", true)
+        .not("sync_orders_since", "is", null)
+      const floors = (conns ?? [])
+        .map((c) => c.sync_orders_since as string | null)
+        .filter((v): v is string => Boolean(v))
+        .sort()
+      ignoreBefore = floors.length ? floors[floors.length - 1] : null
+    }
+    const result = await reconcileShipStation(admin, apiKey, apiSecret, ignoreBefore)
     return { ok: true, result }
   } catch (e) {
     return {

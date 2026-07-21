@@ -36,6 +36,9 @@ export type ReconcileResult = {
   graceMinutes: number
   agingDays: number
   ranAt: string
+  /** Orders placed before this ISO date are excluded from the SS-only presence
+   *  buckets (extra, shippedNotInOt). Null = no floor (showing everything). */
+  ignoreBefore: string | null
   // Presence
   syncing: ReconcileRow[]
   missing: ReconcileRow[]
@@ -56,6 +59,8 @@ export type ReconcileResult = {
 type SsOrder = {
   orderNumber?: string | null
   orderStatus?: string | null
+  /** When the order was placed (store-side). Used to hide pre-go-live orders. */
+  orderDate?: string | null
   advancedOptions?: { storeId?: number }
   items?: { quantity?: number | null; name?: string | null }[]
   shipTo?: { name?: string | null; postalCode?: string | null }
@@ -166,13 +171,34 @@ function postalMatch(a: string | null | undefined, b: string | null | undefined)
   return short.length >= 4 && long.startsWith(short)
 }
 
-/** Run the full OT ⇄ ShipStation reconciliation. `db` must be service-role. */
+/**
+ * True when a ShipStation order was placed before the go-live floor and should
+ * therefore be ignored by the SS-only presence checks — OT deliberately never
+ * imported pre-launch orders, so their absence from OT is expected, not a gap.
+ * Fails OPEN: no floor, or an undated/unparseable order, is always kept.
+ */
+export function ssBeforeFloor(
+  o: { orderDate?: string | null },
+  floor: number | null,
+): boolean {
+  if (floor == null) return false
+  const d = o.orderDate ? Date.parse(o.orderDate) : NaN
+  if (Number.isNaN(d)) return false
+  return d < floor
+}
+
+/** Run the full OT ⇄ ShipStation reconciliation. `db` must be service-role.
+ *  `ignoreBefore` (ISO date) hides orders placed before a go-live floor from the
+ *  SS-only presence buckets; pass null to show everything. */
 export async function reconcileShipStation(
   db: SupabaseClient,
   apiKey: string,
   apiSecret: string,
+  ignoreBefore: string | null = null,
 ): Promise<ReconcileResult> {
   const now = Date.now()
+  const floor = ignoreBefore ? Date.parse(ignoreBefore) : null
+  const floorMs = floor != null && !Number.isNaN(floor) ? floor : null
   const shippedSince = new Date(now - SHIPPED_LOOKBACK_DAYS * 86_400_000)
     .toISOString()
     .slice(0, 10)
@@ -232,7 +258,12 @@ export async function reconcileShipStation(
     else missing.push(r)
   }
   const extra: ReconcileRow[] = ssAwaiting
-    .filter((o) => o.orderNumber && !lookup(otReadyByKey, o.orderNumber))
+    .filter(
+      (o) =>
+        o.orderNumber &&
+        !lookup(otReadyByKey, o.orderNumber) &&
+        !ssBeforeFloor(o, floorMs),
+    )
     .map((o) => rowSs(o))
 
   // Tier 1: SS shipped but WMS didn't record it. Two order-level gaps that a
@@ -248,6 +279,8 @@ export async function reconcileShipStation(
   for (const s of ssShipped) {
     const o = lookup(otAll, s.orderNumber)
     if (!o) {
+      // A pre-go-live order OT never imported is not a gap — skip it.
+      if (ssBeforeFloor(s, floorMs)) continue
       shippedNotInOt.push(rowSs(s, "shipped in ShipStation, no OT order"))
       continue
     }
@@ -325,6 +358,7 @@ export async function reconcileShipStation(
     graceMinutes: SYNC_GRACE_MINUTES,
     agingDays: AGING_DAYS,
     ranAt: new Date().toISOString(),
+    ignoreBefore: floorMs != null ? new Date(floorMs).toISOString() : null,
     syncing,
     missing,
     extra,

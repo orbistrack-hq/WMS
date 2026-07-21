@@ -97,13 +97,26 @@ export function ReconcileView({ configured }: { configured: boolean }) {
   const [pending, startTransition] = useTransition()
   const [result, setResult] = useState<ReconcileResult | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // Empty = no floor (show all). Blank until the first run, which prefills it
+  // from the store's go-live cutoff (sync_orders_since).
+  const [ignoreBefore, setIgnoreBefore] = useState("")
+  const [hasRun, setHasRun] = useState(false)
 
   function run() {
     setError(null)
     startTransition(async () => {
-      const res = await runShipStationReconcile()
-      if (res.ok) setResult(res.result)
-      else setError(res.error)
+      // First run: let the server default the floor to the launch cutoff.
+      // After that: send the (possibly edited or cleared) date the user chose.
+      const res = await runShipStationReconcile(
+        hasRun ? { ignoreBefore: ignoreBefore || "" } : undefined,
+      )
+      if (res.ok) {
+        setResult(res.result)
+        if (!hasRun) {
+          setIgnoreBefore(res.result.ignoreBefore?.slice(0, 10) ?? "")
+        }
+        setHasRun(true)
+      } else setError(res.error)
     })
   }
 
@@ -135,7 +148,7 @@ export function ReconcileView({ configured }: { configured: boolean }) {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <Button onClick={run} disabled={pending}>
           <RefreshCw
             className={pending ? "size-4 animate-spin" : "size-4"}
@@ -143,6 +156,25 @@ export function ReconcileView({ configured }: { configured: boolean }) {
           />
           {pending ? "Checking…" : "Run alignment check"}
         </Button>
+        <label className="flex items-center gap-2 text-xs text-muted-foreground">
+          Ignore orders before
+          <input
+            type="date"
+            value={ignoreBefore}
+            onChange={(e) => setIgnoreBefore(e.target.value)}
+            className="rounded border border-input bg-background px-2 py-1 text-xs text-foreground"
+          />
+          {ignoreBefore ? (
+            <button
+              type="button"
+              onClick={() => setIgnoreBefore("")}
+              className="underline hover:text-foreground"
+            >
+              clear
+            </button>
+          ) : null}
+          {hasRun ? <span>— re-run to apply</span> : null}
+        </label>
         {result ? (
           <span className="text-xs text-muted-foreground">
             Last run {formatDateTime(result.ranAt)}
@@ -164,6 +196,12 @@ export function ReconcileView({ configured }: { configured: boolean }) {
             <Stat label="Matched" value={result.matched} />
             <Stat label="Needs attention" value={problemCount} highlight={problemCount > 0} />
           </div>
+
+          <p className="text-xs text-muted-foreground">
+            {result.ignoreBefore
+              ? `Ignoring ShipStation orders placed before ${formatDateTime(result.ignoreBefore)} (pre-launch orders OT never imported). Clear the date above and re-run to include them.`
+              : "Showing all orders — no date floor. Set “Ignore orders before” above to hide pre-launch orders."}
+          </p>
 
           {problemCount === 0 ? (
             <Card>
