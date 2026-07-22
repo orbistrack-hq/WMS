@@ -8,6 +8,8 @@ import { Menu, X } from "lucide-react"
 import { SidebarNav } from "@/components/sidebar-nav"
 import { LogoutButton } from "@/components/logout-button"
 import { ThemeToggle } from "@/components/theme-toggle"
+import { NotificationsBell } from "@/components/notifications-bell"
+import type { Notifications } from "@/lib/notifications"
 
 function Brand() {
   return (
@@ -30,13 +32,13 @@ function Brand() {
 
 export function AppShell({
   userEmail,
-  banner,
+  notifications,
   children,
 }: {
   userEmail: string
-  // Optional portal-wide alert bar rendered directly under the top header
-  // (e.g. low packaging stock). Omitted/null renders nothing.
-  banner?: ReactNode
+  // Ops alerts (low packaging + low stock SKUs) shown in the header
+  // notifications drawer. Empty groups => bell with no count.
+  notifications: Notifications
   children: ReactNode
 }) {
   const [mobileOpen, setMobileOpen] = useState(false)
@@ -89,10 +91,10 @@ export function AppShell({
           <span className="hidden truncate text-sm text-muted-foreground sm:inline">
             {userEmail}
           </span>
+          <NotificationsBell data={notifications} />
           <ThemeToggle />
           <LogoutButton />
         </header>
-        {banner}
         <main className="print-shell-main flex-1 p-4 md:p-8">
           <div className="print-shell-main mx-auto w-full max-w-6xl">
             {children}

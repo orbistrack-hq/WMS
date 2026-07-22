@@ -2,8 +2,7 @@ import { redirect } from "next/navigation"
 
 import { createClient } from "@/lib/supabase/server"
 import { AppShell } from "@/components/app-shell"
-import { PackagingLowStockBanner } from "@/components/packaging-low-stock-banner"
-import { LowStockBanner } from "@/components/low-stock-banner"
+import { getNotifications } from "@/lib/notifications"
 
 export default async function AppLayout({
   children,
@@ -21,17 +20,10 @@ export default async function AppLayout({
   }
 
   const email = typeof data.claims.email === "string" ? data.claims.email : ""
+  const notifications = await getNotifications()
 
   return (
-    <AppShell
-      userEmail={email}
-      banner={
-        <>
-          <PackagingLowStockBanner />
-          <LowStockBanner />
-        </>
-      }
-    >
+    <AppShell userEmail={email} notifications={notifications}>
       {children}
     </AppShell>
   )

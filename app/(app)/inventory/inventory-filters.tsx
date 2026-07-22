@@ -18,9 +18,15 @@ export function InventoryFilters({ sites }: { sites: SiteOption[] }) {
   const searchRef = useRef<HTMLInputElement>(null)
 
   function setParam(key: string, value: string) {
+    setParams({ [key]: value })
+  }
+
+  function setParams(updates: Record<string, string>) {
     const next = new URLSearchParams(params.toString())
-    if (value) next.set(key, value)
-    else next.delete(key)
+    for (const [key, value] of Object.entries(updates)) {
+      if (value) next.set(key, value)
+      else next.delete(key)
+    }
     startTransition(() => router.replace(`${pathname}?${next.toString()}`))
   }
 
@@ -28,7 +34,8 @@ export function InventoryFilters({ sites }: { sites: SiteOption[] }) {
   const site = params.get("site") ?? ""
   const hideZero = params.get("hideZero") === "1"
   const lowStock = params.get("lowStock") === "1"
-  const hasFilters = Boolean(q || site || hideZero || lowStock)
+  const zeroOnly = params.get("zeroOnly") === "1"
+  const hasFilters = Boolean(q || site || hideZero || lowStock || zeroOnly)
 
   return (
     <div
@@ -66,9 +73,30 @@ export function InventoryFilters({ sites }: { sites: SiteOption[] }) {
           type="checkbox"
           className="size-4 accent-primary"
           checked={hideZero}
-          onChange={(e) => setParam("hideZero", e.target.checked ? "1" : "")}
+          onChange={(e) =>
+            setParams({
+              hideZero: e.target.checked ? "1" : "",
+              // Hide-zero and zero-only are mutually exclusive.
+              zeroOnly: "",
+            })
+          }
         />
         Hide zero stock
+      </label>
+
+      <label className="flex items-center gap-2 rounded-lg border border-input px-2.5 py-1.5 text-sm">
+        <input
+          type="checkbox"
+          className="size-4 accent-primary"
+          checked={zeroOnly}
+          onChange={(e) =>
+            setParams({
+              zeroOnly: e.target.checked ? "1" : "",
+              hideZero: "",
+            })
+          }
+        />
+        0 stock only
       </label>
 
       <label className="flex items-center gap-2 rounded-lg border border-input px-2.5 py-1.5 text-sm">

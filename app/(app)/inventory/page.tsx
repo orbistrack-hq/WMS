@@ -26,6 +26,7 @@ type SearchParams = {
   site?: string
   hideZero?: string
   lowStock?: string
+  zeroOnly?: string
 }
 
 type InventoryRow = {
@@ -76,7 +77,9 @@ export default async function InventoryPage({
       .order("product_name")
       .limit(1000)
     if (sp.site) q = q.eq("site_id", sp.site)
-    if (sp.hideZero === "1") q = q.gt("on_hand", 0)
+    // "0 stock only" wins over "hide zero" when both are somehow set.
+    if (sp.zeroOnly === "1") q = q.eq("on_hand", 0)
+    else if (sp.hideZero === "1") q = q.gt("on_hand", 0)
     if (withLowStockFilter) q = q.eq("is_low", true)
     if (sp.q) q = q.or(`product_name.ilike.%${sp.q}%,sku.ilike.%${sp.q}%`)
     return q
