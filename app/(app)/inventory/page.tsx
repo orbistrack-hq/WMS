@@ -94,12 +94,12 @@ export default async function InventoryPage({
   }
 
   // Default the low-stock fields so rows are uniform whether or not the columns
-  // came back (spread of the real row overrides the defaults when present).
+  // came back — keep the real values when present, fall back when undefined.
   const rows = ((data ?? []) as unknown as InventoryRow[]).map((r) => ({
-    low_stock_threshold: null,
-    effective_low_stock_threshold: 0,
-    is_low: false,
     ...r,
+    low_stock_threshold: r.low_stock_threshold ?? null,
+    effective_low_stock_threshold: r.effective_low_stock_threshold ?? 0,
+    is_low: r.is_low ?? false,
   })) as InventoryRow[]
 
   // Ops-only controls (bulk threshold editing, default). Mirrors the banner gate.

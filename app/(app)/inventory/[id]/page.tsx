@@ -100,9 +100,9 @@ export default async function InventoryItemPage({
 
   if (!report) notFound()
   const r = {
-    low_stock_threshold: null,
-    effective_low_stock_threshold: 0,
     ...report,
+    low_stock_threshold: report.low_stock_threshold ?? null,
+    effective_low_stock_threshold: report.effective_low_stock_threshold ?? 0,
   } as InvReport
   const { data: isOps } = lowStockReady
     ? await supabase.rpc("is_operator")
