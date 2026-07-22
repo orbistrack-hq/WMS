@@ -22,6 +22,7 @@ import {
   computeOrderPackaging,
   tallyByWeight,
   type PackagingOrderDefault,
+  type PackagingSkuRule,
   type PackagingWeightRule,
   type WeightedUnit,
 } from "@/lib/packing/packaging-rules"
@@ -95,6 +96,7 @@ export function WaveView({
   existingPackaging,
   weightRules,
   orderDefaults,
+  skuRules,
 }: {
   siteName: string | null
   groupCount: number
@@ -106,6 +108,7 @@ export function WaveView({
   existingPackaging: Record<string, number>
   weightRules: PackagingWeightRule[]
   orderDefaults: PackagingOrderDefault[]
+  skuRules: PackagingSkuRule[]
 }) {
   const [mode, setMode] = useState<Mode>("route")
   const [gathered, setGathered] = useState<Set<string>>(new Set())
@@ -130,7 +133,11 @@ export function WaveView({
     for (const r of rows) {
       for (const a of r.allocations) {
         const arr = m.get(a.groupId) ?? []
-        arr.push({ gramsPerUnit: r.gramsPerUnit, qty: a.qty })
+        arr.push({
+          gramsPerUnit: r.gramsPerUnit,
+          qty: a.qty,
+          childSkuId: r.childSkuId,
+        })
         m.set(a.groupId, arr)
       }
     }
@@ -149,6 +156,7 @@ export function WaveView({
         unitsByGroup.get(groupId) ?? [],
         weightRules,
         orderDefaults,
+        skuRules,
       )
       return computed.lines.map((l) => ({
         typeId: l.typeId,
@@ -158,7 +166,7 @@ export function WaveView({
         qty: String(hasExisting ? 0 : l.qty),
       }))
     }
-  }, [unitsByGroup, weightRules, orderDefaults, existingPackaging])
+  }, [unitsByGroup, weightRules, orderDefaults, skuRules, existingPackaging])
 
   // groupId -> ordered packaging lines (keyed by type). Seeded once from the
   // config; edits persist per group for the rest of this wave session.
@@ -294,6 +302,7 @@ export function WaveView({
         unitsByGroup.get(groupId) ?? [],
         weightRules,
         orderDefaults,
+        skuRules,
       )
       unknown += computed.unknownWeightUnits
       for (const l of computed.lines) {
@@ -310,7 +319,7 @@ export function WaveView({
       wavePackaging: [...byType.values()],
       waveUnknownUnits: unknown,
     }
-  }, [allGroupIds, unitsByGroup, weightRules, orderDefaults])
+  }, [allGroupIds, unitsByGroup, weightRules, orderDefaults, skuRules])
 
   const keyOf = (r: WaveRow, i: number) => r.childSkuId ?? `row-${i}`
 

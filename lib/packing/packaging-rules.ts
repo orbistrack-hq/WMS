@@ -25,8 +25,17 @@
  */
 export const JAR_MAX_GRAMS = 3.5
 
-/** One unit line: how many units at a given per-unit weight. */
-export type WeightedUnit = { gramsPerUnit: number | null; qty: number }
+/**
+ * One unit line: how many units at a given per-unit weight. `childSkuId` is
+ * optional and only used by the FB-6 SKU-override path (migration 0080): when a
+ * unit's child SKU has an override, it uses that packaging instead of its
+ * weight-derived packaging. Callers that don't care about overrides can omit it.
+ */
+export type WeightedUnit = {
+  gramsPerUnit: number | null
+  qty: number
+  childSkuId?: string | null
+}
 
 export type DerivedPackaging = {
   jar: number
@@ -168,6 +177,20 @@ export type PackagingOrderDefault = {
   qty: number
 }
 
+/**
+ * A row of packaging_sku_rule joined to its type's cost (migration 0080). A
+ * per-child-SKU override: units of `childSkuId` use these packaging types per
+ * unit INSTEAD of their weight-derived packaging.
+ */
+export type PackagingSkuRule = {
+  childSkuId: string
+  typeId: string
+  typeName: string
+  kind: string
+  unitCost: number
+  qtyPerUnit: number
+}
+
 export type ComputedPackagingLine = {
   typeId: string
   typeName: string
@@ -199,15 +222,21 @@ const KIND_SORT: Record<string, number> = {
 
 /**
  * Compute the packaging (and cost) for one order/group from the weight map +
- * per-order defaults. Each unit line is matched to weight rules by EXACT
- * grams_per_unit; per-order defaults are added once. Lines are aggregated by
- * packaging type. Units with no matching rule (or no weight) are surfaced in
- * `unknownWeightUnits` rather than silently mis-packed.
+ * per-order defaults, with optional per-SKU overrides.
+ *
+ * For each unit line: if its child SKU has any override rule (migration 0080),
+ * those rules supply the per-unit packaging and the weight rule is SKIPPED for
+ * that unit (an override replaces, it doesn't stack). Otherwise the unit is
+ * matched to weight rules by EXACT grams_per_unit. Per-order defaults are added
+ * once. Lines are aggregated by packaging type. A unit with no override AND no
+ * matching weight rule (or no weight) is surfaced in `unknownWeightUnits` rather
+ * than silently mis-packed — but an override always counts, even with no weight.
  */
 export function computeOrderPackaging(
   units: WeightedUnit[],
   weightRules: PackagingWeightRule[],
   orderDefaults: PackagingOrderDefault[],
+  skuRules: PackagingSkuRule[] = [],
 ): ComputedPackaging {
   const byType = new Map<
     string,
@@ -233,9 +262,27 @@ export function computeOrderPackaging(
     rulesByGrams.set(r.gramsPerUnit, arr)
   }
 
+  const overridesByChild = new Map<string, PackagingSkuRule[]>()
+  for (const r of skuRules) {
+    const arr = overridesByChild.get(r.childSkuId) ?? []
+    arr.push(r)
+    overridesByChild.set(r.childSkuId, arr)
+  }
+
   let unknown = 0
   for (const u of units) {
     if (u.qty <= 0) continue
+    // Per-SKU override wins and REPLACES the weight rule for this unit. It counts
+    // even when the SKU has no weight, so an override SKU is never "unknown".
+    const overrides = u.childSkuId
+      ? overridesByChild.get(u.childSkuId)
+      : undefined
+    if (overrides && overrides.length > 0) {
+      for (const r of overrides) {
+        add(r.typeId, r.typeName, r.kind, r.unitCost, r.qtyPerUnit * u.qty)
+      }
+      continue
+    }
     if (u.gramsPerUnit == null) {
       unknown += u.qty
       continue

@@ -171,10 +171,12 @@ export default async function PackDetailPage({
             ? null
             : Number(li.child_sku.grams_per_unit),
         qty: li.quantity,
+        childSkuId: li.child_sku?.id ?? null,
       })),
     ),
     packagingConfig.weightRules,
     packagingConfig.orderDefaults,
+    packagingConfig.skuRules,
   )
   const suggestedPackaging =
     usageLines.length === 0

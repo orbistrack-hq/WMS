@@ -180,6 +180,7 @@ export default async function WavePage({
       existingPackaging={existingPackaging}
       weightRules={packagingConfig.weightRules}
       orderDefaults={packagingConfig.orderDefaults}
+      skuRules={packagingConfig.skuRules}
     />
   )
 }

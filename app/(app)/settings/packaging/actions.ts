@@ -314,3 +314,100 @@ export async function deleteOrderDefault(id: string): Promise<ActionResult> {
   revalidateRules()
   return { ok: true }
 }
+
+// ---------------------------------------------------------------------------
+// Per-child-SKU packaging override (FB-6 extension, migration 0080). A child
+// SKU listed here uses the mapped packaging type INSTEAD of its weight-derived
+// packaging (e.g. free eighths → 7g Mylar bag even though they weigh 3.5g).
+// Ops-managed (is_operator via RLS); read by the packing screens. Changing one
+// re-drives the auto-calc, so revalidate /packing too.
+// ---------------------------------------------------------------------------
+
+function skuRuleErr(error: PgError): string {
+  if (!error) return "Something went wrong."
+  if (error.code === "42501")
+    return "Only the ops team (operator/admin) can change packaging rules."
+  if (error.code === "23505")
+    return "That SKU already maps to this packaging type."
+  if (error.code === "23503") return "Pick a valid SKU and packaging type."
+  return error.message || error.details || "Something went wrong."
+}
+
+/**
+ * Map every child SKU with this SKU code to a packaging type. Resolving by code
+ * (not a single id) mirrors the seed: a promotional product is the same across
+ * sites, so "this SKU ships in a Mylar bag" should cover all its per-site
+ * children at once. Existing (child, type) pairs are left untouched.
+ */
+export async function addSkuRuleByCode(
+  skuCode: string,
+  packagingTypeId: string,
+  qtyPerUnit: number,
+): Promise<ActionResult> {
+  const code = skuCode.trim()
+  if (!code) return { ok: false, error: "Enter a SKU code." }
+  if (!packagingTypeId) return { ok: false, error: "Pick a packaging type." }
+  if (!(qtyPerUnit > 0))
+    return { ok: false, error: "Quantity must be at least 1." }
+
+  const supabase = await createClient()
+  // Case-insensitive exact match on the SKU code. RLS already scopes child_skus
+  // to sites the caller can see, so a client only maps its own SKUs.
+  const { data: matches, error: findErr } = await supabase
+    .from("child_skus")
+    .select("id")
+    .ilike("sku", code)
+  if (findErr) return { ok: false, error: skuRuleErr(findErr) }
+  if (!matches || matches.length === 0)
+    return {
+      ok: false,
+      error: `No SKU matches "${code}". Check the code and try again.`,
+    }
+
+  const rows = matches.map((m) => ({
+    child_sku_id: m.id as string,
+    packaging_type_id: packagingTypeId,
+    qty_per_unit: Math.trunc(qtyPerUnit),
+  }))
+  // Ignore rows that already exist for this (child, type) so re-adding is safe.
+  const { error } = await supabase
+    .from("packaging_sku_rule")
+    .upsert(rows, {
+      onConflict: "child_sku_id,packaging_type_id",
+      ignoreDuplicates: true,
+    })
+  if (error) return { ok: false, error: skuRuleErr(error) }
+
+  revalidateRules()
+  return { ok: true }
+}
+
+export async function updateSkuRuleQty(
+  id: string,
+  qtyPerUnit: number,
+): Promise<ActionResult> {
+  if (!(qtyPerUnit > 0))
+    return { ok: false, error: "Quantity must be at least 1." }
+
+  const supabase = await createClient()
+  const { error } = await supabase
+    .from("packaging_sku_rule")
+    .update({ qty_per_unit: Math.trunc(qtyPerUnit) })
+    .eq("id", id)
+  if (error) return { ok: false, error: skuRuleErr(error) }
+
+  revalidateRules()
+  return { ok: true }
+}
+
+export async function deleteSkuRule(id: string): Promise<ActionResult> {
+  const supabase = await createClient()
+  const { error } = await supabase
+    .from("packaging_sku_rule")
+    .delete()
+    .eq("id", id)
+  if (error) return { ok: false, error: skuRuleErr(error) }
+
+  revalidateRules()
+  return { ok: true }
+}

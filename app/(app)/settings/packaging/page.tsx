@@ -24,6 +24,10 @@ import {
   type PkgType,
   type WeightRuleRow,
 } from "./packaging-rules-map-editor"
+import {
+  PackagingSkuRulesEditor,
+  type SkuRuleRow,
+} from "./packaging-sku-rules-editor"
 
 export const dynamic = "force-dynamic"
 
@@ -38,6 +42,7 @@ export default async function PackagingSettingsPage() {
     operatorRes,
     weightRulesRes,
     orderDefaultsRes,
+    skuRulesRes,
     levelsRes,
   ] = await Promise.all([
     supabase
@@ -62,6 +67,14 @@ export default async function PackagingSettingsPage() {
       .from("packaging_order_default")
       .select(
         "id, qty, packaging_type:packaging_types(id, name, kind, unit_cost)",
+      ),
+    // Per-SKU packaging overrides (migration 0080), joined to the child SKU's
+    // product + site and the packaging type. RLS scopes child SKUs to sites the
+    // caller can see, so a client only sees its own overrides.
+    supabase
+      .from("packaging_sku_rule")
+      .select(
+        "id, qty_per_unit, child_sku:child_skus(sku, product:products(name), site:sites(name)), packaging_type:packaging_types(id, name, kind, unit_cost)",
       ),
     // Central on-hand + alert quantity per type (no site) for the alert editor.
     supabase
@@ -148,6 +161,28 @@ export default async function PackagingSettingsPage() {
     type: oneType(d.packaging_type),
   })) as OrderDefaultRow[]
 
+  // Per-SKU overrides (migration 0080). Flatten the child-SKU embed to sku +
+  // product name + site name for a readable, searchable list.
+  const oneEmbed = <T,>(v: T | T[] | null | undefined): T | null =>
+    (Array.isArray(v) ? (v[0] ?? null) : (v ?? null)) as T | null
+  const skuRules = (skuRulesRes.data ?? []).map((r) => {
+    const child = oneEmbed(
+      r.child_sku as unknown as {
+        sku: string | null
+        product: { name: string | null } | { name: string | null }[] | null
+        site: { name: string | null } | { name: string | null }[] | null
+      } | null,
+    )
+    return {
+      id: r.id,
+      qty_per_unit: r.qty_per_unit,
+      sku: child?.sku ?? null,
+      productName: oneEmbed(child?.product)?.name ?? null,
+      siteName: oneEmbed(child?.site)?.name ?? null,
+      type: oneType(r.packaging_type),
+    }
+  }) as SkuRuleRow[]
+
   return (
     <>
       <PageHeader
@@ -185,6 +220,26 @@ export default async function PackagingSettingsPage() {
             <PackagingRulesMapEditor
               weightRules={weightRules}
               orderDefaults={orderDefaults}
+              packagingTypes={stockTypes}
+              canManage={canManage}
+            />
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Specific SKU packaging</CardTitle>
+            <CardDescription>
+              Override the weight rule for individual SKUs. A SKU listed here uses
+              the packaging you pick instead of its weight-based packaging — e.g.
+              the &ldquo;free eighth&rdquo; products ship in a 7g Mylar bag even
+              though they weigh 3.5g. Box, label, and vacuum bag still apply once
+              per order. Adding by SKU code covers that SKU across every site.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <PackagingSkuRulesEditor
+              rules={skuRules}
               packagingTypes={stockTypes}
               canManage={canManage}
             />

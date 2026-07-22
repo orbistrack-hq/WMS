@@ -71,7 +71,10 @@ type TopUpGroup = {
   orders: {
     order_line_items: {
       quantity: number
-      child_sku: { grams_per_unit: number | string | null } | null
+      child_sku: {
+        id: string
+        grams_per_unit: number | string | null
+      } | null
     }[]
   }[]
   packaging_usage: TopUpUsageRow[]
@@ -87,7 +90,7 @@ export async function topUpPackagingFromWeight(
     .select(
       `id,
        orders(order_line_items(quantity,
-         child_sku:child_skus(grams_per_unit))),
+         child_sku:child_skus(id, grams_per_unit))),
        packaging_usage(id, quantity, packaging_type_id,
          packaging_type:packaging_types(kind))`,
     )
@@ -105,6 +108,7 @@ export async function topUpPackagingFromWeight(
           ? null
           : Number(li.child_sku.grams_per_unit),
       qty: li.quantity,
+      childSkuId: li.child_sku?.id ?? null,
     })),
   )
 
@@ -113,6 +117,7 @@ export async function topUpPackagingFromWeight(
     units,
     config.weightRules,
     config.orderDefaults,
+    config.skuRules,
   )
   const recorded = group.packaging_usage.map((u) => ({
     kind: u.packaging_type?.kind ?? "custom",

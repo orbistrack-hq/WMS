@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 
 import type {
   PackagingOrderDefault,
+  PackagingSkuRule,
   PackagingWeightRule,
 } from "./packaging-rules"
 
@@ -25,12 +26,13 @@ const one = <T,>(v: T | T[] | null): T | null =>
 export type PackagingConfig = {
   weightRules: PackagingWeightRule[]
   orderDefaults: PackagingOrderDefault[]
+  skuRules: PackagingSkuRule[]
 }
 
 export async function loadPackagingConfig(
   supabase: SupabaseClient,
 ): Promise<PackagingConfig> {
-  const [rulesRes, defaultsRes] = await Promise.all([
+  const [rulesRes, defaultsRes, skuRulesRes] = await Promise.all([
     supabase
       .from("packaging_weight_rule")
       .select(
@@ -40,6 +42,13 @@ export async function loadPackagingConfig(
       .from("packaging_order_default")
       .select(
         "qty, packaging_type:packaging_types(id, name, kind, unit_cost, is_active)",
+      ),
+    // FB-6 per-SKU overrides (migration 0080): a child SKU listed here uses these
+    // packaging types instead of its weight-derived packaging.
+    supabase
+      .from("packaging_sku_rule")
+      .select(
+        "child_sku_id, qty_per_unit, packaging_type:packaging_types(id, name, kind, unit_cost, is_active)",
       ),
   ])
 
@@ -77,5 +86,23 @@ export async function loadPackagingConfig(
     })
   }
 
-  return { weightRules, orderDefaults }
+  const skuRules: PackagingSkuRule[] = []
+  for (const r of (skuRulesRes.data ?? []) as unknown as {
+    child_sku_id: string
+    qty_per_unit: number
+    packaging_type: TypeEmbed | TypeEmbed[]
+  }[]) {
+    const t = one(r.packaging_type)
+    if (!t || !t.is_active) continue
+    skuRules.push({
+      childSkuId: r.child_sku_id,
+      typeId: t.id,
+      typeName: t.name,
+      kind: t.kind,
+      unitCost: Number(t.unit_cost),
+      qtyPerUnit: r.qty_per_unit,
+    })
+  }
+
+  return { weightRules, orderDefaults, skuRules }
 }

@@ -9,6 +9,7 @@ import {
   tallyByWeight,
   topUpLines,
   type PackagingOrderDefault,
+  type PackagingSkuRule,
   type PackagingWeightRule,
   type RecordedKindQty,
   type WeightedUnit,
@@ -268,6 +269,76 @@ describe("computeOrderPackaging (FB-6 weight+dimension config)", () => {
     )
     expect(r.unknownWeightUnits).toBe(3)
     expect(cQty("jar", r)).toBe(1)
+  })
+})
+
+// Migration 0080: per-child-SKU override. The "free eighth" case — a 3.5g SKU
+// that must ship in a 7g Mylar bag, not the weight-derived jar.
+describe("computeOrderPackaging — per-SKU overrides (migration 0080)", () => {
+  const SKU_RULES: PackagingSkuRule[] = [
+    { childSkuId: "free8", typeId: "m1", typeName: "Mylar 4x6x2", kind: "mylar_bag", unitCost: 0.12, qtyPerUnit: 1 },
+  ]
+
+  it("REPLACES the weight rule: a 3.5g override SKU gets Mylar, not a jar", () => {
+    const r = computeOrderPackaging(
+      [{ gramsPerUnit: 3.5, qty: 3, childSkuId: "free8" }],
+      WEIGHT_RULES,
+      ORDER_DEFAULTS,
+      SKU_RULES,
+    )
+    expect(cQty("m1", r)).toBe(3) // 7g Mylar, per unit
+    expect(cQty("jar", r)).toBe(0) // no jar
+    expect(cQty("jarlbl", r)).toBe(0) // no jar label
+    // Per-order defaults still apply once.
+    expect(cQty("box", r)).toBe(1)
+    expect(cQty("vac", r)).toBe(1)
+    expect(r.unknownWeightUnits).toBe(0)
+  })
+
+  it("only overrides the listed SKU; other same-weight SKUs still jar", () => {
+    const r = computeOrderPackaging(
+      [
+        { gramsPerUnit: 3.5, qty: 2, childSkuId: "free8" }, // overridden
+        { gramsPerUnit: 3.5, qty: 5, childSkuId: "normal" }, // weight rule
+      ],
+      WEIGHT_RULES,
+      ORDER_DEFAULTS,
+      SKU_RULES,
+    )
+    expect(cQty("m1", r)).toBe(2)
+    expect(cQty("jar", r)).toBe(5)
+    expect(cQty("jarlbl", r)).toBe(5)
+  })
+
+  it("an override SKU with NO weight still gets packaging (never unknown)", () => {
+    const r = computeOrderPackaging(
+      [{ gramsPerUnit: null, qty: 4, childSkuId: "free8" }],
+      WEIGHT_RULES,
+      ORDER_DEFAULTS,
+      SKU_RULES,
+    )
+    expect(cQty("m1", r)).toBe(4)
+    expect(r.unknownWeightUnits).toBe(0)
+  })
+
+  it("respects qty_per_unit on the override", () => {
+    const r = computeOrderPackaging(
+      [{ gramsPerUnit: 3.5, qty: 3, childSkuId: "free8" }],
+      WEIGHT_RULES,
+      ORDER_DEFAULTS,
+      [{ ...SKU_RULES[0], qtyPerUnit: 2 }],
+    )
+    expect(cQty("m1", r)).toBe(6)
+  })
+
+  it("with no skuRules arg, behaves exactly as before (weight rule)", () => {
+    const r = computeOrderPackaging(
+      [{ gramsPerUnit: 3.5, qty: 2, childSkuId: "free8" }],
+      WEIGHT_RULES,
+      ORDER_DEFAULTS,
+    )
+    expect(cQty("jar", r)).toBe(2)
+    expect(cQty("m1", r)).toBe(0)
   })
 })
 
