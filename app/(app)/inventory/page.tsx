@@ -17,10 +17,16 @@ import {
 import { formatCurrency } from "@/lib/format"
 import { childDisplayName } from "@/lib/catalog/weight"
 import { InventoryFilters } from "./inventory-filters"
+import { LowStockManager, type LowStockRow } from "./low-stock-manager"
 
 export const dynamic = "force-dynamic"
 
-type SearchParams = { q?: string; site?: string; hideZero?: string }
+type SearchParams = {
+  q?: string
+  site?: string
+  hideZero?: string
+  lowStock?: string
+}
 
 type InventoryRow = {
   child_sku_id: string
@@ -36,6 +42,9 @@ type InventoryRow = {
   layby: number
   cost: number | string
   value_at_cost: number | string
+  low_stock_threshold: number | null
+  effective_low_stock_threshold: number
+  is_low: boolean
 }
 
 export default async function InventoryPage({
@@ -51,22 +60,38 @@ export default async function InventoryPage({
     .select("id, name")
     .order("name")
 
+  const lowStockOnly = sp.lowStock === "1"
+
   let query = supabase
     .from("inventory_report")
     .select(
       `child_sku_id, site_id, site_name, product_name, variant_label,
        grams_per_unit, sku, on_hand, available, reserved, layby, cost,
-       value_at_cost`,
+       value_at_cost, low_stock_threshold, effective_low_stock_threshold, is_low`,
     )
     .order("product_name")
     .limit(1000)
 
   if (sp.site) query = query.eq("site_id", sp.site)
   if (sp.hideZero === "1") query = query.gt("on_hand", 0)
+  if (lowStockOnly) query = query.eq("is_low", true)
   if (sp.q) query = query.or(`product_name.ilike.%${sp.q}%,sku.ilike.%${sp.q}%`)
 
   const { data, error } = await query
   const rows = (data ?? []) as unknown as InventoryRow[]
+
+  // Ops-only controls (bulk threshold editing, default). Mirrors the banner gate.
+  const { data: isOps } = lowStockOnly
+    ? await supabase.rpc("is_operator")
+    : { data: false }
+  const { data: defaultRow } = lowStockOnly
+    ? await supabase
+        .from("app_settings")
+        .select("int_value")
+        .eq("key", "low_stock_default")
+        .maybeSingle()
+    : { data: null }
+  const defaultThreshold = (defaultRow?.int_value as number | undefined) ?? 5
 
   const totals = rows.reduce(
     (acc, r) => {
@@ -103,6 +128,12 @@ export default async function InventoryPage({
             Could not load inventory: {error.message}
           </CardContent>
         </Card>
+      ) : lowStockOnly ? (
+        <LowStockManager
+          rows={rows as unknown as LowStockRow[]}
+          defaultThreshold={defaultThreshold}
+          canManage={isOps === true}
+        />
       ) : rows.length === 0 ? (
         <Card>
           <CardContent className="flex flex-col items-center gap-3 py-16 text-center">
@@ -151,7 +182,16 @@ export default async function InventoryPage({
                     {r.site_name ?? "—"}
                   </TableCell>
                   <TableCell className="text-right tabular-nums">
-                    {r.on_hand}
+                    {r.is_low ? (
+                      <Badge
+                        variant={r.on_hand <= 0 ? "destructive" : "warning"}
+                        title={`Low — alert at ${r.effective_low_stock_threshold}`}
+                      >
+                        {r.on_hand}
+                      </Badge>
+                    ) : (
+                      r.on_hand
+                    )}
                   </TableCell>
                   <TableCell className="text-right tabular-nums font-medium">
                     {r.available}

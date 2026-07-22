@@ -22,6 +22,7 @@ import { formatCurrency, formatDateTime } from "@/lib/format"
 import { reasonLabel, reasonBadge, formatDelta } from "@/lib/inventory/types"
 import { AdjustPanel } from "./adjust-panel"
 import { TransferPanel, type TransferSibling } from "./transfer-panel"
+import { ThresholdPanel } from "./threshold-panel"
 
 export const dynamic = "force-dynamic"
 
@@ -36,6 +37,8 @@ type InvReport = {
   layby: number
   cost: number | string
   value_at_cost: number | string
+  low_stock_threshold: number | null
+  effective_low_stock_threshold: number
 }
 
 type LedgerRow = {
@@ -61,7 +64,8 @@ export default async function InventoryItemPage({
       .from("inventory_report")
       .select(
         `child_sku_id, site_name, product_name, sku,
-         on_hand, available, reserved, layby, cost, value_at_cost`,
+         on_hand, available, reserved, layby, cost, value_at_cost,
+         low_stock_threshold, effective_low_stock_threshold`,
       )
       .eq("child_sku_id", id)
       .maybeSingle(),
@@ -82,6 +86,7 @@ export default async function InventoryItemPage({
 
   if (!reportRes.data) notFound()
   const r = reportRes.data as unknown as InvReport
+  const { data: isOps } = await supabase.rpc("is_operator")
   const ledger = (ledgerRes.data ?? []) as unknown as LedgerRow[]
   const sku = skuRes.data as
     | { product_id: string; is_active: boolean; store_variant_id: string | null }
@@ -224,6 +229,21 @@ export default async function InventoryItemPage({
               </CardContent>
             </Card>
           ) : null}
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Low-stock alert</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <ThresholdPanel
+                childSkuId={r.child_sku_id}
+                current={r.low_stock_threshold}
+                effective={r.effective_low_stock_threshold}
+                onHand={r.on_hand}
+                canManage={isOps === true}
+              />
+            </CardContent>
+          </Card>
 
           <Card>
             <CardHeader>

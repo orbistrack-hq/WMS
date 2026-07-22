@@ -27,7 +27,8 @@ export function InventoryFilters({ sites }: { sites: SiteOption[] }) {
   const q = params.get("q") ?? ""
   const site = params.get("site") ?? ""
   const hideZero = params.get("hideZero") === "1"
-  const hasFilters = Boolean(q || site || hideZero)
+  const lowStock = params.get("lowStock") === "1"
+  const hasFilters = Boolean(q || site || hideZero || lowStock)
 
   return (
     <div
@@ -68,6 +69,16 @@ export function InventoryFilters({ sites }: { sites: SiteOption[] }) {
           onChange={(e) => setParam("hideZero", e.target.checked ? "1" : "")}
         />
         Hide zero stock
+      </label>
+
+      <label className="flex items-center gap-2 rounded-lg border border-input px-2.5 py-1.5 text-sm">
+        <input
+          type="checkbox"
+          className="size-4 accent-primary"
+          checked={lowStock}
+          onChange={(e) => setParam("lowStock", e.target.checked ? "1" : "")}
+        />
+        Low stock only
       </label>
 
       {hasFilters ? (

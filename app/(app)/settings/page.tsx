@@ -1,5 +1,5 @@
 import Link from "next/link"
-import { Box, Building2, FolderTree, ShoppingCart, Store, UserCircle } from "lucide-react"
+import { Box, Building2, FolderTree, PackageMinus, ShoppingCart, Store, UserCircle } from "lucide-react"
 
 import { createClient } from "@/lib/supabase/server"
 import { PageHeader } from "@/components/page-header"
@@ -54,6 +54,14 @@ export default async function SettingsPage() {
       href: "/settings/packaging",
       icon: Box,
       adminOnly: true,
+    },
+    {
+      title: "Low stock",
+      description:
+        "Set the default alert threshold and tune per-SKU low-stock thresholds in bulk.",
+      href: "/inventory?lowStock=1",
+      icon: PackageMinus,
+      adminOnly: false,
     },
     {
       title: "Shopify",

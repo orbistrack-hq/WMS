@@ -128,3 +128,43 @@ export async function transferStock(
   await kickOutboundDrain()
   return { ok: true }
 }
+
+/**
+ * Set the low-stock threshold on one or more child SKUs (migration 0079). Pass
+ * `point = null` to clear the override (fall back to the app-wide default); pass
+ * 0 to silence the alert for those SKUs. Accepts many ids for bulk edits.
+ */
+export async function setChildLowStockThreshold(
+  childSkuIds: string[],
+  point: number | null,
+): Promise<ActionResult> {
+  if (childSkuIds.length === 0)
+    return { ok: false, error: "Select at least one SKU." }
+  if (point !== null && (!Number.isFinite(point) || point < 0))
+    return { ok: false, error: "Threshold must be zero or more (or blank)." }
+
+  const supabase = await createClient()
+  const { error } = await supabase.rpc("set_child_low_stock_threshold", {
+    p_child_ids: childSkuIds,
+    p_point: point === null ? null : Math.trunc(point),
+  })
+  if (error) return { ok: false, error: invError(error) }
+
+  revalidatePath("/inventory")
+  return { ok: true }
+}
+
+/** Set the app-wide default low-stock threshold (migration 0079). */
+export async function setLowStockDefault(value: number): Promise<ActionResult> {
+  if (!Number.isFinite(value) || value < 0)
+    return { ok: false, error: "Default must be zero or more." }
+
+  const supabase = await createClient()
+  const { error } = await supabase.rpc("set_low_stock_default", {
+    p_value: Math.trunc(value),
+  })
+  if (error) return { ok: false, error: invError(error) }
+
+  revalidatePath("/inventory")
+  return { ok: true }
+}
