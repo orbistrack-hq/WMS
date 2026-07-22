@@ -59,14 +59,14 @@ export default async function InventoryItemPage({
   const { id } = await params
   const supabase = await createClient()
 
+  const LEGACY_COLS = `child_sku_id, site_name, product_name, sku,
+         on_hand, available, reserved, layby, cost, value_at_cost`
+  const LOW_STOCK_COLS = `${LEGACY_COLS}, low_stock_threshold, effective_low_stock_threshold`
+
   const [reportRes, ledgerRes, skuRes] = await Promise.all([
     supabase
       .from("inventory_report")
-      .select(
-        `child_sku_id, site_name, product_name, sku,
-         on_hand, available, reserved, layby, cost, value_at_cost,
-         low_stock_threshold, effective_low_stock_threshold`,
-      )
+      .select(LOW_STOCK_COLS)
       .eq("child_sku_id", id)
       .maybeSingle(),
     supabase
@@ -84,9 +84,29 @@ export default async function InventoryItemPage({
       .maybeSingle(),
   ])
 
-  if (!reportRes.data) notFound()
-  const r = reportRes.data as unknown as InvReport
-  const { data: isOps } = await supabase.rpc("is_operator")
+  // 42703 = undefined_column: 0079 not applied yet. Re-query legacy columns so
+  // the item page still works; the low-stock card stays dormant.
+  let report = reportRes.data as Partial<InvReport> | null
+  let lowStockReady = true
+  if (reportRes.error?.code === "42703") {
+    lowStockReady = false
+    const legacy = await supabase
+      .from("inventory_report")
+      .select(LEGACY_COLS)
+      .eq("child_sku_id", id)
+      .maybeSingle()
+    report = legacy.data as Partial<InvReport> | null
+  }
+
+  if (!report) notFound()
+  const r = {
+    low_stock_threshold: null,
+    effective_low_stock_threshold: 0,
+    ...report,
+  } as InvReport
+  const { data: isOps } = lowStockReady
+    ? await supabase.rpc("is_operator")
+    : { data: false }
   const ledger = (ledgerRes.data ?? []) as unknown as LedgerRow[]
   const sku = skuRes.data as
     | { product_id: string; is_active: boolean; store_variant_id: string | null }
@@ -230,20 +250,22 @@ export default async function InventoryItemPage({
             </Card>
           ) : null}
 
-          <Card>
-            <CardHeader>
-              <CardTitle>Low-stock alert</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <ThresholdPanel
-                childSkuId={r.child_sku_id}
-                current={r.low_stock_threshold}
-                effective={r.effective_low_stock_threshold}
-                onHand={r.on_hand}
-                canManage={isOps === true}
-              />
-            </CardContent>
-          </Card>
+          {lowStockReady ? (
+            <Card>
+              <CardHeader>
+                <CardTitle>Low-stock alert</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <ThresholdPanel
+                  childSkuId={r.child_sku_id}
+                  current={r.low_stock_threshold}
+                  effective={r.effective_low_stock_threshold}
+                  onHand={r.on_hand}
+                  canManage={isOps === true}
+                />
+              </CardContent>
+            </Card>
+          ) : null}
 
           <Card>
             <CardHeader>

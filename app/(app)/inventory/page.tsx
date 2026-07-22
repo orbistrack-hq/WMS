@@ -62,35 +62,60 @@ export default async function InventoryPage({
 
   const lowStockOnly = sp.lowStock === "1"
 
-  let query = supabase
-    .from("inventory_report")
-    .select(
-      `child_sku_id, site_id, site_name, product_name, variant_label,
-       grams_per_unit, sku, on_hand, available, reserved, layby, cost,
-       value_at_cost, low_stock_threshold, effective_low_stock_threshold, is_low`,
-    )
-    .order("product_name")
-    .limit(1000)
+  // Low-stock columns (0079) may not exist yet if the app deploys before the
+  // migration lands. Build the query against a chosen column set + low-stock
+  // filter, so we can retry without those columns instead of hard-failing.
+  const LEGACY_COLS = `child_sku_id, site_id, site_name, product_name, variant_label,
+       grams_per_unit, sku, on_hand, available, reserved, layby, cost, value_at_cost`
+  const LOW_STOCK_COLS = `${LEGACY_COLS}, low_stock_threshold, effective_low_stock_threshold, is_low`
 
-  if (sp.site) query = query.eq("site_id", sp.site)
-  if (sp.hideZero === "1") query = query.gt("on_hand", 0)
-  if (lowStockOnly) query = query.eq("is_low", true)
-  if (sp.q) query = query.or(`product_name.ilike.%${sp.q}%,sku.ilike.%${sp.q}%`)
+  function buildQuery(cols: string, withLowStockFilter: boolean) {
+    let q = supabase
+      .from("inventory_report")
+      .select(cols)
+      .order("product_name")
+      .limit(1000)
+    if (sp.site) q = q.eq("site_id", sp.site)
+    if (sp.hideZero === "1") q = q.gt("on_hand", 0)
+    if (withLowStockFilter) q = q.eq("is_low", true)
+    if (sp.q) q = q.or(`product_name.ilike.%${sp.q}%,sku.ilike.%${sp.q}%`)
+    return q
+  }
 
-  const { data, error } = await query
-  const rows = (data ?? []) as unknown as InventoryRow[]
+  let { data, error } = await buildQuery(LOW_STOCK_COLS, lowStockOnly)
+
+  // 42703 = undefined_column: the migration hasn't landed. Degrade gracefully —
+  // re-query the legacy columns so the screen still works; low-stock stays
+  // dormant until the migration is applied.
+  let lowStockReady = true
+  if (error?.code === "42703") {
+    lowStockReady = false
+    ;({ data, error } = await buildQuery(LEGACY_COLS, false))
+  }
+
+  // Default the low-stock fields so rows are uniform whether or not the columns
+  // came back (spread of the real row overrides the defaults when present).
+  const rows = ((data ?? []) as unknown as InventoryRow[]).map((r) => ({
+    low_stock_threshold: null,
+    effective_low_stock_threshold: 0,
+    is_low: false,
+    ...r,
+  })) as InventoryRow[]
 
   // Ops-only controls (bulk threshold editing, default). Mirrors the banner gate.
-  const { data: isOps } = lowStockOnly
-    ? await supabase.rpc("is_operator")
-    : { data: false }
-  const { data: defaultRow } = lowStockOnly
-    ? await supabase
-        .from("app_settings")
-        .select("int_value")
-        .eq("key", "low_stock_default")
-        .maybeSingle()
-    : { data: null }
+  // Only queried in the low-stock view, and only once the migration has landed.
+  const { data: isOps } =
+    lowStockOnly && lowStockReady
+      ? await supabase.rpc("is_operator")
+      : { data: false }
+  const { data: defaultRow } =
+    lowStockOnly && lowStockReady
+      ? await supabase
+          .from("app_settings")
+          .select("int_value")
+          .eq("key", "low_stock_default")
+          .maybeSingle()
+      : { data: null }
   const defaultThreshold = (defaultRow?.int_value as number | undefined) ?? 5
 
   const totals = rows.reduce(
@@ -126,6 +151,13 @@ export default async function InventoryPage({
         <Card>
           <CardContent className="py-8 text-sm text-destructive">
             Could not load inventory: {error.message}
+          </CardContent>
+        </Card>
+      ) : lowStockOnly && !lowStockReady ? (
+        <Card>
+          <CardContent className="py-8 text-sm text-muted-foreground">
+            Low-stock alerts aren&apos;t active yet — the database migration
+            hasn&apos;t been applied. This turns on automatically once it lands.
           </CardContent>
         </Card>
       ) : lowStockOnly ? (
