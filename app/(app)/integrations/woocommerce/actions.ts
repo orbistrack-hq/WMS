@@ -427,6 +427,7 @@ export type RegisterResult =
       ok: true
       created: number
       existing: number
+      reactivated: number
       failed: number
       firstError?: string
     }
@@ -477,30 +478,63 @@ export async function registerWebhooks(
     "Content-Type": "application/json",
   }
 
-  const result: { created: number; existing: number; failed: number; firstError?: string } = {
+  const result: {
+    created: number
+    existing: number
+    reactivated: number
+    failed: number
+    firstError?: string
+  } = {
     created: 0,
     existing: 0,
+    reactivated: 0,
     failed: 0,
   }
   try {
-    // Existing webhooks pointing at our endpoint, so we don't duplicate.
-    const existingTopics = new Set<string>()
+    // Existing webhooks pointing at our endpoint, keyed by topic -> {id, status}.
+    // We track status so a hook Woo DISABLED (after failed deliveries) is flipped
+    // back to active on re-run instead of being counted "already set" and skipped.
+    const existingByTopic = new Map<string, { id: number | string; status?: string }>()
     const er = await fetch(`${base}/webhooks?per_page=100`, {
       headers: { Authorization: authHeader(creds.key, creds.secret) },
     })
     if (er.ok) {
       const hooks = (await er.json()) as {
+        id: number | string
         topic?: string
+        status?: string
         delivery_url?: string
       }[]
       for (const w of Array.isArray(hooks) ? hooks : []) {
-        if (w.delivery_url === deliveryUrl && w.topic) existingTopics.add(w.topic)
+        if (w.delivery_url === deliveryUrl && w.topic) {
+          existingByTopic.set(w.topic, { id: w.id, status: w.status })
+        }
       }
     }
 
     for (const topic of WEBHOOK_TOPICS) {
-      if (existingTopics.has(topic)) {
-        result.existing++
+      const found = existingByTopic.get(topic)
+      if (found) {
+        // Already active -> nothing to do. Otherwise (disabled/paused) PUT it
+        // back to active so the manual button actually recovers a dead hook.
+        if ((found.status ?? "active") === "active") {
+          result.existing++
+          continue
+        }
+        const pr = await fetch(`${base}/webhooks/${found.id}`, {
+          method: "PUT",
+          headers: auth,
+          body: JSON.stringify({ status: "active" }),
+        })
+        if (pr.status === 200) {
+          result.reactivated++
+        } else {
+          result.failed++
+          if (!result.firstError) {
+            const body = await pr.text().catch(() => "")
+            result.firstError = wooApiError(pr.status, body)
+          }
+        }
         continue
       }
       const r = await fetch(`${base}/webhooks`, {

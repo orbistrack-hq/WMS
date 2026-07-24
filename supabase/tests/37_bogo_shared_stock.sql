@@ -92,12 +92,12 @@ select throws_ok($$ select receive_stock('f2000000-0000-0000-0000-000000000002',
   '23514', NULL, 'receiving into a delegate SKU is blocked');
 
 -- ---- 6. adopt_bogo_sku: re-parent, relabel, move stock, set pointer ----------
-select receive_stock('f2000000-0000-0000-0000-000000000006', 7);   -- trapped stock on the twin
-select adopt_bogo_sku('f2000000-0000-0000-0000-000000000006','f2000000-0000-0000-0000-000000000005');
+select receive_stock('f2000000-0000-0000-0000-000000000006', 7);   -- separate pile on the twin
+select adopt_bogo_sku('f2000000-0000-0000-0000-000000000006','f2000000-0000-0000-0000-000000000005','move');
 select is((select delegates_to_child_sku_id from child_skus where id='f2000000-0000-0000-0000-000000000006'),
   'f2000000-0000-0000-0000-000000000005'::uuid, 'adopt sets the delegation pointer');
 select is((select on_hand from inventory_levels where child_sku_id='f2000000-0000-0000-0000-000000000005'), 57,
-  'adopt moves trapped stock (50+7) onto the paid pool');
+  'adopt in move mode adds the separate pile (50+7) to the paid pool');
 select is((select on_hand from inventory_levels where child_sku_id='f2000000-0000-0000-0000-000000000006'), 0,
   'adopted BOGO pool is emptied');
 select is((select cost from child_skus where id='f2000000-0000-0000-0000-000000000006'), 5::numeric,
