@@ -41,11 +41,13 @@ type GroupRow = {
 }
 
 // The main packing screen shows only orders that still need packing
-// (created/picking). Once an order is packed it moves to /packing/packed so the
-// active queue stays short and paginated.
+// (created/picking). Once an order is packed it moves to /packing/packed. The
+// full pre-pack set is fetched here (no server-side page cap) so the client
+// PackingQueue can search / filter / sort / wave-select across the WHOLE queue;
+// it paginates the rows for display. Server-side paging would have hidden orders
+// on later pages from search — the exact bug that buried WOO-114317 at ~#62.
 const ACTIVE = new Set(["created", "picking"])
 const PREPACK = new Set(["created", "picking"])
-const PAGE_SIZE = 50
 
 type HiddenRow = {
   id: string
@@ -59,13 +61,11 @@ type HiddenRow = {
 export default async function PackingPage({
   searchParams,
 }: {
-  searchParams: Promise<{ hidden?: string; page?: string }>
+  searchParams: Promise<{ hidden?: string }>
 }) {
   const supabase = await createClient()
   const sp = await searchParams
   const showHidden = sp.hidden === "1"
-  const page = Math.max(1, Number(sp.page ?? "1") || 1)
-  const from = (page - 1) * PAGE_SIZE
 
   // Fetch open, un-dismissed groups that still have at least one order needing
   // packing (created/picking) and NOT on hold. The !inner join + status filter
@@ -74,11 +74,9 @@ export default async function PackingPage({
   // on_hold filter enforces the hold's "pause" semantics: a held order keeps its
   // stock reserved but stays OUT of the packing queue until it's released.
   //
-  // Paginated (PAGE_SIZE per page, FIFO by window_start): with the queue bounded
-  // to pre-pack work, the list is short, and paging keeps a busy day's queue
-  // from running off the screen. Range on groups is safe because the !inner
-  // status filter guarantees every returned group has a matching order (so no
-  // page is silently thinned by the JS orderCount>0 filter below).
+  // No server-side page cap: bounded to real pre-pack work, the set is small
+  // (~100s), and the client PackingQueue searches/filters/sorts across all of it
+  // then paginates for display.
   const { data, error } = await supabase
     .from("fulfillment_groups")
     .select(
@@ -95,12 +93,8 @@ export default async function PackingPage({
     .in("orders.status", ["created", "picking"])
     .eq("orders.on_hold", false)
     .order("window_start", { ascending: true })
-    .range(from, from + PAGE_SIZE)
 
-  // Fetch one extra row (PAGE_SIZE+1 via range) to detect a next page.
-  const fetched = (data ?? []) as unknown as GroupRow[]
-  const hasMore = fetched.length > PAGE_SIZE
-  const rows = fetched.slice(0, PAGE_SIZE)
+  const rows = (data ?? []) as unknown as GroupRow[]
 
   // A no-weight line only warrants a badge when its parent product carries ≥2
   // child SKUs (single-child products often have no weight on purpose). Collect
@@ -268,32 +262,6 @@ export default async function PackingPage({
         ) : (
           <PackingQueue groups={groups} />
         )}
-
-        {!error && (page > 1 || hasMore) ? (
-          <div className="flex items-center justify-end gap-2 text-sm">
-            <Link
-              aria-disabled={page <= 1}
-              href={`/packing?page=${page - 1}`}
-              className={cn(
-                buttonVariants({ variant: "outline", size: "sm" }),
-                page <= 1 && "pointer-events-none opacity-50",
-              )}
-            >
-              Previous
-            </Link>
-            <span className="text-muted-foreground">Page {page}</span>
-            <Link
-              aria-disabled={!hasMore}
-              href={`/packing?page=${page + 1}`}
-              className={cn(
-                buttonVariants({ variant: "outline", size: "sm" }),
-                !hasMore && "pointer-events-none opacity-50",
-              )}
-            >
-              Next
-            </Link>
-          </div>
-        ) : null}
       </div>
     </>
   )

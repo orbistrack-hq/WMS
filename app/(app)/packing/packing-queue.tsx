@@ -3,7 +3,7 @@
 import { useMemo, useState, useTransition } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { EyeOff, Layers, Scale } from "lucide-react"
+import { EyeOff, Layers, Scale, Search } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -38,7 +38,8 @@ export type QueueGroup = {
 }
 
 type SortKey = "recommended" | "site" | "items" | "orders" | "customer" | "age"
-type StateFilter = "all" | "needs" | "packed"
+
+const PAGE_SIZE = 50
 
 const SORTS: Record<SortKey, (a: QueueGroup, b: QueueGroup) => number> = {
   // Needs-packing first, then fewest orders — the original default.
@@ -64,10 +65,11 @@ const SORTS: Record<SortKey, (a: QueueGroup, b: QueueGroup) => number> = {
 export function PackingQueue({ groups }: { groups: QueueGroup[] }) {
   const router = useRouter()
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [query, setQuery] = useState("")
   const [siteFilter, setSiteFilter] = useState<string>("")
-  const [stateFilter, setStateFilter] = useState<StateFilter>("all")
   const [sort, setSort] = useState<SortKey>("recommended")
   const [groupBySite, setGroupBySite] = useState(false)
+  const [page, setPage] = useState(1)
 
   // Distinct sites present in the queue, for the site filter dropdown.
   const siteOptions = useMemo(() => {
@@ -76,23 +78,39 @@ export function PackingQueue({ groups }: { groups: QueueGroup[] }) {
     return [...m.entries()].sort((a, b) => a[1].localeCompare(b[1]))
   }, [groups])
 
-  // Filter, then sort. Grouping-by-site forces a site-major sort so sections
-  // come out contiguous regardless of the chosen sort within them.
-  const visible = useMemo(() => {
+  // Search + filter, then sort — across the WHOLE queue (the server sends every
+  // pre-pack group, not a page), so a search finds an order wherever it sits.
+  // Grouping-by-site forces a site-major sort so sections come out contiguous.
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase()
     const rows = groups.filter((g) => {
       if (siteFilter && g.siteId !== siteFilter) return false
-      if (stateFilter === "needs" && !g.needsPacking) return false
-      if (stateFilter === "packed" && g.needsPacking) return false
+      if (
+        q &&
+        !g.customer.toLowerCase().includes(q) &&
+        !g.orderNumbers.some((n) => n.toLowerCase().includes(q))
+      )
+        return false
       return true
     })
     rows.sort(SORTS[sort])
     if (groupBySite) {
-      rows.sort(
-        (a, b) => a.site.localeCompare(b.site) || SORTS[sort](a, b),
-      )
+      rows.sort((a, b) => a.site.localeCompare(b.site) || SORTS[sort](a, b))
     }
     return rows
-  }, [groups, siteFilter, stateFilter, sort, groupBySite])
+  }, [groups, siteFilter, query, sort, groupBySite])
+
+  // Paginate the filtered rows for display so a long queue stays manageable,
+  // while search/filter still span the whole set above.
+  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
+  const safePage = Math.min(Math.max(1, page), pageCount)
+  const paged = useMemo(
+    () => filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE),
+    [filtered, safePage],
+  )
+
+  // Reset to page 1 whenever the filtered set changes shape under the user.
+  const resetPage = () => setPage(1)
 
   // The site a wave is locked to: the site of the first picked group. Until
   // something is selected, every group is selectable.
@@ -116,8 +134,8 @@ export function PackingQueue({ groups }: { groups: QueueGroup[] }) {
 
   // Select-all-visible, honouring the single-site wave rule: targets the wave's
   // site if one is set, else the first visible group's site.
-  const selectAllTargetSite = waveSiteId ?? visible[0]?.siteId ?? null
-  const selectAllEligible = visible.filter(
+  const selectAllTargetSite = waveSiteId ?? paged[0]?.siteId ?? null
+  const selectAllEligible = paged.filter(
     (g) => g.siteId === selectAllTargetSite,
   )
   const allVisibleSelected =
@@ -164,13 +182,13 @@ export function PackingQueue({ groups }: { groups: QueueGroup[] }) {
   const sections = useMemo(() => {
     if (!groupBySite) return null
     const out: { siteId: string | null; site: string; rows: QueueGroup[] }[] = []
-    for (const g of visible) {
+    for (const g of paged) {
       const last = out[out.length - 1]
       if (last && last.siteId === g.siteId) last.rows.push(g)
       else out.push({ siteId: g.siteId, site: g.site, rows: [g] })
     }
     return out
-  }, [visible, groupBySite])
+  }, [paged, groupBySite])
 
   function renderRow(g: QueueGroup) {
     const isSelected = selected.has(g.id)
@@ -255,9 +273,27 @@ export function PackingQueue({ groups }: { groups: QueueGroup[] }) {
       {/* Organise controls — filter to a site/state, choose a sort, or group
           the queue into per-site sections to wave-pick a whole site at once. */}
       <div className="flex flex-wrap items-center gap-2">
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => {
+              setQuery(e.target.value)
+              resetPage()
+            }}
+            placeholder="Search order # or customer"
+            aria-label="Search the packing queue"
+            className="h-9 w-60 rounded-md border border-input bg-transparent pl-8 pr-3 text-sm shadow-sm outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          />
+        </div>
+
         <Select
           value={siteFilter}
-          onChange={(e) => setSiteFilter(e.target.value)}
+          onChange={(e) => {
+            setSiteFilter(e.target.value)
+            resetPage()
+          }}
           className="w-44"
           aria-label="Filter by site"
         >
@@ -270,19 +306,11 @@ export function PackingQueue({ groups }: { groups: QueueGroup[] }) {
         </Select>
 
         <Select
-          value={stateFilter}
-          onChange={(e) => setStateFilter(e.target.value as StateFilter)}
-          className="w-40"
-          aria-label="Filter by state"
-        >
-          <option value="all">All states</option>
-          <option value="needs">Needs packing</option>
-          <option value="packed">Packed</option>
-        </Select>
-
-        <Select
           value={sort}
-          onChange={(e) => setSort(e.target.value as SortKey)}
+          onChange={(e) => {
+            setSort(e.target.value as SortKey)
+            resetPage()
+          }}
           className="w-48"
           aria-label="Sort by"
         >
@@ -304,11 +332,11 @@ export function PackingQueue({ groups }: { groups: QueueGroup[] }) {
         </Button>
 
         <span className="ml-auto text-sm text-muted-foreground tabular-nums">
-          {visible.length} group{visible.length === 1 ? "" : "s"}
+          {filtered.length} group{filtered.length === 1 ? "" : "s"}
         </span>
       </div>
 
-      {visible.length === 0 ? (
+      {filtered.length === 0 ? (
         <Card className="p-8 text-center text-sm text-muted-foreground">
           No groups match these filters.
         </Card>
@@ -370,10 +398,36 @@ export function PackingQueue({ groups }: { groups: QueueGroup[] }) {
                 <TableHead className="w-10" />
               </TableRow>
             </TableHeader>
-            <TableBody>{visible.map(renderRow)}</TableBody>
+            <TableBody>{paged.map(renderRow)}</TableBody>
           </Table>
         </Card>
       )}
+
+      {/* Client-side pagination over the filtered set. Search/filter above still
+          span the whole queue, so a match on any page is reachable. */}
+      {pageCount > 1 ? (
+        <div className="flex items-center justify-end gap-3 text-sm">
+          <span className="text-muted-foreground tabular-nums">
+            Page {safePage} of {pageCount}
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={safePage <= 1}
+            onClick={() => setPage(safePage - 1)}
+          >
+            Previous
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={safePage >= pageCount}
+            onClick={() => setPage(safePage + 1)}
+          >
+            Next
+          </Button>
+        </div>
+      ) : null}
 
       {/* Wave action bar — appears once anything is selected. */}
       {selectedGroups.length > 0 ? (
