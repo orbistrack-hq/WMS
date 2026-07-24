@@ -30,9 +30,11 @@ type SearchParams = {
 
 const PAGE_SIZE = 50
 // Computed columns (total/items) can't be ordered in Postgres, so for those
-// sorts we pull a capped window, sort it in JS, then slice the page. Large
-// enough for this team's volume; DB-sortable columns paginate without a cap.
-const COMPUTED_SORT_CAP = 1000
+// sorts we pull a capped window, sort it in JS, then slice the page. When the
+// filtered set exceeds this cap the sort only ranks the most recent N orders —
+// the UI discloses that (sortTruncated) instead of silently misordering. A DB
+// aggregate/materialized total per order would remove the cap entirely.
+const COMPUTED_SORT_CAP = 5000
 
 const ORDERS_SELECT = `id, order_number, status, on_hold, backordered, auto_fulfilled, force_fulfilled, store_completed_at, hold_reason, order_type, channel, sale_date, entered_at,
    group_id,
@@ -151,6 +153,9 @@ export default async function OrdersPage({
   let approxTotal: number | null = null
   let hasMore = false
   let error: { message: string } | null = null
+  // True when a total/items sort hit the window cap, so the ranking only covers
+  // the most recent COMPUTED_SORT_CAP orders. Surfaced to the user below.
+  let sortTruncated = false
   const from = (page - 1) * PAGE_SIZE
 
   if (isComputedSort) {
@@ -160,6 +165,7 @@ export default async function OrdersPage({
       .limit(COMPUTED_SORT_CAP)
     error = e
     const all = ((data ?? []) as unknown as OrderRow[]).map(withTotals)
+    sortTruncated = all.length >= COMPUTED_SORT_CAP
     const sign = dir === "asc" ? 1 : -1
     const key = sort === "items" ? "itemCount" : "total"
     all.sort((a, b) => sign * (a[key] - b[key]))
@@ -248,6 +254,14 @@ export default async function OrdersPage({
         </Card>
       ) : (
         <div className="flex flex-col gap-3">
+          {sortTruncated ? (
+            <p className="rounded-md border border-warning/50 bg-warning/10 px-3 py-2 text-xs text-muted-foreground">
+              Sorting by {sort === "items" ? "items" : "total"} ranks only the{" "}
+              {COMPUTED_SORT_CAP.toLocaleString()} most recent orders in this
+              view. Narrow the filters (site, channel, status) for an exact
+              ranking across a smaller set.
+            </p>
+          ) : null}
           <OrdersTable
             canForceFulfill={canForceFulfill}
             rows={orders.map((o) => ({

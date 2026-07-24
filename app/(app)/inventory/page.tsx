@@ -15,6 +15,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { formatCurrency } from "@/lib/format"
+import { cn } from "@/lib/utils"
 import { childDisplayName } from "@/lib/catalog/weight"
 import { InventoryFilters } from "./inventory-filters"
 import { LowStockManager, type LowStockRow } from "./low-stock-manager"
@@ -27,7 +28,14 @@ type SearchParams = {
   hideZero?: string
   lowStock?: string
   zeroOnly?: string
+  page?: string
 }
+
+// Default (non-low-stock) inventory list is paginated so a large catalog is
+// never silently truncated. Previously the whole list was capped at 1000 rows
+// with no paging, so SKUs past 1000 vanished and the footer totals (incl. cost
+// valuation) were understated with no warning.
+const PAGE_SIZE = 100
 
 type InventoryRow = {
   child_sku_id: string
@@ -70,12 +78,14 @@ export default async function InventoryPage({
        grams_per_unit, sku, on_hand, available, reserved, layby, cost, value_at_cost`
   const LOW_STOCK_COLS = `${LEGACY_COLS}, low_stock_threshold, effective_low_stock_threshold, is_low`
 
+  const page = Math.max(1, Number(sp.page ?? "1") || 1)
+  const from = (page - 1) * PAGE_SIZE
+
   function buildQuery(cols: string, withLowStockFilter: boolean) {
     let q = supabase
       .from("inventory_report")
       .select(cols)
       .order("product_name")
-      .limit(1000)
     if (sp.site) q = q.eq("site_id", sp.site)
     // "0 stock only" wins over "hide zero" when both are somehow set.
     if (sp.zeroOnly === "1") q = q.eq("on_hand", 0)
@@ -85,7 +95,14 @@ export default async function InventoryPage({
     return q
   }
 
-  let { data, error } = await buildQuery(LOW_STOCK_COLS, lowStockOnly)
+  // Display window: the low-stock view shows its (small, is_low-bounded) full
+  // set; the default list pages so a large catalog is never truncated.
+  const windowed = (cols: string, withLowStockFilter: boolean) => {
+    const q = buildQuery(cols, withLowStockFilter)
+    return lowStockOnly ? q.limit(1000) : q.range(from, from + PAGE_SIZE - 1)
+  }
+
+  let { data, error } = await windowed(LOW_STOCK_COLS, lowStockOnly)
 
   // 42703 = undefined_column: the migration hasn't landed. Degrade gracefully —
   // re-query the legacy columns so the screen still works; low-stock stays
@@ -93,7 +110,7 @@ export default async function InventoryPage({
   let lowStockReady = true
   if (error?.code === "42703") {
     lowStockReady = false
-    ;({ data, error } = await buildQuery(LEGACY_COLS, false))
+    ;({ data, error } = await windowed(LEGACY_COLS, false))
   }
 
   // Default the low-stock fields so rows are uniform whether or not the columns
@@ -121,17 +138,44 @@ export default async function InventoryPage({
       : { data: null }
   const defaultThreshold = (defaultRow?.int_value as number | undefined) ?? 5
 
-  const totals = rows.reduce(
-    (acc, r) => {
-      acc.on_hand += r.on_hand
-      acc.available += r.available
-      acc.reserved += r.reserved
-      acc.layby += r.layby
-      acc.value += Number(r.value_at_cost)
-      return acc
-    },
-    { on_hand: 0, available: 0, reserved: 0, layby: 0, value: 0 },
-  )
+  // Accurate grand totals + SKU count over the FULL filtered set — batched so a
+  // large catalog isn't understated by the page window. Only the default list
+  // shows the footer (the low-stock view renders its own component). A DB
+  // aggregate RPC would be lighter; kept app-side here to avoid a migration.
+  const totals = { on_hand: 0, available: 0, reserved: 0, layby: 0, value: 0 }
+  let totalCount = 0
+  if (!lowStockOnly && !error) {
+    const BATCH = 1000
+    const cols = lowStockReady ? LOW_STOCK_COLS : LEGACY_COLS
+    for (let offset = 0; ; offset += BATCH) {
+      const { data: batch, error: be } = await buildQuery(cols, false).range(
+        offset,
+        offset + BATCH - 1,
+      )
+      if (be || !batch || batch.length === 0) break
+      for (const r of batch as unknown as InventoryRow[]) {
+        totals.on_hand += r.on_hand
+        totals.available += r.available
+        totals.reserved += r.reserved
+        totals.layby += r.layby
+        totals.value += Number(r.value_at_cost)
+      }
+      totalCount += batch.length
+      if (batch.length < BATCH) break
+    }
+  }
+  const hasMore = !lowStockOnly && from + rows.length < totalCount
+
+  // Page link that preserves the current filters.
+  const pageHref = (n: number) => {
+    const params = new URLSearchParams()
+    if (sp.q) params.set("q", sp.q)
+    if (sp.site) params.set("site", sp.site)
+    if (sp.hideZero) params.set("hideZero", sp.hideZero)
+    if (sp.zeroOnly) params.set("zeroOnly", sp.zeroOnly)
+    params.set("page", String(n))
+    return `/inventory?${params.toString()}`
+  }
 
   return (
     <>
@@ -181,6 +225,7 @@ export default async function InventoryPage({
           </CardContent>
         </Card>
       ) : (
+        <div className="flex flex-col gap-3">
         <Card className="p-0">
           <Table>
             <TableHeader>
@@ -254,7 +299,7 @@ export default async function InventoryPage({
             <tfoot className="border-t bg-muted/40">
               <TableRow className="hover:bg-transparent">
                 <TableCell className="font-medium" colSpan={3}>
-                  {rows.length} SKU{rows.length === 1 ? "" : "s"}
+                  {totalCount} SKU{totalCount === 1 ? "" : "s"}
                 </TableCell>
                 <TableCell className="text-right tabular-nums font-medium">
                   {totals.on_hand}
@@ -275,6 +320,36 @@ export default async function InventoryPage({
             </tfoot>
           </Table>
         </Card>
+        {page > 1 || hasMore ? (
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-muted-foreground">
+              Showing {from + 1}–{from + rows.length} of {totalCount}
+            </span>
+            <div className="flex gap-2">
+              <Link
+                aria-disabled={page <= 1}
+                href={pageHref(page - 1)}
+                className={cn(
+                  buttonVariants({ variant: "outline", size: "sm" }),
+                  page <= 1 && "pointer-events-none opacity-50",
+                )}
+              >
+                Previous
+              </Link>
+              <Link
+                aria-disabled={!hasMore}
+                href={pageHref(page + 1)}
+                className={cn(
+                  buttonVariants({ variant: "outline", size: "sm" }),
+                  !hasMore && "pointer-events-none opacity-50",
+                )}
+              >
+                Next
+              </Link>
+            </div>
+          </div>
+        ) : null}
+        </div>
       )}
     </>
   )

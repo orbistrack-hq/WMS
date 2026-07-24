@@ -40,8 +40,12 @@ type GroupRow = {
   packaging_usage: { quantity: number; unit_cost_snapshot: number | string }[]
 }
 
-const ACTIVE = new Set(["created", "picking", "packed"])
+// The main packing screen shows only orders that still need packing
+// (created/picking). Once an order is packed it moves to /packing/packed so the
+// active queue stays short and paginated.
+const ACTIVE = new Set(["created", "picking"])
 const PREPACK = new Set(["created", "picking"])
+const PAGE_SIZE = 50
 
 type HiddenRow = {
   id: string
@@ -55,24 +59,26 @@ type HiddenRow = {
 export default async function PackingPage({
   searchParams,
 }: {
-  searchParams: Promise<{ hidden?: string }>
+  searchParams: Promise<{ hidden?: string; page?: string }>
 }) {
   const supabase = await createClient()
-  const showHidden = (await searchParams).hidden === "1"
+  const sp = await searchParams
+  const showHidden = sp.hidden === "1"
+  const page = Math.max(1, Number(sp.page ?? "1") || 1)
+  const from = (page - 1) * PAGE_SIZE
 
-  // Fetch every open, un-dismissed group that still has at least one active
-  // order (created/picking/packed) that is NOT on hold. The !inner join + status
-  // filter drops "dead" open groups — ones whose orders are all
-  // fulfilled/cancelled but whose group never flipped to 'fulfilled' — which
-  // otherwise pile up in the table. The on_hold filter enforces the hold's
-  // "pause" semantics: a held order (e.g. awaiting payment clearance) keeps its
+  // Fetch open, un-dismissed groups that still have at least one order needing
+  // packing (created/picking) and NOT on hold. The !inner join + status filter
+  // drops "dead" open groups — ones whose orders are all packed/fulfilled/
+  // cancelled but whose group never flipped — which otherwise pile up. The
+  // on_hold filter enforces the hold's "pause" semantics: a held order keeps its
   // stock reserved but stays OUT of the packing queue until it's released.
   //
-  // NO row limit: the queue must always surface the newest work. The previous
-  // `.order(window_start asc).limit(300)` truncated to the oldest 300 open
-  // groups, so once dead groups accumulated past 300 the latest orders silently
-  // fell off the queue. Bounding the fetch to active groups keeps the result set
-  // to real packing work, so an unbounded fetch is safe.
+  // Paginated (PAGE_SIZE per page, FIFO by window_start): with the queue bounded
+  // to pre-pack work, the list is short, and paging keeps a busy day's queue
+  // from running off the screen. Range on groups is safe because the !inner
+  // status filter guarantees every returned group has a matching order (so no
+  // page is silently thinned by the JS orderCount>0 filter below).
   const { data, error } = await supabase
     .from("fulfillment_groups")
     .select(
@@ -86,11 +92,15 @@ export default async function PackingPage({
     )
     .eq("status", "open")
     .is("dismissed_at", null)
-    .in("orders.status", ["created", "picking", "packed"])
+    .in("orders.status", ["created", "picking"])
     .eq("orders.on_hold", false)
     .order("window_start", { ascending: true })
+    .range(from, from + PAGE_SIZE)
 
-  const rows = (data ?? []) as unknown as GroupRow[]
+  // Fetch one extra row (PAGE_SIZE+1 via range) to detect a next page.
+  const fetched = (data ?? []) as unknown as GroupRow[]
+  const hasMore = fetched.length > PAGE_SIZE
+  const rows = fetched.slice(0, PAGE_SIZE)
 
   // A no-weight line only warrants a badge when its parent product carries ≥2
   // child SKUs (single-child products often have no weight on purpose). Collect
@@ -157,14 +167,9 @@ export default async function PackingPage({
       }
     })
     .filter((g) => g.orderCount > 0)
-    // Needs-packing first, then by fewest orders.
-    .sort((a, b) =>
-      a.needsPacking === b.needsPacking
-        ? a.orderCount - b.orderCount
-        : a.needsPacking
-          ? -1
-          : 1,
-    )
+  // Order is DB FIFO (oldest window_start first) so paging is stable — pack the
+  // oldest work first. Every group here needs packing, so the old
+  // needs-packing-first JS sort is no longer meaningful.
 
   // How many open groups are currently hidden (dismissed). Cheap head count so
   // the "Show hidden" toggle can advertise that there's something to restore.
@@ -213,6 +218,13 @@ export default async function PackingPage({
         <div className="flex flex-wrap items-center gap-2">
           {groups.length > 0 ? <DismissBefore /> : null}
           <Link
+            href="/packing/packed"
+            className={buttonVariants({ variant: "outline", size: "sm" })}
+          >
+            <PackageCheck className="size-4" />
+            Packed orders
+          </Link>
+          <Link
             href={showHidden ? "/packing" : "/packing?hidden=1"}
             className={cn(
               buttonVariants({
@@ -256,6 +268,32 @@ export default async function PackingPage({
         ) : (
           <PackingQueue groups={groups} />
         )}
+
+        {!error && (page > 1 || hasMore) ? (
+          <div className="flex items-center justify-end gap-2 text-sm">
+            <Link
+              aria-disabled={page <= 1}
+              href={`/packing?page=${page - 1}`}
+              className={cn(
+                buttonVariants({ variant: "outline", size: "sm" }),
+                page <= 1 && "pointer-events-none opacity-50",
+              )}
+            >
+              Previous
+            </Link>
+            <span className="text-muted-foreground">Page {page}</span>
+            <Link
+              aria-disabled={!hasMore}
+              href={`/packing?page=${page + 1}`}
+              className={cn(
+                buttonVariants({ variant: "outline", size: "sm" }),
+                !hasMore && "pointer-events-none opacity-50",
+              )}
+            >
+              Next
+            </Link>
+          </div>
+        ) : null}
       </div>
     </>
   )
