@@ -276,16 +276,29 @@ export default async function InventoryPage({
                   <TableCell className="text-right tabular-nums font-medium">
                     {r.available}
                   </TableCell>
+                  {/* Reserved/layby link straight to the SKU's "Committed
+                      stock" card, so the packer's next question — WHICH orders
+                      are holding this? — is one click away. */}
                   <TableCell className="text-right tabular-nums">
                     {r.reserved > 0 ? (
-                      <Badge variant="info">{r.reserved}</Badge>
+                      <Link
+                        href={`/inventory/${r.child_sku_id}#commitments`}
+                        title="See the orders holding this stock"
+                      >
+                        <Badge variant="info">{r.reserved}</Badge>
+                      </Link>
                     ) : (
                       <span className="text-muted-foreground">0</span>
                     )}
                   </TableCell>
                   <TableCell className="text-right tabular-nums">
                     {r.layby > 0 ? (
-                      <Badge variant="warning">{r.layby}</Badge>
+                      <Link
+                        href={`/inventory/${r.child_sku_id}#commitments`}
+                        title="See the layaway orders behind this"
+                      >
+                        <Badge variant="warning">{r.layby}</Badge>
+                      </Link>
                     ) : (
                       <span className="text-muted-foreground">0</span>
                     )}

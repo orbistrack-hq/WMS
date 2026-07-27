@@ -23,8 +23,14 @@ import { reasonLabel, reasonBadge, formatDelta } from "@/lib/inventory/types"
 import { AdjustPanel } from "./adjust-panel"
 import { TransferPanel, type TransferSibling } from "./transfer-panel"
 import { ThresholdPanel } from "./threshold-panel"
+import { CommitmentsCard, type Commitment } from "./commitments-card"
 
 export const dynamic = "force-dynamic"
+
+// Cap on the commitment rows fetched for one SKU. A single SKU with more than
+// this many OPEN order lines means something is badly wrong upstream, but the
+// card flags the totals as partial rather than quietly under-reporting.
+const COMMITMENT_LIMIT = 500
 
 type InvReport = {
   child_sku_id: string
@@ -63,7 +69,15 @@ export default async function InventoryItemPage({
          on_hand, available, reserved, layby, cost, value_at_cost`
   const LOW_STOCK_COLS = `${LEGACY_COLS}, low_stock_threshold, effective_low_stock_threshold`
 
-  const [reportRes, ledgerRes, skuRes] = await Promise.all([
+  // Open order lines claiming this SKU (migration 0083). Keyed on
+  // stock_child_sku_id, so a BOGO twin's lines land on the SKU whose stock
+  // actually moved and the totals reconcile against reserved/layby.
+  const COMMITMENT_COLS = `line_id, ordered_child_sku_id, ordered_sku, ordered_product_name,
+       via_delegate, order_id, order_number, site_name, channel, order_type, status,
+       on_hold, hold_reason, entered_at, sale_date, customer_name, ordered_qty,
+       reserved_qty, layby_qty, backordered_qty, pending_qty, commitment_kind`
+
+  const [reportRes, ledgerRes, skuRes, commitmentsRes] = await Promise.all([
     supabase
       .from("inventory_report")
       .select(LOW_STOCK_COLS)
@@ -82,6 +96,12 @@ export default async function InventoryItemPage({
       .select("product_id, is_active, store_variant_id")
       .eq("id", id)
       .maybeSingle(),
+    supabase
+      .from("sku_commitments")
+      .select(COMMITMENT_COLS)
+      .eq("stock_child_sku_id", id)
+      .order("entered_at", { ascending: true })
+      .limit(COMMITMENT_LIMIT),
   ])
 
   // 42703 = undefined_column: 0079 not applied yet. Re-query legacy columns so
@@ -108,6 +128,19 @@ export default async function InventoryItemPage({
     ? await supabase.rpc("is_operator")
     : { data: false }
   const ledger = (ledgerRes.data ?? []) as unknown as LedgerRow[]
+
+  // 0083 may not be applied yet: PostgREST reports an unknown relation as
+  // PGRST205 (schema cache miss) and Postgres as 42P01. Either way the card
+  // renders a dormant notice instead of failing the page — same posture as the
+  // low-stock card. Any OTHER error is reported as a load failure rather than
+  // silently showing an empty (and therefore falsely "unreconciled") table.
+  const cErr = commitmentsRes.error
+  const commitmentsState: "ok" | "not_migrated" | "error" = !cErr
+    ? "ok"
+    : cErr.code === "42P01" || cErr.code === "PGRST205"
+      ? "not_migrated"
+      : "error"
+  const commitments = (commitmentsRes.data ?? []) as unknown as Commitment[]
   const sku = skuRes.data as
     | { product_id: string; is_active: boolean; store_variant_id: string | null }
     | null
@@ -168,9 +201,17 @@ export default async function InventoryItemPage({
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <Stat label="On hand" value={r.on_hand} />
             <Stat label="Available" value={r.available} emphasis />
-            <Stat label="Reserved" value={r.reserved} tone="info" />
-            <Stat label="Layby" value={r.layby} tone="warning" />
+            <Stat label="Reserved" value={r.reserved} tone="info" href="#commitments" />
+            <Stat label="Layby" value={r.layby} tone="warning" href="#commitments" />
           </div>
+
+          <CommitmentsCard
+            rows={commitments}
+            reserved={r.reserved}
+            layby={r.layby}
+            state={commitmentsState}
+            truncated={commitments.length >= COMMITMENT_LIMIT}
+          />
 
           <Card>
             <CardHeader>
@@ -303,31 +344,41 @@ function Stat({
   value,
   emphasis,
   tone,
+  href,
 }: {
   label: string
   value: number
   emphasis?: boolean
   tone?: "info" | "warning"
+  /** When set, the tile jumps to the matching section (e.g. #commitments). */
+  href?: string
 }) {
+  const body = (
+    <CardContent className="flex flex-col gap-0.5">
+      <span className="text-xs text-muted-foreground">{label}</span>
+      <span
+        className={
+          "text-xl font-semibold tabular-nums " +
+          (tone === "info"
+            ? "text-sky-600 dark:text-sky-400"
+            : tone === "warning"
+              ? "text-amber-600 dark:text-amber-400"
+              : emphasis
+                ? "text-foreground"
+                : "text-foreground")
+        }
+      >
+        {value}
+      </span>
+    </CardContent>
+  )
+
+  if (!href) return <Card>{body}</Card>
   return (
-    <Card>
-      <CardContent className="flex flex-col gap-0.5">
-        <span className="text-xs text-muted-foreground">{label}</span>
-        <span
-          className={
-            "text-xl font-semibold tabular-nums " +
-            (tone === "info"
-              ? "text-sky-600 dark:text-sky-400"
-              : tone === "warning"
-                ? "text-amber-600 dark:text-amber-400"
-                : emphasis
-                  ? "text-foreground"
-                  : "text-foreground")
-          }
-        >
-          {value}
-        </span>
-      </CardContent>
+    <Card className="transition-colors hover:bg-muted/40">
+      <a href={href} title={`See the orders behind ${label.toLowerCase()}`}>
+        {body}
+      </a>
     </Card>
   )
 }
