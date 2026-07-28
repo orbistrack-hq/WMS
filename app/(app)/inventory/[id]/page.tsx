@@ -24,6 +24,11 @@ import { AdjustPanel } from "./adjust-panel"
 import { TransferPanel, type TransferSibling } from "./transfer-panel"
 import { ThresholdPanel } from "./threshold-panel"
 import { CommitmentsCard, type Commitment } from "./commitments-card"
+import {
+  DelegateBadge,
+  DelegateNotice,
+  type DelegateTarget,
+} from "@/components/delegate-badge"
 
 export const dynamic = "force-dynamic"
 
@@ -93,7 +98,9 @@ export default async function InventoryItemPage({
       .limit(100),
     supabase
       .from("child_skus")
-      .select("product_id, is_active, store_variant_id")
+      .select(
+        "product_id, is_active, store_variant_id, delegates_to_child_sku_id",
+      )
       .eq("id", id)
       .maybeSingle(),
     supabase
@@ -141,9 +148,39 @@ export default async function InventoryItemPage({
       ? "not_migrated"
       : "error"
   const commitments = (commitmentsRes.data ?? []) as unknown as Commitment[]
-  const sku = skuRes.data as
-    | { product_id: string; is_active: boolean; store_variant_id: string | null }
+  // 42703 = the 0077 column is missing (migration not applied). Treat the SKU as
+  // a normal one rather than failing the page, same posture as the low-stock and
+  // commitments cards above.
+  let sku = skuRes.data as
+    | {
+        product_id: string
+        is_active: boolean
+        store_variant_id: string | null
+        delegates_to_child_sku_id?: string | null
+      }
     | null
+  if (skuRes.error?.code === "42703") {
+    const legacySku = await supabase
+      .from("child_skus")
+      .select("product_id, is_active, store_variant_id")
+      .eq("id", id)
+      .maybeSingle()
+    sku = legacySku.data as typeof sku
+  }
+
+  // BOGO delegate: this SKU draws stock from a paid counterpart, so every figure
+  // on this page is that SKU's. Resolve its code for the badge and notice.
+  let delegate: DelegateTarget | null = null
+  if (sku?.delegates_to_child_sku_id) {
+    const { data: paid } = await supabase
+      .from("child_skus")
+      .select("id, sku")
+      .eq("id", sku.delegates_to_child_sku_id)
+      .maybeSingle()
+    delegate = paid
+      ? { id: paid.id as string, sku: (paid.sku as string | null) ?? null }
+      : { id: sku.delegates_to_child_sku_id, sku: null }
+  }
 
   // Sibling child SKUs = the same product at OTHER sites, the valid transfer
   // destinations. Stock-tracked only; the RPC enforces the rest.
@@ -185,6 +222,7 @@ export default async function InventoryItemPage({
           {r.product_name ?? "—"}
         </h1>
         {r.sku ? <Badge variant="outline">{r.sku}</Badge> : null}
+        {delegate ? <DelegateBadge target={delegate} /> : null}
         <span className="text-sm text-muted-foreground">{r.site_name}</span>
         {sku ? (
           <Link
@@ -198,6 +236,19 @@ export default async function InventoryItemPage({
 
       <div className="grid gap-4 lg:grid-cols-3">
         <div className="flex flex-col gap-4 lg:col-span-2">
+          {delegate ? (
+            <p className="text-sm text-muted-foreground">
+              Shared stock — these are{" "}
+              <Link
+                href={`/inventory/${delegate.id}`}
+                className="font-medium underline-offset-4 hover:underline"
+              >
+                {delegate.sku ?? "the paid SKU"}
+              </Link>
+              &apos;s figures, not a separate pile.
+            </p>
+          ) : null}
+
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <Stat label="On hand" value={r.on_hand} />
             <Stat label="Available" value={r.available} emphasis />
@@ -267,16 +318,30 @@ export default async function InventoryItemPage({
         </div>
 
         <div className="flex flex-col gap-4">
-          <Card>
-            <CardHeader>
-              <CardTitle>Receive / adjust</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <AdjustPanel childSkuId={r.child_sku_id} onHand={r.on_hand} />
-            </CardContent>
-          </Card>
+          {/* A delegate cannot take stock: receive_stock / adjust_stock raise and
+              transfer_stock has nothing of its own to move (migration 0077).
+              Point at the paid SKU instead of offering controls that fail. */}
+          {delegate ? (
+            <Card>
+              <CardHeader>
+                <CardTitle>Stock lives elsewhere</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <DelegateNotice target={delegate} />
+              </CardContent>
+            </Card>
+          ) : (
+            <Card>
+              <CardHeader>
+                <CardTitle>Receive / adjust</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <AdjustPanel childSkuId={r.child_sku_id} onHand={r.on_hand} />
+              </CardContent>
+            </Card>
+          )}
 
-          {siblings.length > 0 ? (
+          {!delegate && siblings.length > 0 ? (
             <Card>
               <CardHeader>
                 <CardTitle>Transfer to another site</CardTitle>
@@ -291,7 +356,9 @@ export default async function InventoryItemPage({
             </Card>
           ) : null}
 
-          {lowStockReady ? (
+          {/* No threshold on a delegate: its on_hand mirrors the paid SKU, so a
+              threshold here would fire a second alert for the same jars. */}
+          {lowStockReady && !delegate ? (
             <Card>
               <CardHeader>
                 <CardTitle>Low-stock alert</CardTitle>

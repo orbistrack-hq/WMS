@@ -18,6 +18,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
+import { DelegateBadge } from "@/components/delegate-badge"
 import {
   Table,
   TableBody,
@@ -51,6 +52,12 @@ export type ChildSku = {
   is_active: boolean
   /** false = service/fee SKU: skips all inventory ops, never backorders. */
   track_inventory: boolean
+  /**
+   * Set on a BOGO twin: it holds no stock of its own and draws from the paid
+   * counterpart's pool (migration 0077). on_hand/available below are the PAID
+   * SKU's numbers — the same physical jars, not a second pile.
+   */
+  delegates_to: { id: string; sku: string | null } | null
   on_hand: number
   available: number
 }
@@ -456,9 +463,11 @@ export function ChildSkuManager({
                       <TableCell
                         className="text-right tabular-nums text-muted-foreground"
                         title={
-                          s.track_inventory
-                            ? undefined
-                            : "Inventory not tracked (fee SKU)"
+                          !s.track_inventory
+                            ? "Inventory not tracked (fee SKU)"
+                            : s.delegates_to
+                              ? `Shared stock — this is ${s.delegates_to.sku ?? "the paid SKU"}'s count, the same jars`
+                              : undefined
                         }
                       >
                         {s.track_inventory ? s.on_hand : "—"}
@@ -466,9 +475,11 @@ export function ChildSkuManager({
                       <TableCell
                         className="text-right tabular-nums text-muted-foreground"
                         title={
-                          s.track_inventory
-                            ? undefined
-                            : "Inventory not tracked (fee SKU)"
+                          !s.track_inventory
+                            ? "Inventory not tracked (fee SKU)"
+                            : s.delegates_to
+                              ? `Shared stock — this is ${s.delegates_to.sku ?? "the paid SKU"}'s count, the same jars`
+                              : undefined
                         }
                       >
                         {s.track_inventory ? s.available : "—"}
@@ -480,6 +491,9 @@ export function ChildSkuManager({
                           ) : (
                             <Badge variant="muted">Inactive</Badge>
                           )}
+                          {s.delegates_to ? (
+                            <DelegateBadge target={s.delegates_to} />
+                          ) : null}
                           {!s.track_inventory ? (
                             <Badge
                               variant="warning"

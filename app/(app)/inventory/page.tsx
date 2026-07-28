@@ -3,6 +3,7 @@ import { Boxes, Layers } from "lucide-react"
 
 import { createClient } from "@/lib/supabase/server"
 import { PageHeader } from "@/components/page-header"
+import { DelegateBadge } from "@/components/delegate-badge"
 import { Badge } from "@/components/ui/badge"
 import { buttonVariants } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -121,6 +122,48 @@ export default async function InventoryPage({
     effective_low_stock_threshold: r.effective_low_stock_threshold ?? 0,
     is_low: r.is_low ?? false,
   })) as InventoryRow[]
+
+  // BOGO delegates on this page: one lookup for the whole window rather than a
+  // join per row. Delegates are a handful of SKUs, so the map stays tiny. Their
+  // on_hand mirrors the paid SKU, and without a marker the two rows read as two
+  // separate piles of the same jars.
+  // Two plain queries rather than a self-referential embed: child_skus points at
+  // itself here, and the flat form is unambiguous. Both are indexed lookups over
+  // at most PAGE_SIZE ids.
+  const delegateById = new Map<string, { id: string; sku: string | null }>()
+  if (rows.length) {
+    const { data: delRows } = await supabase
+      .from("child_skus")
+      .select("id, delegates_to_child_sku_id")
+      .in(
+        "id",
+        rows.map((r) => r.child_sku_id),
+      )
+      .not("delegates_to_child_sku_id", "is", null)
+
+    const pairs = (delRows ?? []) as unknown as Array<{
+      id: string
+      delegates_to_child_sku_id: string
+    }>
+    if (pairs.length) {
+      const paidIds = [...new Set(pairs.map((p) => p.delegates_to_child_sku_id))]
+      const { data: paidRows } = await supabase
+        .from("child_skus")
+        .select("id, sku")
+        .in("id", paidIds)
+      const paidSku = new Map(
+        ((paidRows ?? []) as unknown as Array<{ id: string; sku: string | null }>).map(
+          (p) => [p.id, p.sku],
+        ),
+      )
+      for (const p of pairs) {
+        delegateById.set(p.id, {
+          id: p.delegates_to_child_sku_id,
+          sku: paidSku.get(p.delegates_to_child_sku_id) ?? null,
+        })
+      }
+    }
+  }
 
   // Ops-only controls (bulk threshold editing, default). Mirrors the banner gate.
   // Only queried in the low-stock view, and only once the migration has landed.
@@ -256,7 +299,15 @@ export default async function InventoryPage({
                     </Link>
                   </TableCell>
                   <TableCell className="text-muted-foreground">
-                    {r.sku ?? "—"}
+                    <span className="flex flex-wrap items-center gap-1.5">
+                      {r.sku ?? "—"}
+                      {delegateById.has(r.child_sku_id) ? (
+                        <DelegateBadge
+                          target={delegateById.get(r.child_sku_id)!}
+                          href={false}
+                        />
+                      ) : null}
+                    </span>
                   </TableCell>
                   <TableCell className="text-muted-foreground">
                     {r.site_name ?? "—"}

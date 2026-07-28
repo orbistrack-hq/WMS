@@ -111,7 +111,10 @@ export async function importShopifyProduct(
     if (row?.created) res.created++
     else res.updated++
     if (row?.cost_seeded) res.costSeeded++
-    if (invQty != null) res.stockSynced++
+    // Applied, not offered — see the matching note in lib/woocommerce. Since
+    // migration 0084 stock seeds on create only, so an existing SKU's sync
+    // reports zero here even though Shopify sent a quantity.
+    if (invQty != null && row?.created) res.stockSynced++
 
     // Persist the InventoryItem id so OUTBOUND stock pushes (migration 0026)
     // can address this variant's stock. Best-effort: a failure here must not

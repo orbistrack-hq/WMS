@@ -37,6 +37,8 @@ type SkuQueryRow = {
   cost: number | string
   is_active: boolean
   track_inventory: boolean
+  /** Set on a BOGO twin: the paid child SKU whose stock pool it draws from. */
+  delegates_to_child_sku_id: string | null
   site: { name: string | null } | null
   inventory_levels:
     | { on_hand: number; available: number }
@@ -80,6 +82,7 @@ export default async function ProductDetailPage({
         `id, name, sku, description, category_id, is_active,
          child_skus(id, site_id, sku, store_variant_id, bin_location, barcode,
            grams_per_unit, variant_label, price, cost, is_active, track_inventory,
+           delegates_to_child_sku_id,
            site:sites(name),
            inventory_levels(on_hand, available))`,
       )
@@ -98,12 +101,23 @@ export default async function ProductDetailPage({
     (n) => ({ id: n.id, label: `${indent(n.depth)}${n.name}` }),
   )
 
+  // A delegate must share the master product (hard constraint in
+  // validate_sku_delegate, migration 0077), so the paid counterpart is always in
+  // this same child list — no extra query needed to name it.
+  const skuCodeById = new Map<string, string | null>(
+    (product.child_skus ?? []).map((s) => [s.id, s.sku]),
+  )
+
   const skus: ChildSku[] = (product.child_skus ?? []).map((s) => {
     const inv = Array.isArray(s.inventory_levels)
       ? s.inventory_levels[0]
       : s.inventory_levels
+    const paidId = s.delegates_to_child_sku_id ?? null
     return {
       id: s.id,
+      delegates_to: paidId
+        ? { id: paidId, sku: skuCodeById.get(paidId) ?? null }
+        : null,
       site_id: s.site_id,
       site_name: s.site?.name ?? "—",
       sku: s.sku,

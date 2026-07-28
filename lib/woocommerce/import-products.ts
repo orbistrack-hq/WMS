@@ -122,7 +122,12 @@ export async function importWooProduct(
     if (row?.created) res.created++
     else res.updated++
     if (row?.cost_seeded) res.costSeeded++
-    if (invQty != null) res.stockSynced++
+    // Count stock that was actually APPLIED, not merely offered. Since migration
+    // 0084 the RPC seeds on_hand only when it creates the child SKU; on every
+    // later sync the store's count is ignored and WMS owns the number. Counting
+    // `invQty != null` here would report "stock updated on 47" while nothing
+    // moved — the exact signal you'd use to check 0084 is working.
+    if (invQty != null && row?.created) res.stockSynced++
 
     // Best-effort: record the parent id so outbound pushes can address the
     // variation. A failure here must not fail the catalog import.

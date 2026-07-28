@@ -1,6 +1,9 @@
 -- Forward weight-variant sync (migration 0030): upsert_store_weight_variant.
--- Covers strain-parent creation, cross-client grouping by name, idempotent
--- re-sync, and inventory pull.
+-- Covers strain-parent creation, cross-client grouping by name, and idempotent
+-- re-sync.
+--
+-- The final assertion changed with migration 0085: store stock now seeds on
+-- CREATE only and a later sync never re-applies it.
 begin;
 select plan(11);
 
@@ -60,11 +63,20 @@ select is(
   (select count(*)::int from child_skus
      where store_variant_id='sv-af-3_5' and site_id=:MAIN),
   1, 're-sync does not duplicate the child');
+
+-- CONTRACT CHANGED in migration 0085 (was: on_hand becomes 10).
+-- The store seeds stock on CREATE only; WMS owns it from then on. This child was
+-- created above with a null quantity, so it never took an opening balance and a
+-- later sync must not give it one — that re-application is what drained 539 g of
+-- Blue Slushie between 10 and 22 July 2026.
+--
+-- Consequence worth knowing: a SKU created without a quantity stays at 0 until
+-- someone receives stock against it in WMS. See test 42 for the seeding path.
 select is(
   (select il.on_hand from inventory_levels il
      join child_skus c on c.id = il.child_sku_id
     where c.store_variant_id='sv-af-3_5' and c.site_id=:MAIN),
-  10, 'inventory quantity synced to on_hand');
+  0, 'a later store quantity does NOT move on_hand (0085: seed on create only)');
 
 select * from finish();
 rollback;
