@@ -37,6 +37,12 @@
 --   returned                    nothing — already restocked to on_hand (0041)
 --   track_inventory = false     skipped — service/fee SKUs never reserve (0068)
 --
+--   The 'fulfilled' branch is a backstop, not a routine path: fulfill_order
+--   snapshots a pick fee into billing_charges, whose order_id FK is ON DELETE
+--   RESTRICT, so a fulfilled order cannot be deleted until that charge is
+--   cleared first (test 40 asserts the 23503). The branch still matters for the
+--   bulk-cleanup path, which deletes billing_charges up front.
+--
 -- LEDGER
 --   Releases go through the existing guarded primitives, so they write normal
 --   'order_release' / 'layaway_cancel' rows referencing the line item id. That

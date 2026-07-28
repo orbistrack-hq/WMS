@@ -3,7 +3,7 @@
 -- deleted orders left inventory_levels.reserved inflated with no order left to
 -- release it.
 begin;
-select plan(11);
+select plan(12);
 \set SKU '''a0000000-0000-0000-0000-000000000001'''
 \set A '''11111111-1111-1111-1111-111111111111'''
 
@@ -25,6 +25,11 @@ select is((select count(*)::int from inventory_ledger
 
 -- ---- 2. Fulfilled order: delete must NOT give stock back --------------------
 -- The goods shipped. Returning them would invent inventory.
+--
+-- Note: fulfill_order snapshots a pick fee into billing_charges, whose order_id
+-- FK is ON DELETE RESTRICT (migration 0001). So a fulfilled order cannot be
+-- deleted at all until that charge is cleared — asserted below, because it means
+-- the trigger's 'fulfilled' branch is a backstop rather than a routine path.
 insert into fulfillment_groups(id,site_id) values ('96000000-0000-0000-0000-000000000002',:A);
 insert into orders(id,site_id,group_id) values ('96000000-1111-0000-0000-000000000002',:A,'96000000-0000-0000-0000-000000000002');
 insert into order_line_items(order_id,child_sku_id,quantity,unit_price) values ('96000000-1111-0000-0000-000000000002',:SKU,4,12);
@@ -32,7 +37,14 @@ select apply_order_creation('96000000-1111-0000-0000-000000000002');
 select fulfill_order('96000000-1111-0000-0000-000000000002');
 select is((select on_hand from inventory_levels where child_sku_id=:SKU), 196, 'on_hand 200->196 after fulfill');
 
-delete from orders where id='96000000-1111-0000-0000-000000000002';
+select throws_ok(
+  $$ delete from orders where id='96000000-1111-0000-0000-000000000002' $$,
+  '23503', NULL,
+  'billing_charges FK blocks deleting a fulfilled order');
+
+-- Clear the charge the way fresh_start_delete_past_orders.sql does, then delete.
+delete from billing_charges where order_id='96000000-1111-0000-0000-000000000002';
+delete from orders          where id      ='96000000-1111-0000-0000-000000000002';
 select is((select on_hand from inventory_levels where child_sku_id=:SKU), 196,
   'deleting a fulfilled order leaves on_hand alone');
 select is((select reserved from inventory_levels where child_sku_id=:SKU), 0,

@@ -7,10 +7,17 @@
 begin;
 select plan(19);
 
-\set WM   '''a0000000-0000-0000-0000-000000000001'''   -- Wildflower @ Main
-\set WE   '''a0000000-0000-0000-0000-000000000004'''   -- Wildflower @ East
-\set TA   '''39a00000-0000-0000-0000-00000000000a'''   -- twin @ Main
-\set TB   '''39a00000-0000-0000-0000-00000000000b'''   -- twin @ East
+-- NOTE: psql \set concatenates EVERY remaining token on the line into the
+-- value, comment markers included. A trailing `-- comment` here becomes part of
+-- the variable, so the expansion comments out the rest of whatever line uses it.
+-- That is what broke this file (syntax error at line 28). Keep comments above.
+--
+-- WM   = Wildflower @ Main    WE = Wildflower @ East
+-- TA   = twin @ Main          TB = twin @ East
+\set WM   '''a0000000-0000-0000-0000-000000000001'''
+\set WE   '''a0000000-0000-0000-0000-000000000004'''
+\set TA   '''39a00000-0000-0000-0000-00000000000a'''
+\set TB   '''39a00000-0000-0000-0000-00000000000b'''
 \set MAIN '''11111111-1111-1111-1111-111111111111'''
 \set EAST '''22222222-2222-2222-2222-222222222222'''
 
@@ -61,10 +68,16 @@ select is(
   2, 'both mismatch warnings recorded on the header');
 
 -- ---- Section 2: reversal restores both sites -------------------------------
+-- NOTE: psql does NOT interpolate :variables inside dollar-quoted strings, so
+-- the UUIDs are spelled out here (as everywhere else in this file that passes
+-- SQL to lives_ok/throws_ok). Using :WM/:WE here sent the literal text ":WM" to
+-- EXECUTE and failed with 42601.
 select lives_ok(
   $$ select reverse_stock_transfer(
-       (select id from stock_transfers where source_child_sku_id=:WM
-         and dest_child_sku_id=:WE and reversed_at is null limit 1), 'oops') $$,
+       (select id from stock_transfers
+         where source_child_sku_id='a0000000-0000-0000-0000-000000000001'
+           and dest_child_sku_id  ='a0000000-0000-0000-0000-000000000004'
+           and reversed_at is null limit 1), 'oops') $$,
   'admin can reverse the transfer');
 select is((select on_hand from inventory_levels where child_sku_id=:WM)::int, 200,
   'source restored to 200 after reversal');
