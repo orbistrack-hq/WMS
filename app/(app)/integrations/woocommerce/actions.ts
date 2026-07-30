@@ -416,6 +416,14 @@ export async function syncProducts(connectionId: string): Promise<SyncResult> {
     .update({ last_synced_at: new Date().toISOString() })
     .eq("id", connectionId)
 
+  // Auto-merge any BOGO SKUs that just synced in (shared-stock delegation).
+  // Service-role client passes the RPC's admin gate; non-fatal on error.
+  {
+    const { error: mergeErr } = await admin.rpc("auto_adopt_bogo")
+    if (mergeErr)
+      console.error("auto_adopt_bogo after Woo product sync:", mergeErr.message)
+  }
+
   revalidatePath("/integrations/woocommerce")
   revalidatePath("/catalog")
   revalidatePath("/inventory")
