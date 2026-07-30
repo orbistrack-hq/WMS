@@ -250,6 +250,29 @@ export async function setChildTrackInventory(
 }
 
 // ---------------------------------------------------------------------------
+// Un-merge a BOGO SKU (reverse shared-stock delegation)
+// ---------------------------------------------------------------------------
+// Detaches a delegating BOGO SKU so it holds its own independent stock number
+// again, restoring the given on-hand and opting it out of future auto-merge
+// (migration 0080). Blocks server-side if the SKU has open orders holding
+// reserved stock — fulfil or cancel those first.
+export async function revertBogoSku(
+  id: string,
+  productId: string,
+  restoreOnHand?: number | null,
+): Promise<ActionResult> {
+  const supabase = await createClient()
+  const { error } = await supabase.rpc("revert_bogo_sku", {
+    p_bogo: id,
+    p_restore_on_hand: restoreOnHand ?? null,
+  })
+  if (error) return { ok: false, error: dbError(error) }
+  revalidateCatalog(productId)
+  revalidatePath("/inventory/by-parent")
+  return { ok: true }
+}
+
+// ---------------------------------------------------------------------------
 // Re-parenting a child SKU (manual product mapping)
 // ---------------------------------------------------------------------------
 // Moves a child SKU from one master product to another — the manual counterpart

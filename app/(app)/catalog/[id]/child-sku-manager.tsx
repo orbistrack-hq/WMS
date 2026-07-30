@@ -10,6 +10,7 @@ import {
   Pencil,
   Plus,
   Trash2,
+  Unlink,
   X,
 } from "lucide-react"
 
@@ -32,6 +33,7 @@ import { SCANNING_ENABLED } from "@/lib/flags"
 import {
   createChildSku,
   deleteChildSku,
+  revertBogoSku,
   setChildTrackInventory,
   updateChildSku,
 } from "../actions"
@@ -193,6 +195,28 @@ export function ChildSkuManager({
     setError(null)
     startTransition(async () => {
       const res = await setChildTrackInventory(s.id, productId, next)
+      if (!res.ok) setError(res.error)
+      else router.refresh()
+    })
+  }
+
+  function handleRevert(s: ChildSku) {
+    const raw = window.prompt(
+      `Un-merge ${s.sku ?? "this SKU"} from ${s.delegates_to?.sku ?? "the paid SKU"} ` +
+        `and give it its own stock number again.\n\n` +
+        `Enter its independent on-hand count (leave blank for 0):`,
+      "",
+    )
+    if (raw === null) return // cancelled
+    const trimmed = raw.trim()
+    const n = trimmed === "" ? null : Number(trimmed)
+    if (n !== null && (!Number.isFinite(n) || n < 0 || !Number.isInteger(n))) {
+      setError("Enter a whole, non-negative on-hand count.")
+      return
+    }
+    setError(null)
+    startTransition(async () => {
+      const res = await revertBogoSku(s.id, productId, n)
       if (!res.ok) setError(res.error)
       else router.refresh()
     })
@@ -550,6 +574,18 @@ export function ChildSkuManager({
                               onClick={() => handleToggleTrack(s)}
                             >
                               {s.track_inventory ? <PackageX /> : <PackageCheck />}
+                            </Button>
+                          ) : null}
+                          {canManageInventory && s.delegates_to ? (
+                            <Button
+                              size="icon-sm"
+                              variant="ghost"
+                              aria-label="Un-merge shared stock"
+                              title={`Un-merge — give this SKU its own stock number again (currently shares ${s.delegates_to.sku ?? "the paid SKU"}'s pool)`}
+                              disabled={isPending}
+                              onClick={() => handleRevert(s)}
+                            >
+                              <Unlink />
                             </Button>
                           ) : null}
                           {isAdmin ? (
