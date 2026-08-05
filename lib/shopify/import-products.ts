@@ -27,6 +27,11 @@ export type ImportOptions = {
  *
  * Cost and inventory are only sent when opts provides them, so the webhook
  * product path (no opts) keeps its original name/price/sku-only behaviour.
+ *
+ * Since migration 0088 the store OWNS cost: a positive cost overwrites the child
+ * SKU's cost on every sync. Sending nothing (no opts, or no cost on the
+ * InventoryItem) leaves the WMS cost untouched, so the cost-less webhook path is
+ * still safe.
  */
 export async function importShopifyProduct(
   client: SupabaseClient,
@@ -50,7 +55,8 @@ export async function importShopifyProduct(
     }
     const price = v.price != null ? Number(v.price) : 0
 
-    // Cost from the InventoryItem lookup (the RPC seeds it only when unset).
+    // Cost from the InventoryItem lookup. The RPC overwrites the WMS cost with
+    // any positive value (0088) and ignores null/zero.
     let cost: number | null = null
     const invItemId =
       v.inventory_item_id != null ? String(v.inventory_item_id) : null

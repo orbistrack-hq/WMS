@@ -51,8 +51,13 @@ function stockOf(
 
 /**
  * Map one Woo product to WMS product(s) + child SKU(s) at a site, via the
- * idempotent upsert_store_variant RPC (channel = 'woocommerce'). Cost is never
- * sent (Woo core has none; WMS owns cost).
+ * idempotent upsert_store_variant RPC (channel = 'woocommerce').
+ *
+ * Cost comes from Cost-of-Goods plugin meta (wooCost) — Woo core has no cost
+ * field, so it is null on a store without one of those plugins. Since migration
+ * 0088 the store OWNS cost: a positive value overwrites the child SKU's cost on
+ * every sync, while null or zero is read as "the store sent nothing" and leaves
+ * the WMS cost untouched.
  *
  *   simple   -> one child SKU keyed by the product id
  *   variable -> one child SKU per provided variation, keyed by the variation id

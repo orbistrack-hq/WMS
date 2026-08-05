@@ -343,10 +343,15 @@ function nextPageUrl(linkHeader: string | null): string | null {
 
 /**
  * Backfill: pull every product from the connected store via the Admin API and
- * upsert each variant into the catalog — including price, unit cost (seeded
- * only when WMS has none), and available stock (synced into WMS on_hand, logged,
- * reservations preserved). Runs server-side with the store's token (which never
- * leaves the server). Ongoing changes still arrive via product webhooks.
+ * upsert each variant into the catalog — including price, unit cost (the store
+ * owns it: any positive cost overwrites the WMS value, migration 0088), and
+ * available stock (seeded into on_hand on first sight only, migration 0084).
+ * Runs server-side with the store's token (which never leaves the server).
+ * Ongoing changes still arrive via product webhooks.
+ *
+ * This is also the way to pull existing cost changes forward in bulk: costs that
+ * drifted from the store while the old seed-only rule was in force are corrected
+ * on the next sync that touches the variant.
  */
 export async function syncProducts(connectionId: string): Promise<SyncResult> {
   const supabase = await createClient()

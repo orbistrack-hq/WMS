@@ -9,8 +9,10 @@ import crypto from "node:crypto"
 //     are signed with a SEPARATE per-webhook secret.
 //   * Products are "simple" (the product id is the sellable unit) or "variable"
 //     (parent id + variation ids, where each variation is the sellable unit).
-//   * Woo core has no cost-of-goods field, so cost is never seeded from Woo —
-//     WMS keeps owning cost (matches upsert_store_variant's seed-only policy).
+//   * Woo core has no cost-of-goods field. wooCost() reads the known COG plugin
+//     meta keys and returns null when none is present. Since migration 0088 a
+//     positive cost from Woo OVERWRITES the child SKU's cost on every sync;
+//     null (no plugin) or zero leaves the WMS cost alone.
 // ---------------------------------------------------------------------------
 
 export type WooAddress = {
