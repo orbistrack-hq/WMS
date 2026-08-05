@@ -515,6 +515,11 @@ const WEBHOOK_TOPICS = [
   // Inbound stock signal. Subscribed so deliveries arrive; the processor leaves
   // the apply unwired until echo-loop protection lands (see process-event.ts).
   "inventory_levels/update",
+  // Unit COST changes. Cost lives on the InventoryItem, so a cost-only edit
+  // fires this and NOT products/update — without it, changing just the cost in
+  // Shopify never reaches WMS automatically. No echo risk: outbound pushes stock,
+  // never cost.
+  "inventory_items/update",
 ]
 
 /**

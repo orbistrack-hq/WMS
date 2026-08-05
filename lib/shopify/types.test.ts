@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest"
 import {
   deriveShopifyPaid,
   normalizeShopifyOrder,
+  shopifyInventoryItemCost,
   variantProductName,
   verifyShopifyHmac,
 } from "./types"
@@ -44,6 +45,42 @@ describe("variantProductName", () => {
 
   it("falls back to a placeholder for a blank product title", () => {
     expect(variantProductName("", "3.5g")).toBe("Untitled product - 3.5g")
+  })
+})
+
+describe("shopifyInventoryItemCost", () => {
+  it("reads a positive cost and stringifies the id", () => {
+    expect(shopifyInventoryItemCost({ id: 42, cost: "3.50" })).toEqual({
+      inventoryItemId: "42",
+      cost: 3.5,
+    })
+    expect(shopifyInventoryItemCost({ id: "42", cost: 7 })).toEqual({
+      inventoryItemId: "42",
+      cost: 7,
+    })
+  })
+
+  it("ignores a zero cost — Shopify reports an unset cost that way, and applying it would flatten the WMS cost", () => {
+    expect(shopifyInventoryItemCost({ id: 42, cost: "0.00" })).toBeNull()
+    expect(shopifyInventoryItemCost({ id: 42, cost: 0 })).toBeNull()
+  })
+
+  it("ignores a negative cost", () => {
+    expect(shopifyInventoryItemCost({ id: 42, cost: -1 })).toBeNull()
+  })
+
+  it("ignores a missing or non-numeric cost", () => {
+    expect(shopifyInventoryItemCost({ id: 42 })).toBeNull()
+    expect(shopifyInventoryItemCost({ id: 42, cost: null })).toBeNull()
+    expect(shopifyInventoryItemCost({ id: 42, cost: "" })).toBeNull()
+    expect(shopifyInventoryItemCost({ id: 42, cost: "n/a" })).toBeNull()
+  })
+
+  it("ignores a payload with no inventory item id", () => {
+    expect(shopifyInventoryItemCost({ cost: "3.50" })).toBeNull()
+    expect(shopifyInventoryItemCost({ id: "  ", cost: "3.50" })).toBeNull()
+    expect(shopifyInventoryItemCost(null)).toBeNull()
+    expect(shopifyInventoryItemCost(undefined)).toBeNull()
   })
 })
 

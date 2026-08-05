@@ -48,6 +48,37 @@ export type ShopifyInventoryItem = {
   cost?: string | number | null
 }
 
+/**
+ * The `inventory_items/update` webhook body. Shopify fires this when a variant's
+ * unit COST changes — a cost-only edit does NOT fire products/update, so this is
+ * the only automatic signal for it. Shape is the InventoryItem itself.
+ */
+export type ShopifyInventoryItemPayload = ShopifyInventoryItem & {
+  sku?: string | null
+}
+
+/**
+ * Read a usable (inventory item id, unit cost) pair off an inventory_items
+ * webhook body, or null when there is nothing to apply.
+ *
+ * Returns null unless the cost is finite AND POSITIVE, mirroring the `p_cost > 0`
+ * rule in upsert_store_variant (migration 0088): Shopify reports an unset cost as
+ * null or "0.00", and honouring that would zero out the WMS cost — taking
+ * inventory valuation, BOGO give-away costs, and the COGS basis with it. Clearing
+ * a cost stays a deliberate WMS-side edit.
+ */
+export function shopifyInventoryItemCost(
+  payload: ShopifyInventoryItemPayload | null | undefined,
+): { inventoryItemId: string; cost: number } | null {
+  if (!payload) return null
+  const id = payload.id != null ? String(payload.id).trim() : ""
+  if (!id) return null
+  if (payload.cost == null || payload.cost === "") return null
+  const cost = Number(payload.cost)
+  if (!Number.isFinite(cost) || cost <= 0) return null
+  return { inventoryItemId: id, cost }
+}
+
 export type ShopifyProduct = {
   id?: number | string | null
   title?: string | null
