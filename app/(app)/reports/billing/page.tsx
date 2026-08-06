@@ -105,7 +105,43 @@ function pacificBound(day: string, edge: "start" | "end"): string {
   return new Date(`${day}T${time}${sign}${hhmm}`).toISOString()
 }
 
-const ROW_LIMIT = 20000
+const PAGE_SIZE = 1000
+const MAX_ROWS = 200000
+
+/**
+ * Read every row of a query, a page at a time.
+ *
+ * `.limit(n)` is a REQUEST, not a guarantee: PostgREST enforces its own
+ * server-side max-rows cap (1000 on a stock Supabase project) and silently
+ * returns that many with no error and no indication the result was cut short.
+ *
+ * That is not merely "some totals are low". This page diffs two result sets to
+ * find orders that were never charged a pick fee, and an unordered query
+ * truncated at the cap returns an ARBITRARY subset — so an order could land in
+ * the orders page while its charge fell outside the charges page, and get
+ * reported as unbilled when it had been billed correctly all along. Backfilling
+ * it would then be a no-op and the warning would never clear, which is exactly
+ * the symptom that surfaced this.
+ *
+ * Two things make paging correct here: an explicit .order() on every query, so
+ * the pages tile a stable sequence instead of an arbitrary one, and reading
+ * until a short page arrives rather than trusting any single count.
+ */
+async function fetchAll<T>(
+  build: () => {
+    range: (a: number, b: number) => PromiseLike<{ data: unknown; error: unknown }>
+  },
+): Promise<T[]> {
+  const out: T[] = []
+  for (let offset = 0; offset < MAX_ROWS; offset += PAGE_SIZE) {
+    const { data, error } = await build().range(offset, offset + PAGE_SIZE - 1)
+    if (error) break
+    const batch = (data ?? []) as T[]
+    out.push(...batch)
+    if (batch.length < PAGE_SIZE) break
+  }
+  return out
+}
 
 function defaultRange() {
   const today = todayISODate()
@@ -128,56 +164,48 @@ export default async function BillingReportPage({
 
   const { data: sites } = await supabase.from("sites").select("id, name").order("name")
 
-  // --- Postage + packaging, group grain ------------------------------------
-  let costQ = supabase
-    .from("storefront_fulfillment_cost")
-    .select(
-      `group_id, site_id, site_name, channel, storefront, billing_date,
-       group_status, channel_count, shipping_cost, packaging_cost`,
-    )
-    .gte("billing_date", from)
-    .lte("billing_date", to)
-    .limit(20000)
-  if (sp.site) costQ = costQ.eq("site_id", sp.site)
-
-  // Both order-grain queries are bounded by the period IN THE DATABASE.
-  //
-  // They used to fetch up to the row limit and filter to the period in JS. That
-  // is unsound: the limit applies before the filter, and the two queries
-  // truncate independently, so an order could survive the cut while its pick-fee
-  // charge did not — reporting an order as unbilled when it was billed fine.
-  // Filtering server-side means each query returns only the period's rows, and
-  // the two sets are guaranteed to describe the same orders.
   const fromTs = pacificBound(from, "start")
   const toTs = pacificBound(to, "end")
 
+  // --- Postage + packaging, group grain ------------------------------------
+  const allCostRows = await fetchAll<CostRow>(() => {
+    const q = supabase
+      .from("storefront_fulfillment_cost")
+      .select(
+        `group_id, site_id, site_name, channel, storefront, billing_date,
+         group_status, channel_count, shipping_cost, packaging_cost`,
+      )
+      .gte("billing_date", from)
+      .lte("billing_date", to)
+      .order("group_id")
+    return sp.site ? q.eq("site_id", sp.site) : q
+  })
+
   // --- Pick fees, order grain ----------------------------------------------
   // !inner so a charge whose order is missing/cancelled drops out server-side.
-  let chargeQ = supabase
-    .from("billing_charges")
-    .select(`amount, order_id, orders!inner(id, site_id, status, fulfilled_at, sale_date)`)
-    .eq("fee_type", "pick_fee")
-    .neq("orders.status", "cancelled")
-    .gte("orders.fulfilled_at", fromTs)
-    .lte("orders.fulfilled_at", toTs)
-    .limit(ROW_LIMIT)
-  if (sp.site) chargeQ = chargeQ.eq("orders.site_id", sp.site)
+  const rawChargeRows = await fetchAll<ChargeRow>(() => {
+    const q = supabase
+      .from("billing_charges")
+      .select(`amount, order_id, orders!inner(id, site_id, status, fulfilled_at, sale_date)`)
+      .eq("fee_type", "pick_fee")
+      .neq("orders.status", "cancelled")
+      .gte("orders.fulfilled_at", fromTs)
+      .lte("orders.fulfilled_at", toTs)
+      .order("order_id")
+    return sp.site ? q.eq("orders.site_id", sp.site) : q
+  })
 
   // --- Fulfilled orders in the window, to catch ones we never charged for ---
-  let orderQ = supabase
-    .from("orders")
-    .select("id, order_number, site_id, fulfilled_at, sale_date")
-    .eq("status", "fulfilled")
-    .gte("fulfilled_at", fromTs)
-    .lte("fulfilled_at", toTs)
-    .limit(ROW_LIMIT)
-  if (sp.site) orderQ = orderQ.eq("site_id", sp.site)
-
-  const [{ data: costData }, { data: chargeData }, { data: orderData }] = await Promise.all([
-    costQ,
-    chargeQ,
-    orderQ,
-  ])
+  const orderRows = await fetchAll<OrderRow>(() => {
+    const q = supabase
+      .from("orders")
+      .select("id, order_number, site_id, fulfilled_at, sale_date")
+      .eq("status", "fulfilled")
+      .gte("fulfilled_at", fromTs)
+      .lte("fulfilled_at", toTs)
+      .order("id")
+    return sp.site ? q.eq("site_id", sp.site) : q
+  })
 
   // storefront_fulfillment_cost carries every group that isn't cancelled, which
   // includes OPEN ones — orders picked up by the window but not yet packed. They
@@ -185,33 +213,26 @@ export default async function BillingReportPage({
   // order that hasn't shipped would be wrong, so only fulfilled groups are
   // billable. Open groups are counted separately and disclosed, never silently
   // dropped: a brand asking "why is this month low" deserves the number.
-  const allCostRows = (costData ?? []) as unknown as CostRow[]
   const costRows = allCostRows.filter((r) => r.group_status === "fulfilled")
   const openGroups = allCostRows.filter((r) => r.group_status !== "fulfilled")
-  // Date filtering for the two order-grain queries happens here rather than in
-  // PostgREST: the billable day is a Pacific-rendered timestamp with a fallback,
-  // which no single column filter expresses.
-  const chargeRows = ((chargeData ?? []) as unknown as ChargeRow[]).filter((c) => Boolean(c.orders))
-  const orderRows = (orderData ?? []) as unknown as OrderRow[]
-
-  // If any query came back exactly full, it was cut off and the numbers below
-  // are understated. Better to say so than to quietly invoice a partial period.
-  const truncated =
-    allCostRows.length >= ROW_LIMIT ||
-    chargeRows.length >= ROW_LIMIT ||
-    orderRows.length >= ROW_LIMIT
+  const chargeRows = rawChargeRows.filter((c) => Boolean(c.orders))
 
   // --- Units per billed order ----------------------------------------------
-  // Chunked so a long period cannot blow past the URL length limit on .in().
+  // Chunked to keep the .in() list off the URL length limit, and each chunk is
+  // paged for the same max-rows reason: 200 orders can easily be more than a
+  // thousand line items, and a silent cut here would understate unit counts.
   const billedOrderIds = Array.from(new Set(chargeRows.map((c) => c.order_id)))
   const unitsByOrder = new Map<string, number>()
-  for (let i = 0; i < billedOrderIds.length; i += 300) {
-    const chunk = billedOrderIds.slice(i, i + 300)
-    const { data } = await supabase
-      .from("order_line_items")
-      .select("order_id, quantity")
-      .in("order_id", chunk)
-    for (const li of (data ?? []) as { order_id: string; quantity: number }[]) {
+  for (let i = 0; i < billedOrderIds.length; i += 200) {
+    const chunk = billedOrderIds.slice(i, i + 200)
+    const lines = await fetchAll<{ order_id: string; quantity: number }>(() =>
+      supabase
+        .from("order_line_items")
+        .select("order_id, quantity")
+        .in("order_id", chunk)
+        .order("id"),
+    )
+    for (const li of lines) {
       unitsByOrder.set(li.order_id, (unitsByOrder.get(li.order_id) ?? 0) + num(li.quantity))
     }
   }
@@ -360,8 +381,7 @@ export default async function BillingReportPage({
             <Stat label="Postage" value={formatCurrency(t.postage)} />
           </div>
 
-          {truncated ||
-          missingPickFee.length > 0 ||
+          {missingPickFee.length > 0 ||
           storeGaps.length > 0 ||
           manualGaps.length > 0 ||
           mixedChannel.length > 0 ? (
@@ -373,12 +393,6 @@ export default async function BillingReportPage({
                 </CardTitle>
               </CardHeader>
               <CardContent className="flex flex-col gap-1.5 text-sm">
-                {truncated ? (
-                  <div>
-                    This period is too large to read in one go, so the figures below are
-                    incomplete. Bill one month at a time.
-                  </div>
-                ) : null}
                 {missingPickFee.length > 0 ? (
                   <div>
                     <span className="font-semibold tabular-nums">{missingPickFee.length}</span>{" "}
