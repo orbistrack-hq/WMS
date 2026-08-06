@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { formatCurrency, todayISODate } from "@/lib/format"
 import { ExportButton } from "../export-button"
+import { CopyTableButton } from "../copy-table-button"
 import { BillingFilters } from "./billing-filters"
 
 export const dynamic = "force-dynamic"
@@ -79,18 +80,31 @@ type OrderRow = {
 
 const num = (v: number | string | null | undefined) => Number(v ?? 0)
 
-/** YYYY-MM-DD for a timestamp, rendered in the app zone (en-CA gives ISO order). */
-const pacificDay = (ts: string) =>
-  new Intl.DateTimeFormat("en-CA", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    timeZone: "America/Los_Angeles",
-  }).format(new Date(ts))
+/**
+ * The UTC instant at which a Pacific calendar day starts (or ends).
+ *
+ * Needed because fulfilled_at is a timestamptz and the period bounds are
+ * Pacific calendar dates. The offset is read from the runtime's tz database for
+ * that specific date rather than hardcoded, so the PST/PDT switch is handled —
+ * a fixed -08:00 would silently shift every summer month by an hour and move
+ * orders across the month boundary.
+ */
+function pacificBound(day: string, edge: "start" | "end"): string {
+  const probe = new Date(`${day}T12:00:00Z`)
+  const offset =
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/Los_Angeles",
+      timeZoneName: "longOffset",
+    })
+      .formatToParts(probe)
+      .find((p) => p.type === "timeZoneName")?.value ?? "GMT-08:00"
+  const sign = offset.includes("-") ? "-" : "+"
+  const hhmm = offset.replace(/^GMT[+-]?/, "") || "08:00"
+  const time = edge === "start" ? "00:00:00.000" : "23:59:59.999"
+  return new Date(`${day}T${time}${sign}${hhmm}`).toISOString()
+}
 
-/** The billable day for an order: fulfilment day in Pacific, else its sale date. */
-const orderDay = (o: { fulfilled_at: string | null; sale_date: string }) =>
-  o.fulfilled_at ? pacificDay(o.fulfilled_at) : o.sale_date
+const ROW_LIMIT = 20000
 
 function defaultRange() {
   const today = todayISODate()
@@ -125,6 +139,17 @@ export default async function BillingReportPage({
     .limit(20000)
   if (sp.site) costQ = costQ.eq("site_id", sp.site)
 
+  // Both order-grain queries are bounded by the period IN THE DATABASE.
+  //
+  // They used to fetch up to the row limit and filter to the period in JS. That
+  // is unsound: the limit applies before the filter, and the two queries
+  // truncate independently, so an order could survive the cut while its pick-fee
+  // charge did not — reporting an order as unbilled when it was billed fine.
+  // Filtering server-side means each query returns only the period's rows, and
+  // the two sets are guaranteed to describe the same orders.
+  const fromTs = pacificBound(from, "start")
+  const toTs = pacificBound(to, "end")
+
   // --- Pick fees, order grain ----------------------------------------------
   // !inner so a charge whose order is missing/cancelled drops out server-side.
   let chargeQ = supabase
@@ -132,7 +157,9 @@ export default async function BillingReportPage({
     .select(`amount, order_id, orders!inner(id, site_id, status, fulfilled_at, sale_date)`)
     .eq("fee_type", "pick_fee")
     .neq("orders.status", "cancelled")
-    .limit(20000)
+    .gte("orders.fulfilled_at", fromTs)
+    .lte("orders.fulfilled_at", toTs)
+    .limit(ROW_LIMIT)
   if (sp.site) chargeQ = chargeQ.eq("orders.site_id", sp.site)
 
   // --- Fulfilled orders in the window, to catch ones we never charged for ---
@@ -140,8 +167,9 @@ export default async function BillingReportPage({
     .from("orders")
     .select("id, order_number, site_id, fulfilled_at, sale_date")
     .eq("status", "fulfilled")
-    .not("fulfilled_at", "is", null)
-    .limit(20000)
+    .gte("fulfilled_at", fromTs)
+    .lte("fulfilled_at", toTs)
+    .limit(ROW_LIMIT)
   if (sp.site) orderQ = orderQ.eq("site_id", sp.site)
 
   const [{ data: costData }, { data: chargeData }, { data: orderData }] = await Promise.all([
@@ -162,15 +190,15 @@ export default async function BillingReportPage({
   // Date filtering for the two order-grain queries happens here rather than in
   // PostgREST: the billable day is a Pacific-rendered timestamp with a fallback,
   // which no single column filter expresses.
-  const chargeRows = ((chargeData ?? []) as unknown as ChargeRow[]).filter((c) => {
-    if (!c.orders) return false
-    const d = orderDay(c.orders)
-    return d >= from && d <= to
-  })
-  const orderRows = ((orderData ?? []) as unknown as OrderRow[]).filter((o) => {
-    const d = orderDay(o)
-    return d >= from && d <= to
-  })
+  const chargeRows = ((chargeData ?? []) as unknown as ChargeRow[]).filter((c) => Boolean(c.orders))
+  const orderRows = (orderData ?? []) as unknown as OrderRow[]
+
+  // If any query came back exactly full, it was cut off and the numbers below
+  // are understated. Better to say so than to quietly invoice a partial period.
+  const truncated =
+    allCostRows.length >= ROW_LIMIT ||
+    chargeRows.length >= ROW_LIMIT ||
+    orderRows.length >= ROW_LIMIT
 
   // --- Units per billed order ----------------------------------------------
   // Chunked so a long period cannot blow past the URL length limit on .in().
@@ -301,13 +329,16 @@ export default async function BillingReportPage({
     <>
       <PageHeader
         title="Brand billing"
-        description="What each brand owes for fulfilment in a period. Export and paste into the Fulfillment Payment Tracker."
+        description="What each brand owes for fulfillment in a period."
         action={
-          <ExportButton
-            columns={exportColumns}
-            rows={exportRows}
-            filename={`brand-billing-${from}-to-${to}.csv`}
-          />
+          <div className="flex gap-2">
+            <CopyTableButton columns={exportColumns} rows={exportRows} />
+            <ExportButton
+              columns={exportColumns}
+              rows={exportRows}
+              filename={`brand-billing-${from}-to-${to}.csv`}
+            />
+          </div>
         }
       />
 
@@ -315,8 +346,7 @@ export default async function BillingReportPage({
 
       {rows.length === 0 ? (
         <Placeholder icon={Receipt} title="Nothing billable in this period">
-          No fulfilment groups or pick fees fall in {from} to {to}. Widen the dates, or check
-          that orders in this window were actually fulfilled.
+          Nothing shipped between {from} and {to}. Try a wider date range.
         </Placeholder>
       ) : (
         <div className="flex flex-col gap-4">
@@ -326,10 +356,11 @@ export default async function BillingReportPage({
             <Stat label="Packaging" value={formatCurrency(t.packaging)} />
             <Stat label="Pick fees" value={formatCurrency(t.pickFees)} />
             <Stat label="Service total" value={formatCurrency(serviceTotal)} emphasis />
-            <Stat label="Postage (pass-through)" value={formatCurrency(t.postage)} />
+            <Stat label="Postage" value={formatCurrency(t.postage)} />
           </div>
 
-          {missingPickFee.length > 0 ||
+          {truncated ||
+          missingPickFee.length > 0 ||
           storeGaps.length > 0 ||
           manualGaps.length > 0 ||
           mixedChannel.length > 0 ? (
@@ -341,12 +372,18 @@ export default async function BillingReportPage({
                 </CardTitle>
               </CardHeader>
               <CardContent className="flex flex-col gap-1.5 text-sm">
+                {truncated ? (
+                  <div>
+                    This period is too large to read in one go, so the figures below are
+                    incomplete. Bill one month at a time.
+                  </div>
+                ) : null}
                 {missingPickFee.length > 0 ? (
                   <div>
                     <span className="font-semibold tabular-nums">{missingPickFee.length}</span>{" "}
-                    fulfilled {missingPickFee.length === 1 ? "order has" : "orders have"} no pick
-                    fee recorded — usually force-fulfilled orders. Someone still picked them, so
-                    these totals are short.{" "}
+                    shipped {missingPickFee.length === 1 ? "order has" : "orders have"} no pick fee
+                    recorded, so the pick fee total is short by whatever{" "}
+                    {missingPickFee.length === 1 ? "it" : "they"} should have been charged.{" "}
                     <span className="text-muted-foreground">
                       {missingPickFee
                         .slice(0, 8)
@@ -464,18 +501,14 @@ export default async function BillingReportPage({
           <p className="text-xs text-muted-foreground">
             {openGroups.length > 0 ? (
               <>
-                <span className="font-medium">
-                  {openGroups.length} {openGroups.length === 1 ? "group is" : "groups are"} still
-                  open in this window and {openGroups.length === 1 ? "is" : "are"} excluded
-                </span>{" "}
-                — nothing is billed until it ships. They will appear in the period they are
-                fulfilled in.{" "}
+                {openGroups.length} {openGroups.length === 1 ? "order is" : "orders are"} still
+                open in this window and {openGroups.length === 1 ? "is" : "are"} not included —
+                nothing is billed until it ships. They appear in the period they ship in.{" "}
               </>
             ) : null}
-            Service total is packaging + pick fees — the basis High 90&apos;s was billed on.
-            Postage is a carrier pass-through (actual cost where known, otherwise the estimate)
-            and is kept separate so it can be reimbursed or absorbed per brand. Product COGS is
-            not shown here: it is the brand&apos;s own inventory cost, not a fee owed to us.
+            Service total is packaging plus pick fees. Postage is shown separately because it is
+            a carrier cost passed through at what it actually cost. Product cost is not included
+            — that belongs to the brand, not to us.
           </p>
         </div>
       )}
