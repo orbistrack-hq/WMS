@@ -2,6 +2,7 @@ import { ArrowDown } from "lucide-react"
 import Link from "next/link"
 
 import { createClient } from "@/lib/supabase/server"
+import { fetchAllPages } from "@/lib/supabase/fetch-all"
 import { PageHeader } from "@/components/page-header"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import {
@@ -89,23 +90,33 @@ export default async function ReportsPage({
     .select("id, name")
     .order("name")
 
-  let query = supabase
-    .from("landed_margin_report")
-    .select(
-      `order_id, order_number, sale_date, site_id, site_name, channel,
-       revenue, discount, product_cogs, packaging_cost, shipping_cost,
-       landed_cost, gross_profit, net_profit`,
-    )
-    .order("sale_date", { ascending: true })
-    .limit(5000)
+  // Paged, not `.limit()`. PostgREST caps at 1000 rows server-side and reports
+  // no error when it truncates, so a `.limit(5000)` here quietly turned every
+  // total on this page into "the oldest 1000 orders by sale_date" once volume
+  // passed a thousand. Ordered by order_id (unique) rather than sale_date, since
+  // sale_date has heavy ties and tied rows can shuffle between page requests,
+  // duplicating some and dropping others. Sorting for display happens below.
+  const buildQuery = () => {
+    let q = supabase
+      .from("landed_margin_report")
+      .select(
+        `order_id, order_number, sale_date, site_id, site_name, channel,
+         revenue, discount, product_cogs, packaging_cost, shipping_cost,
+         landed_cost, gross_profit, net_profit`,
+      )
+      .order("order_id")
 
-  if (sp.from) query = query.gte("sale_date", sp.from)
-  if (sp.to) query = query.lte("sale_date", sp.to)
-  if (sp.site) query = query.eq("site_id", sp.site)
-  if (sp.channel) query = query.eq("channel", sp.channel)
+    if (sp.from) q = q.gte("sale_date", sp.from)
+    if (sp.to) q = q.lte("sale_date", sp.to)
+    if (sp.site) q = q.eq("site_id", sp.site)
+    if (sp.channel) q = q.eq("channel", sp.channel)
+    return q
+  }
 
-  const { data, error } = await query
-  const rows = (data ?? []) as unknown as MarginRow[]
+  // Probe once so a missing view still renders the "apply migration 0027" hint.
+  const { error } = await buildQuery().range(0, 0)
+  const rows = error ? [] : await fetchAllPages<MarginRow>(buildQuery)
+  rows.sort((a, b) => a.sale_date.localeCompare(b.sale_date))
 
   // ---- KPI totals ----------------------------------------------------------
   const t = rows.reduce(

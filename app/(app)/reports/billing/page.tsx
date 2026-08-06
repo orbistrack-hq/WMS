@@ -2,6 +2,7 @@ import Link from "next/link"
 import { Receipt, TriangleAlert } from "lucide-react"
 
 import { createClient } from "@/lib/supabase/server"
+import { fetchAllPages } from "@/lib/supabase/fetch-all"
 import { PageHeader, Placeholder } from "@/components/page-header"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
@@ -106,44 +107,6 @@ function pacificBound(day: string, edge: "start" | "end"): string {
   return new Date(`${day}T${time}${sign}${hhmm}`).toISOString()
 }
 
-const PAGE_SIZE = 1000
-const MAX_ROWS = 200000
-
-/**
- * Read every row of a query, a page at a time.
- *
- * `.limit(n)` is a REQUEST, not a guarantee: PostgREST enforces its own
- * server-side max-rows cap (1000 on a stock Supabase project) and silently
- * returns that many with no error and no indication the result was cut short.
- *
- * That is not merely "some totals are low". This page diffs two result sets to
- * find orders that were never charged a pick fee, and an unordered query
- * truncated at the cap returns an ARBITRARY subset — so an order could land in
- * the orders page while its charge fell outside the charges page, and get
- * reported as unbilled when it had been billed correctly all along. Backfilling
- * it would then be a no-op and the warning would never clear, which is exactly
- * the symptom that surfaced this.
- *
- * Two things make paging correct here: an explicit .order() on every query, so
- * the pages tile a stable sequence instead of an arbitrary one, and reading
- * until a short page arrives rather than trusting any single count.
- */
-async function fetchAll<T>(
-  build: () => {
-    range: (a: number, b: number) => PromiseLike<{ data: unknown; error: unknown }>
-  },
-): Promise<T[]> {
-  const out: T[] = []
-  for (let offset = 0; offset < MAX_ROWS; offset += PAGE_SIZE) {
-    const { data, error } = await build().range(offset, offset + PAGE_SIZE - 1)
-    if (error) break
-    const batch = (data ?? []) as T[]
-    out.push(...batch)
-    if (batch.length < PAGE_SIZE) break
-  }
-  return out
-}
-
 function defaultRange() {
   const today = todayISODate()
   const [y, m] = today.split("-")
@@ -169,7 +132,7 @@ export default async function BillingReportPage({
   const toTs = pacificBound(to, "end")
 
   // --- Packaging, group grain ----------------------------------------------
-  const allCostRows = await fetchAll<CostRow>(() => {
+  const allCostRows = await fetchAllPages<CostRow>(() => {
     const q = supabase
       .from("storefront_fulfillment_cost")
       .select(
@@ -184,7 +147,7 @@ export default async function BillingReportPage({
 
   // --- Pick fees, order grain ----------------------------------------------
   // !inner so a charge whose order is missing/cancelled drops out server-side.
-  const rawChargeRows = await fetchAll<ChargeRow>(() => {
+  const rawChargeRows = await fetchAllPages<ChargeRow>(() => {
     const q = supabase
       .from("billing_charges")
       .select(`amount, order_id, orders!inner(id, site_id, status, fulfilled_at, sale_date)`)
@@ -197,7 +160,7 @@ export default async function BillingReportPage({
   })
 
   // --- Fulfilled orders in the window, to catch ones we never charged for ---
-  const orderRows = await fetchAll<OrderRow>(() => {
+  const orderRows = await fetchAllPages<OrderRow>(() => {
     const q = supabase
       .from("orders")
       .select("id, order_number, site_id, fulfilled_at, sale_date")
@@ -226,7 +189,7 @@ export default async function BillingReportPage({
   const unitsByOrder = new Map<string, number>()
   for (let i = 0; i < billedOrderIds.length; i += 200) {
     const chunk = billedOrderIds.slice(i, i + 200)
-    const lines = await fetchAll<{ order_id: string; quantity: number }>(() =>
+    const lines = await fetchAllPages<{ order_id: string; quantity: number }>(() =>
       supabase
         .from("order_line_items")
         .select("order_id, quantity")

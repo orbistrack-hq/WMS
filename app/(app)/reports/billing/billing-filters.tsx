@@ -1,6 +1,6 @@
 "use client"
 
-import { useTransition } from "react"
+import { useEffect, useState, useTransition } from "react"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 
 import { Input } from "@/components/ui/input"
@@ -29,6 +29,36 @@ export function BillingFilters({ sites }: { sites: SiteOption[] }) {
   const to = params.get("to") ?? ""
   const site = params.get("site") ?? ""
   const hasFilters = Boolean(from || to || site)
+
+  // Dates are held locally and only committed on Apply.
+  //
+  // Navigating on each change meant picking a start date immediately reloaded
+  // the whole report against a half-set range — a wasted query, a flash of wrong
+  // numbers, and on a big period a real wait before the end date could even be
+  // entered. A date range is one decision made across two inputs, so it commits
+  // as one.
+  const [draftFrom, setDraftFrom] = useState(from)
+  const [draftTo, setDraftTo] = useState(to)
+
+  // Resync when the URL changes from anywhere else (preset buttons, Clear, back
+  // button) so the inputs never disagree with the report being shown.
+  useEffect(() => {
+    setDraftFrom(from)
+    setDraftTo(to)
+  }, [from, to])
+
+  const dirty = draftFrom !== from || draftTo !== to
+  const invalid = Boolean(draftFrom && draftTo && draftFrom > draftTo)
+
+  function applyDates() {
+    if (invalid) return
+    const next = new URLSearchParams(params.toString())
+    if (draftFrom) next.set("from", draftFrom)
+    else next.delete("from")
+    if (draftTo) next.set("to", draftTo)
+    else next.delete("to")
+    push(next)
+  }
 
   function push(next: URLSearchParams) {
     startTransition(() =>
@@ -68,9 +98,9 @@ export function BillingFilters({ sites }: { sites: SiteOption[] }) {
         Period start
         <Input
           type="date"
-          value={from}
-          max={to || undefined}
-          onChange={(e) => setParam("from", e.target.value)}
+          value={draftFrom}
+          onChange={(e) => setDraftFrom(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && applyDates()}
           className="w-40"
           aria-label="Billing period start"
         />
@@ -80,13 +110,17 @@ export function BillingFilters({ sites }: { sites: SiteOption[] }) {
         Period end
         <Input
           type="date"
-          value={to}
-          min={from || undefined}
-          onChange={(e) => setParam("to", e.target.value)}
+          value={draftTo}
+          onChange={(e) => setDraftTo(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && applyDates()}
           className="w-40"
           aria-label="Billing period end"
         />
       </label>
+
+      <Button size="sm" onClick={applyDates} disabled={!dirty || invalid || isPending}>
+        {isPending ? "Loading…" : "Apply"}
+      </Button>
 
       <label className="flex flex-col gap-1 text-xs text-muted-foreground">
         Brand
@@ -118,6 +152,16 @@ export function BillingFilters({ sites }: { sites: SiteOption[] }) {
         <Button variant="ghost" size="sm" onClick={() => push(new URLSearchParams())}>
           Clear
         </Button>
+      ) : null}
+
+      {invalid ? (
+        <span className="self-center text-xs text-destructive">
+          Start date is after the end date.
+        </span>
+      ) : dirty ? (
+        <span className="self-center text-xs text-muted-foreground">
+          Press Apply to load this period.
+        </span>
       ) : null}
     </div>
   )

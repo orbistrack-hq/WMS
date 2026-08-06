@@ -1,6 +1,6 @@
 "use client"
 
-import { useTransition } from "react"
+import { useEffect, useState, useTransition } from "react"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 
 import { Input } from "@/components/ui/input"
@@ -30,6 +30,30 @@ export function ReportsFilters({ sites }: { sites: SiteOption[] }) {
 
   const from = params.get("from") ?? ""
   const to = params.get("to") ?? ""
+
+  // Dates commit on Apply, not on every keystroke. Picking a start date used to
+  // fire a full reload against a half-set range: wasted query, wrong numbers on
+  // screen, and a wait before the end date could be entered. A range is one
+  // decision across two inputs, so it commits as one. The other filters are
+  // single-value and stay instant.
+  const [draftFrom, setDraftFrom] = useState(from)
+  const [draftTo, setDraftTo] = useState(to)
+  useEffect(() => {
+    setDraftFrom(from)
+    setDraftTo(to)
+  }, [from, to])
+  const datesDirty = draftFrom !== from || draftTo !== to
+  const datesInvalid = Boolean(draftFrom && draftTo && draftFrom > draftTo)
+
+  function applyDates() {
+    if (datesInvalid) return
+    const next = new URLSearchParams(params.toString())
+    if (draftFrom) next.set("from", draftFrom)
+    else next.delete("from")
+    if (draftTo) next.set("to", draftTo)
+    else next.delete("to")
+    startTransition(() => router.replace(`${pathname}?${next.toString()}`))
+  }
   const site = params.get("site") ?? ""
   const channel = params.get("channel") ?? ""
   const dim = params.get("dim") ?? "channel"
@@ -45,9 +69,9 @@ export function ReportsFilters({ sites }: { sites: SiteOption[] }) {
         From
         <Input
           type="date"
-          value={from}
-          max={to || undefined}
-          onChange={(e) => setParam("from", e.target.value)}
+          value={draftFrom}
+          onChange={(e) => setDraftFrom(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && applyDates()}
           className="w-40"
           aria-label="From date"
         />
@@ -57,13 +81,21 @@ export function ReportsFilters({ sites }: { sites: SiteOption[] }) {
         To
         <Input
           type="date"
-          value={to}
-          min={from || undefined}
-          onChange={(e) => setParam("to", e.target.value)}
+          value={draftTo}
+          onChange={(e) => setDraftTo(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && applyDates()}
           className="w-40"
           aria-label="To date"
         />
       </label>
+
+      <Button
+        size="sm"
+        onClick={applyDates}
+        disabled={!datesDirty || datesInvalid || isPending}
+      >
+        {isPending ? "Loading…" : "Apply"}
+      </Button>
 
       <label className="flex flex-col gap-1 text-xs text-muted-foreground">
         Site
@@ -124,6 +156,16 @@ export function ReportsFilters({ sites }: { sites: SiteOption[] }) {
           <option value="site">Site</option>
         </Select>
       </label>
+
+      {datesInvalid ? (
+        <span className="self-center text-xs text-destructive">
+          Start date is after the end date.
+        </span>
+      ) : datesDirty ? (
+        <span className="self-center text-xs text-muted-foreground">
+          Press Apply to load these dates.
+        </span>
+      ) : null}
 
       {hasFilters ? (
         <Button
