@@ -9,6 +9,7 @@ import { formatCurrency, todayISODate } from "@/lib/format"
 import { ExportButton } from "../export-button"
 import { CopyTableButton } from "../copy-table-button"
 import { BillingFilters } from "./billing-filters"
+import { BackfillPickFeesButton } from "./backfill-pick-fees-button"
 
 export const dynamic = "force-dynamic"
 
@@ -391,6 +392,9 @@ export default async function BillingReportPage({
                         .join(", ")}
                       {missingPickFee.length > 8 ? ` +${missingPickFee.length - 8} more` : ""}
                     </span>
+                    <div className="mt-2">
+                      <BackfillPickFeesButton orderIds={missingPickFee.map((o) => o.id)} />
+                    </div>
                   </div>
                 ) : null}
                 {storeGaps.length > 0 ? (
