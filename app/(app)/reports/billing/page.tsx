@@ -1,0 +1,459 @@
+import { Receipt, TriangleAlert } from "lucide-react"
+
+import { createClient } from "@/lib/supabase/server"
+import { PageHeader, Placeholder } from "@/components/page-header"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { formatCurrency, todayISODate } from "@/lib/format"
+import { ExportButton } from "../export-button"
+import { BillingFilters } from "./billing-filters"
+
+export const dynamic = "force-dynamic"
+
+type SearchParams = { from?: string; to?: string; site?: string }
+
+/**
+ * Per-brand fulfilment billing for a period — what each brand owes us.
+ *
+ * Reads the migration-0030 views plus the pick-fee ledger. That migration built
+ * the cost side and said outright that the invoice / paid-unpaid layer was "a
+ * deliberate later phase"; until that phase lands, the person doing billing
+ * exports this grid and pastes it into the Fulfillment Payment Tracker
+ * workbook, which holds invoice numbers and paid status. The CSV column order
+ * matches that workbook's Invoices sheet (columns B–J) so it is a clean paste
+ * with no rearranging — do not reorder exportColumns without updating it.
+ *
+ * THREE COSTS, TWO GRAINS:
+ *   postage + packaging  live at the FULFILLMENT GROUP grain (one row per group
+ *                        in storefront_fulfillment_cost)
+ *   pick fees            live at the ORDER grain (billing_charges, snapshotted
+ *                        at fulfilment with the fee schedule that was in force)
+ * They cannot be summed in one pass without fanning out, so each is rolled up
+ * to the brand separately and then merged on site_id.
+ *
+ * POSTAGE IS SEPARATE ON PURPOSE. It is a pass-through reimbursement; packaging
+ * and picking are the service charge. Brands are billed on one basis or the
+ * other, so both totals are shown and both go into the CSV.
+ *
+ * DATES ARE PACIFIC. The app is Pacific end-to-end (migration 0055). Period
+ * bounds are compared against billing_date (already a date) and against
+ * fulfilled_at rendered in the app zone — never the host's UTC — or an order
+ * fulfilled after 5pm on the last of the month lands in the wrong invoice.
+ */
+
+type CostRow = {
+  group_id: string
+  site_id: string
+  site_name: string | null
+  channel: string
+  storefront: string | null
+  billing_date: string
+  channel_count: number
+  shipping_cost: number | string
+  packaging_cost: number | string
+}
+
+type ChargeRow = {
+  amount: number | string
+  order_id: string
+  orders: {
+    id: string
+    site_id: string
+    status: string
+    fulfilled_at: string | null
+    sale_date: string
+  } | null
+}
+
+type OrderRow = {
+  id: string
+  order_number: string
+  site_id: string
+  fulfilled_at: string | null
+  sale_date: string
+}
+
+const num = (v: number | string | null | undefined) => Number(v ?? 0)
+
+/** YYYY-MM-DD for a timestamp, rendered in the app zone (en-CA gives ISO order). */
+const pacificDay = (ts: string) =>
+  new Intl.DateTimeFormat("en-CA", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    timeZone: "America/Los_Angeles",
+  }).format(new Date(ts))
+
+/** The billable day for an order: fulfilment day in Pacific, else its sale date. */
+const orderDay = (o: { fulfilled_at: string | null; sale_date: string }) =>
+  o.fulfilled_at ? pacificDay(o.fulfilled_at) : o.sale_date
+
+function defaultRange() {
+  const today = todayISODate()
+  const [y, m] = today.split("-")
+  const last = new Date(Number(y), Number(m), 0).getDate()
+  return { from: `${y}-${m}-01`, to: `${y}-${m}-${String(last).padStart(2, "0")}` }
+}
+
+export default async function BillingReportPage({
+  searchParams,
+}: {
+  searchParams: Promise<SearchParams>
+}) {
+  const sp = await searchParams
+  const supabase = await createClient()
+
+  const fallback = defaultRange()
+  const from = sp.from || fallback.from
+  const to = sp.to || fallback.to
+
+  const { data: sites } = await supabase.from("sites").select("id, name").order("name")
+
+  // --- Postage + packaging, group grain ------------------------------------
+  let costQ = supabase
+    .from("storefront_fulfillment_cost")
+    .select(
+      `group_id, site_id, site_name, channel, storefront, billing_date,
+       channel_count, shipping_cost, packaging_cost`,
+    )
+    .gte("billing_date", from)
+    .lte("billing_date", to)
+    .limit(20000)
+  if (sp.site) costQ = costQ.eq("site_id", sp.site)
+
+  // --- Pick fees, order grain ----------------------------------------------
+  // !inner so a charge whose order is missing/cancelled drops out server-side.
+  let chargeQ = supabase
+    .from("billing_charges")
+    .select(`amount, order_id, orders!inner(id, site_id, status, fulfilled_at, sale_date)`)
+    .eq("fee_type", "pick_fee")
+    .neq("orders.status", "cancelled")
+    .limit(20000)
+  if (sp.site) chargeQ = chargeQ.eq("orders.site_id", sp.site)
+
+  // --- Fulfilled orders in the window, to catch ones we never charged for ---
+  let orderQ = supabase
+    .from("orders")
+    .select("id, order_number, site_id, fulfilled_at, sale_date")
+    .eq("status", "fulfilled")
+    .not("fulfilled_at", "is", null)
+    .limit(20000)
+  if (sp.site) orderQ = orderQ.eq("site_id", sp.site)
+
+  const [{ data: costData }, { data: chargeData }, { data: orderData }] = await Promise.all([
+    costQ,
+    chargeQ,
+    orderQ,
+  ])
+
+  const costRows = (costData ?? []) as unknown as CostRow[]
+  // Date filtering for the two order-grain queries happens here rather than in
+  // PostgREST: the billable day is a Pacific-rendered timestamp with a fallback,
+  // which no single column filter expresses.
+  const chargeRows = ((chargeData ?? []) as unknown as ChargeRow[]).filter((c) => {
+    if (!c.orders) return false
+    const d = orderDay(c.orders)
+    return d >= from && d <= to
+  })
+  const orderRows = ((orderData ?? []) as unknown as OrderRow[]).filter((o) => {
+    const d = orderDay(o)
+    return d >= from && d <= to
+  })
+
+  // --- Units per billed order ----------------------------------------------
+  // Chunked so a long period cannot blow past the URL length limit on .in().
+  const billedOrderIds = Array.from(new Set(chargeRows.map((c) => c.order_id)))
+  const unitsByOrder = new Map<string, number>()
+  for (let i = 0; i < billedOrderIds.length; i += 300) {
+    const chunk = billedOrderIds.slice(i, i + 300)
+    const { data } = await supabase
+      .from("order_line_items")
+      .select("order_id, quantity")
+      .in("order_id", chunk)
+    for (const li of (data ?? []) as { order_id: string; quantity: number }[]) {
+      unitsByOrder.set(li.order_id, (unitsByOrder.get(li.order_id) ?? 0) + num(li.quantity))
+    }
+  }
+
+  // --- Roll both grains up to the brand ------------------------------------
+  type Brand = {
+    siteId: string
+    name: string
+    channel: string
+    storefront: string | null
+    groups: number
+    orders: number
+    units: number
+    postage: number
+    packaging: number
+    pickFees: number
+  }
+  const brands = new Map<string, Brand>()
+  const get = (siteId: string, name: string | null): Brand => {
+    const cur = brands.get(siteId) ?? {
+      siteId,
+      name: name ?? "—",
+      channel: "manual",
+      storefront: null,
+      groups: 0,
+      orders: 0,
+      units: 0,
+      postage: 0,
+      packaging: 0,
+      pickFees: 0,
+    }
+    brands.set(siteId, cur)
+    return cur
+  }
+
+  for (const r of costRows) {
+    const b = get(r.site_id, r.site_name)
+    b.channel = r.channel
+    b.storefront = r.storefront
+    b.groups += 1
+    b.postage += num(r.shipping_cost)
+    b.packaging += num(r.packaging_cost)
+  }
+  for (const c of chargeRows) {
+    if (!c.orders) continue
+    const b = get(c.orders.site_id, null)
+    b.orders += 1
+    b.pickFees += num(c.amount)
+    b.units += unitsByOrder.get(c.order_id) ?? 0
+  }
+  // A brand seen only via pick fees has no name yet; backfill from sites.
+  const siteName = new Map((sites ?? []).map((s) => [s.id, s.name]))
+  for (const b of brands.values()) {
+    if (b.name === "—") b.name = siteName.get(b.siteId) ?? "—"
+  }
+
+  const rows = Array.from(brands.values()).sort((a, b) => a.name.localeCompare(b.name))
+
+  const t = rows.reduce(
+    (acc, b) => {
+      acc.groups += b.groups
+      acc.orders += b.orders
+      acc.units += b.units
+      acc.postage += b.postage
+      acc.packaging += b.packaging
+      acc.pickFees += b.pickFees
+      return acc
+    },
+    { groups: 0, orders: 0, units: 0, postage: 0, packaging: 0, pickFees: 0 },
+  )
+  const serviceTotal = t.packaging + t.pickFees
+  const grandTotal = serviceTotal + t.postage
+
+  // --- Under-billing checks -------------------------------------------------
+  // Both are money we earned and would otherwise invoice short.
+  const chargedIds = new Set(chargeRows.map((c) => c.order_id))
+  const missingPickFee = orderRows.filter((o) => !chargedIds.has(o.id))
+  const missingPackaging = costRows.filter((r) => num(r.packaging_cost) === 0)
+  const mixedChannel = costRows.filter((r) => Number(r.channel_count) > 1)
+
+  const periodLabel = from.slice(0, 7) === to.slice(0, 7) ? from.slice(0, 7) : `${from} to ${to}`
+
+  // CSV column order mirrors the tracker's Invoices sheet, columns B–J.
+  const exportRows = rows.map((b) => ({
+    brand: b.name,
+    period_start: from,
+    period_end: to,
+    period_label: periodLabel,
+    orders: b.orders,
+    units: b.units,
+    postage: b.postage.toFixed(2),
+    packaging: b.packaging.toFixed(2),
+    pick_fees: b.pickFees.toFixed(2),
+  }))
+  const exportColumns = [
+    { key: "brand", label: "Brand" },
+    { key: "period_start", label: "Period Start" },
+    { key: "period_end", label: "Period End" },
+    { key: "period_label", label: "Period Label" },
+    { key: "orders", label: "Orders" },
+    { key: "units", label: "Units" },
+    { key: "postage", label: "Postage $" },
+    { key: "packaging", label: "Packaging $" },
+    { key: "pick_fees", label: "Pick Fees $" },
+  ]
+
+  return (
+    <>
+      <PageHeader
+        title="Brand billing"
+        description="What each brand owes for fulfilment in a period. Export and paste into the Fulfillment Payment Tracker."
+        action={
+          <ExportButton
+            columns={exportColumns}
+            rows={exportRows}
+            filename={`brand-billing-${from}-to-${to}.csv`}
+          />
+        }
+      />
+
+      <BillingFilters sites={sites ?? []} />
+
+      {rows.length === 0 ? (
+        <Placeholder icon={Receipt} title="Nothing billable in this period">
+          No fulfilment groups or pick fees fall in {from} to {to}. Widen the dates, or check
+          that orders in this window were actually fulfilled.
+        </Placeholder>
+      ) : (
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-wrap gap-3 text-sm">
+            <Stat label="Brands" value={rows.length.toLocaleString()} />
+            <Stat label="Orders" value={t.orders.toLocaleString()} />
+            <Stat label="Packaging" value={formatCurrency(t.packaging)} />
+            <Stat label="Pick fees" value={formatCurrency(t.pickFees)} />
+            <Stat label="Service total" value={formatCurrency(serviceTotal)} emphasis />
+            <Stat label="Postage (pass-through)" value={formatCurrency(t.postage)} />
+          </div>
+
+          {missingPickFee.length > 0 || missingPackaging.length > 0 || mixedChannel.length > 0 ? (
+            <Card className="border-amber-500/50 bg-amber-50/50 dark:bg-amber-950/20">
+              <CardHeader className="pb-2">
+                <CardTitle className="flex items-center gap-2 text-amber-700 dark:text-amber-400">
+                  <TriangleAlert className="size-4" />
+                  Check before you invoice
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-1.5 text-sm">
+                {missingPickFee.length > 0 ? (
+                  <div>
+                    <span className="font-semibold tabular-nums">{missingPickFee.length}</span>{" "}
+                    fulfilled {missingPickFee.length === 1 ? "order has" : "orders have"} no pick
+                    fee recorded — usually force-fulfilled orders. Someone still picked them, so
+                    these totals are short.{" "}
+                    <span className="text-muted-foreground">
+                      {missingPickFee
+                        .slice(0, 8)
+                        .map((o) => o.order_number)
+                        .join(", ")}
+                      {missingPickFee.length > 8 ? ` +${missingPickFee.length - 8} more` : ""}
+                    </span>
+                  </div>
+                ) : null}
+                {missingPackaging.length > 0 ? (
+                  <div>
+                    <span className="font-semibold tabular-nums">{missingPackaging.length}</span>{" "}
+                    fulfilment {missingPackaging.length === 1 ? "group has" : "groups have"} no
+                    packaging recorded. Backfill them on the Packaging gaps report before
+                    exporting.
+                  </div>
+                ) : null}
+                {mixedChannel.length > 0 ? (
+                  <div>
+                    <span className="font-semibold tabular-nums">{mixedChannel.length}</span>{" "}
+                    {mixedChannel.length === 1 ? "group mixes" : "groups mix"} channels, so brand
+                    attribution on {mixedChannel.length === 1 ? "it" : "them"} is a guess.
+                  </div>
+                ) : null}
+              </CardContent>
+            </Card>
+          ) : null}
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Owed by brand — {periodLabel}</CardTitle>
+            </CardHeader>
+            <CardContent className="px-0">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Brand</TableHead>
+                    <TableHead>Storefront</TableHead>
+                    <TableHead className="text-right">Orders</TableHead>
+                    <TableHead className="text-right">Units</TableHead>
+                    <TableHead className="text-right">Packaging</TableHead>
+                    <TableHead className="text-right">Pick fees</TableHead>
+                    <TableHead className="text-right">Service total</TableHead>
+                    <TableHead className="text-right">Postage</TableHead>
+                    <TableHead className="text-right">Total w/ postage</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {rows.map((b) => (
+                    <TableRow key={b.siteId}>
+                      <TableCell className="font-medium">{b.name}</TableCell>
+                      <TableCell className="text-muted-foreground">
+                        {b.storefront ?? b.channel}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">{b.orders}</TableCell>
+                      <TableCell className="text-right tabular-nums">{b.units}</TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {formatCurrency(b.packaging)}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {formatCurrency(b.pickFees)}
+                      </TableCell>
+                      <TableCell className="text-right font-semibold tabular-nums">
+                        {formatCurrency(b.packaging + b.pickFees)}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums text-muted-foreground">
+                        {formatCurrency(b.postage)}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {formatCurrency(b.packaging + b.pickFees + b.postage)}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                  <TableRow className="border-t-2 font-semibold">
+                    <TableCell>Total</TableCell>
+                    <TableCell />
+                    <TableCell className="text-right tabular-nums">{t.orders}</TableCell>
+                    <TableCell className="text-right tabular-nums">{t.units}</TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatCurrency(t.packaging)}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatCurrency(t.pickFees)}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatCurrency(serviceTotal)}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums text-muted-foreground">
+                      {formatCurrency(t.postage)}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatCurrency(grandTotal)}
+                    </TableCell>
+                  </TableRow>
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+
+          <p className="text-xs text-muted-foreground">
+            Service total is packaging + pick fees — the basis High 90&apos;s was billed on.
+            Postage is a carrier pass-through (actual cost where known, otherwise the estimate)
+            and is kept separate so it can be reimbursed or absorbed per brand. Product COGS is
+            not shown here: it is the brand&apos;s own inventory cost, not a fee owed to us.
+          </p>
+        </div>
+      )}
+    </>
+  )
+}
+
+function Stat({
+  label,
+  value,
+  emphasis,
+}: {
+  label: string
+  value: string
+  emphasis?: boolean
+}) {
+  return (
+    <div
+      className={
+        emphasis
+          ? "rounded-lg border-2 border-foreground/20 bg-muted/50 px-4 py-2"
+          : "rounded-lg border border-border px-4 py-2"
+      }
+    >
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className="text-lg font-semibold tabular-nums">{value}</div>
+    </div>
+  )
+}

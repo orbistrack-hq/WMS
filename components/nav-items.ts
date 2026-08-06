@@ -11,6 +11,7 @@ import {
   Undo2,
   PackageX,
   Clock,
+  Receipt,
   Store,
   ShoppingCart,
   Plug,
@@ -106,6 +107,12 @@ export const NAV_TREE: NavEntry[] = [
         href: "/reports",
         icon: BarChart3,
         description: "COGS, landed margin, and sales trends",
+      },
+      {
+        label: "Brand billing",
+        href: "/reports/billing",
+        icon: Receipt,
+        description: "What each brand owes for fulfillment, per period",
       },
       {
         label: "Returns",
