@@ -22,21 +22,23 @@ type SearchParams = { from?: string; to?: string; site?: string }
  * the cost side and said outright that the invoice / paid-unpaid layer was "a
  * deliberate later phase"; until that phase lands, the person doing billing
  * exports this grid and pastes it into the Fulfillment Payment Tracker
- * workbook, which holds invoice numbers and paid status. The CSV column order
- * matches that workbook's Invoices sheet (columns B–J) so it is a clean paste
- * with no rearranging — do not reorder exportColumns without updating it.
+ * workbook, which holds invoice numbers and paid status. The CSV/copy column
+ * order matches that workbook's Invoices sheet (columns B–I) so it is a clean
+ * paste with no rearranging — do not reorder exportColumns without updating it.
  *
- * THREE COSTS, TWO GRAINS:
- *   postage + packaging  live at the FULFILLMENT GROUP grain (one row per group
+ * TWO COSTS, TWO GRAINS:
+ *   packaging            lives at the FULFILLMENT GROUP grain (one row per group
  *                        in storefront_fulfillment_cost)
  *   pick fees            live at the ORDER grain (billing_charges, snapshotted
  *                        at fulfilment with the fee schedule that was in force)
  * They cannot be summed in one pass without fanning out, so each is rolled up
  * to the brand separately and then merged on site_id.
  *
- * POSTAGE IS SEPARATE ON PURPOSE. It is a pass-through reimbursement; packaging
- * and picking are the service charge. Brands are billed on one basis or the
- * other, so both totals are shown and both go into the CSV.
+ * POSTAGE IS DELIBERATELY ABSENT. ShipStation buys the labels and bills the
+ * carrier charge directly, so it never reaches this ledger. shipping_cost is
+ * therefore not read from the view at all — a column reading $0.00 on a billing
+ * screen invites someone to treat it as "no postage owed" rather than "not ours
+ * to bill", so it is removed rather than shown empty.
  *
  * DATES ARE PACIFIC. The app is Pacific end-to-end (migration 0055). Period
  * bounds are compared against billing_date (already a date) and against
@@ -53,7 +55,6 @@ type CostRow = {
   billing_date: string
   group_status: string
   channel_count: number
-  shipping_cost: number | string
   packaging_cost: number | string
 }
 
@@ -167,13 +168,13 @@ export default async function BillingReportPage({
   const fromTs = pacificBound(from, "start")
   const toTs = pacificBound(to, "end")
 
-  // --- Postage + packaging, group grain ------------------------------------
+  // --- Packaging, group grain ----------------------------------------------
   const allCostRows = await fetchAll<CostRow>(() => {
     const q = supabase
       .from("storefront_fulfillment_cost")
       .select(
         `group_id, site_id, site_name, channel, storefront, billing_date,
-         group_status, channel_count, shipping_cost, packaging_cost`,
+         group_status, channel_count, packaging_cost`,
       )
       .gte("billing_date", from)
       .lte("billing_date", to)
@@ -246,7 +247,6 @@ export default async function BillingReportPage({
     groups: number
     orders: number
     units: number
-    postage: number
     packaging: number
     pickFees: number
   }
@@ -260,7 +260,6 @@ export default async function BillingReportPage({
       groups: 0,
       orders: 0,
       units: 0,
-      postage: 0,
       packaging: 0,
       pickFees: 0,
     }
@@ -273,7 +272,6 @@ export default async function BillingReportPage({
     b.channel = r.channel
     b.storefront = r.storefront
     b.groups += 1
-    b.postage += num(r.shipping_cost)
     b.packaging += num(r.packaging_cost)
   }
   for (const c of chargeRows) {
@@ -296,15 +294,13 @@ export default async function BillingReportPage({
       acc.groups += b.groups
       acc.orders += b.orders
       acc.units += b.units
-      acc.postage += b.postage
       acc.packaging += b.packaging
       acc.pickFees += b.pickFees
       return acc
     },
-    { groups: 0, orders: 0, units: 0, postage: 0, packaging: 0, pickFees: 0 },
+    { groups: 0, orders: 0, units: 0, packaging: 0, pickFees: 0 },
   )
-  const serviceTotal = t.packaging + t.pickFees
-  const grandTotal = serviceTotal + t.postage
+  const totalBillable = t.packaging + t.pickFees
 
   // --- Under-billing checks -------------------------------------------------
   // Both are money we earned and would otherwise invoice short.
@@ -331,7 +327,6 @@ export default async function BillingReportPage({
     period_label: periodLabel,
     orders: b.orders,
     units: b.units,
-    postage: b.postage.toFixed(2),
     packaging: b.packaging.toFixed(2),
     pick_fees: b.pickFees.toFixed(2),
   }))
@@ -342,7 +337,6 @@ export default async function BillingReportPage({
     { key: "period_label", label: "Period Label" },
     { key: "orders", label: "Orders" },
     { key: "units", label: "Units" },
-    { key: "postage", label: "Postage $" },
     { key: "packaging", label: "Packaging $" },
     { key: "pick_fees", label: "Pick Fees $" },
   ]
@@ -377,8 +371,7 @@ export default async function BillingReportPage({
             <Stat label="Orders" value={t.orders.toLocaleString()} />
             <Stat label="Packaging" value={formatCurrency(t.packaging)} />
             <Stat label="Pick fees" value={formatCurrency(t.pickFees)} />
-            <Stat label="Service total" value={formatCurrency(serviceTotal)} emphasis />
-            <Stat label="Postage" value={formatCurrency(t.postage)} />
+            <Stat label="Total billable" value={formatCurrency(totalBillable)} emphasis />
           </div>
 
           {missingPickFee.length > 0 ||
@@ -459,9 +452,7 @@ export default async function BillingReportPage({
                     <TableHead className="text-right">Units</TableHead>
                     <TableHead className="text-right">Packaging</TableHead>
                     <TableHead className="text-right">Pick fees</TableHead>
-                    <TableHead className="text-right">Service total</TableHead>
-                    <TableHead className="text-right">Postage</TableHead>
-                    <TableHead className="text-right">Total w/ postage</TableHead>
+                    <TableHead className="text-right">Total billable</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -482,12 +473,6 @@ export default async function BillingReportPage({
                       <TableCell className="text-right font-semibold tabular-nums">
                         {formatCurrency(b.packaging + b.pickFees)}
                       </TableCell>
-                      <TableCell className="text-right tabular-nums text-muted-foreground">
-                        {formatCurrency(b.postage)}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums">
-                        {formatCurrency(b.packaging + b.pickFees + b.postage)}
-                      </TableCell>
                     </TableRow>
                   ))}
                   <TableRow className="border-t-2 font-semibold">
@@ -502,13 +487,7 @@ export default async function BillingReportPage({
                       {formatCurrency(t.pickFees)}
                     </TableCell>
                     <TableCell className="text-right tabular-nums">
-                      {formatCurrency(serviceTotal)}
-                    </TableCell>
-                    <TableCell className="text-right tabular-nums text-muted-foreground">
-                      {formatCurrency(t.postage)}
-                    </TableCell>
-                    <TableCell className="text-right tabular-nums">
-                      {formatCurrency(grandTotal)}
+                      {formatCurrency(totalBillable)}
                     </TableCell>
                   </TableRow>
                 </TableBody>
@@ -524,9 +503,9 @@ export default async function BillingReportPage({
                 nothing is billed until it ships. They appear in the period they ship in.{" "}
               </>
             ) : null}
-            Service total is packaging plus pick fees. Postage is shown separately because it is
-            a carrier cost passed through at what it actually cost. Product cost is not included
-            — that belongs to the brand, not to us.
+            Total billable is packaging plus pick fees. Postage is not included — ShipStation
+            handles carrier charges directly. Product cost is not included either; that belongs
+            to the brand, not to us.
           </p>
         </div>
       )}
