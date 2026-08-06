@@ -1,3 +1,4 @@
+import Link from "next/link"
 import { Receipt, TriangleAlert } from "lucide-react"
 
 import { createClient } from "@/lib/supabase/server"
@@ -48,10 +49,13 @@ type CostRow = {
   channel: string
   storefront: string | null
   billing_date: string
+  group_status: string
   channel_count: number
   shipping_cost: number | string
   packaging_cost: number | string
 }
+
+const STORE_CHANNELS = new Set(["shopify", "woocommerce"])
 
 type ChargeRow = {
   amount: number | string
@@ -114,7 +118,7 @@ export default async function BillingReportPage({
     .from("storefront_fulfillment_cost")
     .select(
       `group_id, site_id, site_name, channel, storefront, billing_date,
-       channel_count, shipping_cost, packaging_cost`,
+       group_status, channel_count, shipping_cost, packaging_cost`,
     )
     .gte("billing_date", from)
     .lte("billing_date", to)
@@ -146,7 +150,15 @@ export default async function BillingReportPage({
     orderQ,
   ])
 
-  const costRows = (costData ?? []) as unknown as CostRow[]
+  // storefront_fulfillment_cost carries every group that isn't cancelled, which
+  // includes OPEN ones — orders picked up by the window but not yet packed. They
+  // have no packaging because nobody has packed them, and billing a brand for an
+  // order that hasn't shipped would be wrong, so only fulfilled groups are
+  // billable. Open groups are counted separately and disclosed, never silently
+  // dropped: a brand asking "why is this month low" deserves the number.
+  const allCostRows = (costData ?? []) as unknown as CostRow[]
+  const costRows = allCostRows.filter((r) => r.group_status === "fulfilled")
+  const openGroups = allCostRows.filter((r) => r.group_status !== "fulfilled")
   // Date filtering for the two order-grain queries happens here rather than in
   // PostgREST: the billable day is a Pacific-rendered timestamp with a fallback,
   // which no single column filter expresses.
@@ -248,7 +260,15 @@ export default async function BillingReportPage({
   // Both are money we earned and would otherwise invoice short.
   const chargedIds = new Set(chargeRows.map((c) => c.order_id))
   const missingPickFee = orderRows.filter((o) => !chargedIds.has(o.id))
-  const missingPackaging = costRows.filter((r) => num(r.packaging_cost) === 0)
+  // Only FULFILLED groups can have a packaging gap. Split by channel because the
+  // two halves are cleared in different places: the Packaging gaps report covers
+  // store-channel orders only (migration 0062 scopes it to shopify/woocommerce),
+  // so a manual-channel gap will never show up there and has to be cleared on
+  // the packing screen. Sending someone to an empty report is how they conclude
+  // the warning is broken and start ignoring it.
+  const gaps = costRows.filter((r) => num(r.packaging_cost) === 0)
+  const storeGaps = gaps.filter((r) => STORE_CHANNELS.has(r.channel))
+  const manualGaps = gaps.filter((r) => !STORE_CHANNELS.has(r.channel))
   const mixedChannel = costRows.filter((r) => Number(r.channel_count) > 1)
 
   const periodLabel = from.slice(0, 7) === to.slice(0, 7) ? from.slice(0, 7) : `${from} to ${to}`
@@ -309,7 +329,10 @@ export default async function BillingReportPage({
             <Stat label="Postage (pass-through)" value={formatCurrency(t.postage)} />
           </div>
 
-          {missingPickFee.length > 0 || missingPackaging.length > 0 || mixedChannel.length > 0 ? (
+          {missingPickFee.length > 0 ||
+          storeGaps.length > 0 ||
+          manualGaps.length > 0 ||
+          mixedChannel.length > 0 ? (
             <Card className="border-amber-500/50 bg-amber-50/50 dark:bg-amber-950/20">
               <CardHeader className="pb-2">
                 <CardTitle className="flex items-center gap-2 text-amber-700 dark:text-amber-400">
@@ -333,12 +356,27 @@ export default async function BillingReportPage({
                     </span>
                   </div>
                 ) : null}
-                {missingPackaging.length > 0 ? (
+                {storeGaps.length > 0 ? (
                   <div>
-                    <span className="font-semibold tabular-nums">{missingPackaging.length}</span>{" "}
-                    fulfilment {missingPackaging.length === 1 ? "group has" : "groups have"} no
-                    packaging recorded. Backfill them on the Packaging gaps report before
-                    exporting.
+                    <span className="font-semibold tabular-nums">{storeGaps.length}</span>{" "}
+                    fulfilled store {storeGaps.length === 1 ? "group has" : "groups have"} no
+                    packaging recorded. Clear them on the{" "}
+                    <Link href="/reports/packaging-gaps" className="font-medium underline">
+                      Packaging gaps
+                    </Link>{" "}
+                    report, then come back and export.
+                  </div>
+                ) : null}
+                {manualGaps.length > 0 ? (
+                  <div>
+                    <span className="font-semibold tabular-nums">{manualGaps.length}</span>{" "}
+                    fulfilled manual-channel {manualGaps.length === 1 ? "group has" : "groups have"}{" "}
+                    no packaging recorded.{" "}
+                    <span className="text-muted-foreground">
+                      These do not appear on the Packaging gaps report — it only covers Shopify and
+                      WooCommerce orders. Record packaging on the packing screen for the affected
+                      group.
+                    </span>
                   </div>
                 ) : null}
                 {mixedChannel.length > 0 ? (
@@ -424,6 +462,16 @@ export default async function BillingReportPage({
           </Card>
 
           <p className="text-xs text-muted-foreground">
+            {openGroups.length > 0 ? (
+              <>
+                <span className="font-medium">
+                  {openGroups.length} {openGroups.length === 1 ? "group is" : "groups are"} still
+                  open in this window and {openGroups.length === 1 ? "is" : "are"} excluded
+                </span>{" "}
+                — nothing is billed until it ships. They will appear in the period they are
+                fulfilled in.{" "}
+              </>
+            ) : null}
             Service total is packaging + pick fees — the basis High 90&apos;s was billed on.
             Postage is a carrier pass-through (actual cost where known, otherwise the estimate)
             and is kept separate so it can be reimbursed or absorbed per brand. Product COGS is
