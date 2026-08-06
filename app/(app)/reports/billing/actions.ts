@@ -9,7 +9,7 @@ export type BackfillResult =
   | { ok: false; error: string }
 
 /**
- * Record the missing pick fee on orders that shipped without one.
+ * Record the missing pick fee on orders that were fulfilled without one.
  *
  * WHY THIS IS SAFE TO RUN ON OLD ORDERS. charge_order_pick_fee dates the charge
  * off the order's own fulfilled_at, not off today:
@@ -17,7 +17,7 @@ export type BackfillResult =
  *     select coalesce(fulfilled_at::date, current_date) into v_date
  *     v_sched := public.resolve_fee_schedule(v_date)
  *
- * so an order shipped in March is billed at March's rate even if the schedule
+ * so an order fulfilled in March is billed at March's rate even if the schedule
  * changed since. Backfilling months later produces exactly the charge that
  * should have been written at the time.
  *

@@ -8,13 +8,14 @@ import { Button } from "@/components/ui/button"
 import { backfillPickFees } from "./actions"
 
 /**
- * Fill in pick fees on orders that shipped without one.
+ * Fill in pick fees on orders that were fulfilled without one.
  *
  * Two-step: the first press asks for confirmation, the second runs it. This
  * writes billable charges, and the count is usually large enough that a
  * misfired click is not obvious afterwards — so it does not fire on one press.
  *
- * The charge is dated from each order's own fulfilment date, so the rate that
+ * The charge is dated from each order's own fulfilment date — when OT marked it
+ * fulfilled, which is the moment the picking work was done — so the rate that
  * applied then is the rate used. Running it twice is harmless: the underlying
  * function leaves an existing charge alone.
  */
@@ -82,7 +83,8 @@ export function BackfillPickFeesButton({ orderIds }: { orderIds: string[] }) {
       {armed ? (
         <span className="text-xs text-muted-foreground">
           Charges {orderIds.length} {orderIds.length === 1 ? "order" : "orders"} at the rate that
-          applied on the day each one shipped. Orders that already have a fee are left alone.
+          applied on the day each one was fulfilled. Orders that already have a fee are left
+          alone.
         </span>
       ) : null}
       {error ? <span className="text-xs text-destructive">{error}</span> : null}

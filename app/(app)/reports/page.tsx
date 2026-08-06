@@ -252,6 +252,24 @@ export default async function ReportsPage({
   })
 
   // ---- CSV (per-order detail) ----------------------------------------------
+  // Money is rounded HERE, at the edge, not in the view. landed_margin_report
+  // returns full precision on purpose (migration 0089) so that the totals above
+  // are exact; an allocated share like 1.7528333 is correct arithmetic but
+  // nonsense in a spreadsheet cell, so each row is formatted on the way out.
+  const csvRows = rows.map((r) => ({
+    order_number: r.order_number,
+    sale_date: r.sale_date,
+    site_name: r.site_name ?? "",
+    channel: r.channel,
+    revenue: num(r.revenue).toFixed(2),
+    discount: num(r.discount).toFixed(2),
+    product_cogs: num(r.product_cogs).toFixed(2),
+    packaging_cost: num(r.packaging_cost).toFixed(2),
+    shipping_cost: num(r.shipping_cost).toFixed(2),
+    landed_cost: num(r.landed_cost).toFixed(2),
+    gross_profit: num(r.gross_profit).toFixed(2),
+    net_profit: num(r.net_profit).toFixed(2),
+  }))
   const csvColumns = [
     { key: "order_number", label: "Order" },
     { key: "sale_date", label: "Sale date" },
@@ -282,7 +300,7 @@ export default async function ReportsPage({
         action={
           <ExportButton
             columns={csvColumns}
-            rows={rows as unknown as Record<string, string | number | null>[]}
+            rows={csvRows}
             filename="cogs-margin.csv"
           />
         }

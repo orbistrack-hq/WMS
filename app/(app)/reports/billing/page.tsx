@@ -41,6 +41,15 @@ type SearchParams = { from?: string; to?: string; site?: string }
  * screen invites someone to treat it as "no postage owed" rather than "not ours
  * to bill", so it is removed rather than shown empty.
  *
+ * THE BILLING BASIS IS FULFILMENT, NOT SHIPMENT. OT does not track when a
+ * parcel actually leaves — ShipStation does, and the shipments table here is
+ * optional and largely unused. billing_date is coalesce(group.fulfilled_at,
+ * group.created_at): the moment OT recorded the pick/pack work as done. That is
+ * the right basis anyway, since what is being billed IS that work — a parcel
+ * that sits in a carrier's queue for three days does not change what we did.
+ * Say "fulfilled" in anything user-facing; "shipped" implies a carrier event
+ * this system never sees.
+ *
  * DATES ARE PACIFIC. The app is Pacific end-to-end (migration 0055). Period
  * bounds are compared against billing_date (already a date) and against
  * fulfilled_at rendered in the app zone — never the host's UTC — or an order
@@ -172,9 +181,9 @@ export default async function BillingReportPage({
   })
 
   // storefront_fulfillment_cost carries every group that isn't cancelled, which
-  // includes OPEN ones — orders picked up by the window but not yet packed. They
-  // have no packaging because nobody has packed them, and billing a brand for an
-  // order that hasn't shipped would be wrong, so only fulfilled groups are
+  // includes OPEN ones — groups in the window that have not been packed yet. They
+  // have no packaging because nobody has packed them, and billing a brand for a
+  // group that isn't fulfilled yet would be wrong, so only fulfilled groups are
   // billable. Open groups are counted separately and disclosed, never silently
   // dropped: a brand asking "why is this month low" deserves the number.
   const costRows = allCostRows.filter((r) => r.group_status === "fulfilled")
@@ -325,7 +334,7 @@ export default async function BillingReportPage({
 
       {rows.length === 0 ? (
         <Placeholder icon={Receipt} title="Nothing billable in this period">
-          Nothing shipped between {from} and {to}. Try a wider date range.
+          Nothing was fulfilled between {from} and {to}. Try a wider date range.
         </Placeholder>
       ) : (
         <div className="flex flex-col gap-4">
@@ -352,7 +361,7 @@ export default async function BillingReportPage({
                 {missingPickFee.length > 0 ? (
                   <div>
                     <span className="font-semibold tabular-nums">{missingPickFee.length}</span>{" "}
-                    shipped {missingPickFee.length === 1 ? "order has" : "orders have"} no pick fee
+                    fulfilled {missingPickFee.length === 1 ? "order has" : "orders have"} no pick fee
                     recorded, so the pick fee total is short by whatever{" "}
                     {missingPickFee.length === 1 ? "it" : "they"} should have been charged.{" "}
                     <span className="text-muted-foreground">
@@ -463,7 +472,8 @@ export default async function BillingReportPage({
               <>
                 {openGroups.length} {openGroups.length === 1 ? "order is" : "orders are"} still
                 open in this window and {openGroups.length === 1 ? "is" : "are"} not included —
-                nothing is billed until it ships. They appear in the period they ship in.{" "}
+                nothing is billed until it is fulfilled. They appear in the period they are
+                fulfilled in.{" "}
               </>
             ) : null}
             Total billable is packaging plus pick fees. Postage is not included — ShipStation
