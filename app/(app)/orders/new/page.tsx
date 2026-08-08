@@ -2,6 +2,7 @@ import Link from "next/link"
 import { ArrowLeft } from "lucide-react"
 
 import { createClient } from "@/lib/supabase/server"
+import { fetchAllPages } from "@/lib/supabase/fetch-all"
 import { OrderForm, type SkuOption } from "./order-form"
 
 export const dynamic = "force-dynamic"
@@ -18,20 +19,32 @@ type SkuQueryRow = {
 export default async function NewOrderPage() {
   const supabase = await createClient()
 
-  const [sitesRes, customersRes, skusRes] = await Promise.all([
+  // Both the SKU picker and the customer picker are type-to-filter comboboxes
+  // over the FULL list — the client can only match what the server sent. A plain
+  // .select() is capped by PostgREST at 1000 rows with no error, so a catalog
+  // larger than that lost SKUs from the dropdown at random: a product could show
+  // some of its children and silently omit the rest. Page both to exhaustion.
+  // See lib/supabase/fetch-all.ts. Ordering is required for the pages to tile:
+  // id here (name is not unique — duplicate product names are allowed).
+  const [sitesRes, customers, skuRows] = await Promise.all([
     supabase.from("sites").select("id, name").eq("is_active", true).order("name"),
-    supabase.from("customers").select("id, name").order("name"),
-    supabase
-      .from("child_skus")
-      .select(
-        `id, site_id, sku, price,
-         product:products(name),
-         inventory_levels(available)`,
-      )
-      .eq("is_active", true),
+    fetchAllPages<{ id: string; name: string | null }>(() =>
+      supabase.from("customers").select("id, name").order("name").order("id"),
+    ),
+    fetchAllPages<SkuQueryRow>(() =>
+      supabase
+        .from("child_skus")
+        .select(
+          `id, site_id, sku, price,
+           product:products(name),
+           inventory_levels(available)`,
+        )
+        .eq("is_active", true)
+        .order("id"),
+    ),
   ])
 
-  const skus: SkuOption[] = ((skusRes.data ?? []) as unknown as SkuQueryRow[])
+  const skus: SkuOption[] = skuRows
     .map((s) => {
       const inv = Array.isArray(s.inventory_levels)
         ? s.inventory_levels[0]
@@ -59,7 +72,7 @@ export default async function NewOrderPage() {
 
       <OrderForm
         sites={sitesRes.data ?? []}
-        customers={customersRes.data ?? []}
+        customers={customers}
         skus={skus}
       />
     </>

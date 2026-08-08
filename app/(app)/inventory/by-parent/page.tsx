@@ -2,6 +2,7 @@ import Link from "next/link"
 import { Boxes, List } from "lucide-react"
 
 import { createClient } from "@/lib/supabase/server"
+import { fetchAllPages } from "@/lib/supabase/fetch-all"
 import { PageHeader } from "@/components/page-header"
 import { Pagination } from "@/components/pagination"
 import { DEFAULT_PAGE_SIZE, parsePageParam } from "@/lib/pagination"
@@ -49,45 +50,54 @@ export default async function InventoryByParentPage({
   // Parent SKU codes (FB-8) live on products, not the inventory_report view, so
   // fetch them separately and join in memory (keeps the view untouched). Also
   // powers searching by parent code below.
-  const { data: productSkuRows } = await supabase
-    .from("products")
-    .select("id, sku")
+  // Paged: this map has to be COMPLETE or search-by-parent-code goes wrong in a
+  // way nobody would notice — a truncated map just fails to match, so the parent
+  // code you typed looks like it doesn't exist. Ordered by id (unique); sku is
+  // nullable and non-unique, so it cannot page.
+  const productSkuRows = await fetchAllPages<{ id: string; sku: string | null }>(
+    () => supabase.from("products").select("id, sku").order("id"),
+  )
   const parentSkuById = new Map<string, string | null>(
-    ((productSkuRows ?? []) as { id: string; sku: string | null }[]).map((p) => [
-      p.id,
-      p.sku,
-    ]),
+    productSkuRows.map((p) => [p.id, p.sku]),
   )
 
-  let query = supabase
-    .from("inventory_report")
-    .select(
-      `child_sku_id, site_id, site_name, product_name, sku,
-       on_hand, available, reserved, layby, cost, value_at_cost,
-       product_id, grams_per_unit, variant_label, price, bin_location`,
-    )
-    .order("product_name")
-    .limit(5000)
+  // Paged, not `.limit(5000)`. supabase/config.toml sets max_rows = 1000, so the
+  // old .limit(5000) was silently served 1000 rows with no error — this screen
+  // showed the first 1000 child rows and dropped the rest of the catalog.
+  // Ordered by child_sku_id (unique, the view's grain); display order is applied
+  // in memory below, so DB order only has to be stable for paging.
+  const buildQuery = () => {
+    let q = supabase
+      .from("inventory_report")
+      .select(
+        `child_sku_id, site_id, site_name, product_name, sku,
+         on_hand, available, reserved, layby, cost, value_at_cost,
+         product_id, grams_per_unit, variant_label, price, bin_location`,
+      )
+      .order("child_sku_id")
 
-  if (sp.site) query = query.eq("site_id", sp.site)
-  if (sp.hideZero === "1") query = query.gt("on_hand", 0)
-  if (sp.q) {
-    // Match product name or child SKU (via the view) plus parent SKU code
-    // (resolved from the products fetch above, since the view lacks it).
-    const needle = sp.q.toLowerCase()
-    const filters = [
-      `product_name.ilike.%${sp.q}%`,
-      `sku.ilike.%${sp.q}%`,
-    ]
-    const skuMatchIds = [...parentSkuById.entries()]
-      .filter(([, sku]) => sku && sku.toLowerCase().includes(needle))
-      .map(([id]) => id)
-    if (skuMatchIds.length) filters.push(`product_id.in.(${skuMatchIds.join(",")})`)
-    query = query.or(filters.join(","))
+    if (sp.site) q = q.eq("site_id", sp.site)
+    if (sp.hideZero === "1") q = q.gt("on_hand", 0)
+    if (sp.q) {
+      // Match product name or child SKU (via the view) plus parent SKU code
+      // (resolved from the products fetch above, since the view lacks it).
+      const needle = sp.q.toLowerCase()
+      const filters = [
+        `product_name.ilike.%${sp.q}%`,
+        `sku.ilike.%${sp.q}%`,
+      ]
+      const skuMatchIds = [...parentSkuById.entries()]
+        .filter(([, sku]) => sku && sku.toLowerCase().includes(needle))
+        .map(([id]) => id)
+      if (skuMatchIds.length) filters.push(`product_id.in.(${skuMatchIds.join(",")})`)
+      q = q.or(filters.join(","))
+    }
+    return q
   }
 
-  const { data, error } = await query
-  const rows = (data ?? []) as unknown as ReportRow[]
+  // Probe once so a load failure still renders the error card below.
+  const { error } = await buildQuery().range(0, 0)
+  const rows = error ? [] : await fetchAllPages<ReportRow>(buildQuery)
 
   // ---- Group child rows into parents -> weights -> per-site cells ----------
   const parentMap = new Map<string, ParentGroup>()

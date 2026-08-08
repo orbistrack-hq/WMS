@@ -1,10 +1,18 @@
 import Link from "next/link"
 
 import { createClient } from "@/lib/supabase/server"
+import { fetchAllPages } from "@/lib/supabase/fetch-all"
 
 import { IntakeFlow } from "./intake-flow"
 
 export const dynamic = "force-dynamic"
+
+type RawProduct = {
+  id: string
+  name: string
+  sku: string | null
+  child_skus: { site_id: string }[] | null
+}
 
 export default async function IntakePage({
   searchParams,
@@ -16,12 +24,20 @@ export default async function IntakePage({
 }) {
   const sp = await searchParams
   const supabase = await createClient()
-  const [productsRes, sitesRes, poolRes] = await Promise.all([
-    supabase
-      .from("products")
-      .select("id, name, sku, child_skus(site_id)")
-      .eq("is_active", true)
-      .order("name"),
+  // The product picker searches the FULL list client-side, so a plain .select()
+  // is a trap: PostgREST caps it at 1000 rows with no error and the missing
+  // products simply cannot be found. Page to exhaustion. Ordering by (name, id)
+  // keeps the display order AND gives the unique tiebreak paging needs —
+  // duplicate product names are allowed, so name alone cannot page.
+  const [products0, sitesRes, pool] = await Promise.all([
+    fetchAllPages<RawProduct>(() =>
+      supabase
+        .from("products")
+        .select("id, name, sku, child_skus(site_id)")
+        .eq("is_active", true)
+        .order("name")
+        .order("id"),
+    ),
     supabase
       .from("sites")
       .select("id, name")
@@ -29,27 +45,26 @@ export default async function IntakePage({
       .order("name"),
     // Central (undelegated) grams on hand per parent SKU — powers the
     // "already in central inventory · Allocate now" hint on the select step.
-    supabase.from("parent_inventory").select("product_id, on_hand_grams"),
+    // Paged for the same reason: a truncated map reads as centralGrams 0, which
+    // hides the "Allocate now" hint on stock that is actually sitting there.
+    fetchAllPages<{ product_id: string; on_hand_grams: number | string }>(() =>
+      supabase
+        .from("parent_inventory")
+        .select("product_id, on_hand_grams")
+        .order("product_id"),
+    ),
   ])
 
   const sites = (sitesRes.data ?? []) as { id: string; name: string }[]
   const siteNameById = new Map(sites.map((s) => [s.id, s.name]))
 
   const centralById = new Map(
-    ((poolRes.data ?? []) as { product_id: string; on_hand_grams: number | string }[]).map(
-      (r) => [r.product_id, Number(r.on_hand_grams) || 0],
-    ),
+    pool.map((r) => [r.product_id, Number(r.on_hand_grams) || 0]),
   )
 
   // Which site(s) each parent actually has children in — so a parent with a
   // duplicate name can be told apart by site when selecting it.
-  const rawProducts = (productsRes.data ?? []) as unknown as {
-    id: string
-    name: string
-    sku: string | null
-    child_skus: { site_id: string }[] | null
-  }[]
-  const products = rawProducts.map((p) => ({
+  const products = products0.map((p) => ({
     id: p.id,
     name: p.name,
     sku: p.sku,

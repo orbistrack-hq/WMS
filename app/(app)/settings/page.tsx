@@ -1,5 +1,14 @@
 import Link from "next/link"
-import { Box, Building2, FolderTree, PackageMinus, ShoppingCart, Store, UserCircle } from "lucide-react"
+import {
+  Box,
+  Building2,
+  DollarSign,
+  FolderTree,
+  PackageMinus,
+  ShoppingCart,
+  Store,
+  UserCircle,
+} from "lucide-react"
 
 import { createClient } from "@/lib/supabase/server"
 import { PageHeader } from "@/components/page-header"
@@ -33,7 +42,15 @@ export default async function SettingsPage() {
 
   const role = (profile?.role as string) ?? "operator"
 
-  const sections = [
+  const sections: {
+    title: string
+    description: string
+    href: string
+    icon: typeof Building2
+    adminOnly: boolean
+    /** Overrides the "Admin" chip when a section is open to more than admins. */
+    badgeLabel?: string
+  }[] = [
     {
       title: "Sites",
       description: "Warehouses and locations. Everything is scoped per site.",
@@ -54,6 +71,15 @@ export default async function SettingsPage() {
       href: "/settings/packaging",
       icon: Box,
       adminOnly: true,
+    },
+    {
+      title: "Pick fee",
+      description:
+        "What each order is billed for picking. Dated, so a change only affects orders picked from that day on.",
+      href: "/settings/pick-fee",
+      icon: DollarSign,
+      adminOnly: true,
+      badgeLabel: "Admin · Manager",
     },
     {
       title: "Low stock",
@@ -124,7 +150,7 @@ export default async function SettingsPage() {
                     <CardTitle className="flex items-center gap-2 text-base">
                       {s.title}
                       {s.adminOnly ? (
-                        <Badge variant="muted">Admin</Badge>
+                        <Badge variant="muted">{s.badgeLabel ?? "Admin"}</Badge>
                       ) : null}
                     </CardTitle>
                     <CardDescription>{s.description}</CardDescription>
