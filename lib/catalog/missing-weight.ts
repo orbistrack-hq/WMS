@@ -1,5 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 
+import { fetchAllPages } from "@/lib/supabase/fetch-all"
+
 // ---------------------------------------------------------------------------
 // "Missing weight" definition — shared by the catalog warning, the packing
 // queue/wave badges, the pack screen banner, and the packaging-gaps report so
@@ -47,11 +49,17 @@ export async function childCountsByParent(
 ): Promise<Map<string, number>> {
   const counts = new Map<string, number>()
   if (productIds.length === 0) return counts
-  const { data } = await supabase
-    .from("child_skus")
-    .select("product_id")
-    .in("product_id", productIds)
-  for (const r of (data ?? []) as { product_id: string }[])
+  // Paged. This is a count, so truncation does not just drop rows — it UNDER-
+  // counts a parent's children, and a parent whose real count is >= 2 can fall
+  // under the threshold and stop being warned about. Ordered by id (PK).
+  const data = await fetchAllPages<{ product_id: string }>(() =>
+    supabase
+      .from("child_skus")
+      .select("product_id")
+      .in("product_id", productIds)
+      .order("id"),
+  )
+  for (const r of data)
     counts.set(r.product_id, (counts.get(r.product_id) ?? 0) + 1)
   return counts
 }
@@ -64,19 +72,18 @@ export async function childCountsByParent(
 export async function missingWeightParentIds(
   supabase: SupabaseClient,
 ): Promise<string[]> {
-  const { data: missingRows } = await supabase
-    .from("child_skus")
-    .select("product_id")
-    .eq("is_active", true)
-    .is("grams_per_unit", null)
-    .is("variant_label", null)
-  const candidates = [
-    ...new Set(
-      ((missingRows ?? []) as { product_id: string }[]).map(
-        (r) => r.product_id,
-      ),
-    ),
-  ]
+  // Paged: a truncated scan silently shrinks the warning set, so a product with
+  // a real weight gap just stops being flagged. Ordered by id (PK).
+  const missingRows = await fetchAllPages<{ product_id: string }>(() =>
+    supabase
+      .from("child_skus")
+      .select("product_id")
+      .eq("is_active", true)
+      .is("grams_per_unit", null)
+      .is("variant_label", null)
+      .order("id"),
+  )
+  const candidates = [...new Set(missingRows.map((r) => r.product_id))]
   if (candidates.length === 0) return []
   const counts = await childCountsByParent(supabase, candidates)
   return candidates.filter((id) => qualifiesForWeightWarning(counts.get(id) ?? 0))

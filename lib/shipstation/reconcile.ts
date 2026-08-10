@@ -1,5 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 
+import { fetchAllPages } from "@/lib/supabase/fetch-all"
+
 // ---------------------------------------------------------------------------
 // OT ⇄ ShipStation alignment. Pulls several ShipStation order statuses and the
 // OT orders they map to, then computes a set of discrepancy buckets. Every
@@ -327,12 +329,25 @@ export async function reconcileShipStation(
 
   // Tier 3: duplicate imports — one store order mapped to >1 OT order.
   const duplicateImports: ReconcileRow[] = []
-  const { data: imps } = await db
-    .from("store_order_imports")
-    .select("channel, source, external_order_id, wms_order_id")
-    .not("wms_order_id", "is", null)
+  // Paged: this is a group-by over the WHOLE table, and a truncated scan is
+  // worse than a short one. At 1000 rows (the PostgREST cap, silent) the two
+  // halves of a duplicate pair can land on opposite sides of the cut, so the
+  // pair reads as a single import and the duplicate is never reported. Ordered
+  // by id (PK) — the grouping key is by definition not unique here.
+  const imps = await fetchAllPages<{
+    channel: string
+    source: string
+    external_order_id: string
+    wms_order_id: string | null
+  }>(() =>
+    db
+      .from("store_order_imports")
+      .select("channel, source, external_order_id, wms_order_id")
+      .not("wms_order_id", "is", null)
+      .order("id"),
+  )
   const seen = new Map<string, Set<string>>()
-  for (const r of imps ?? []) {
+  for (const r of imps) {
     const k = `${r.channel}|${r.source}|${r.external_order_id}`
     if (!seen.has(k)) seen.set(k, new Set())
     seen.get(k)!.add(r.wms_order_id as string)
