@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { Check, ChevronDown, Search } from "lucide-react"
+import { Check, ChevronDown, Plus, Search } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 
@@ -22,6 +22,13 @@ export type ComboboxOption = {
  * Keyboard: ↑/↓ move, Enter selects, Esc closes, typing filters. Closes on
  * outside click. No portal — it positions under the trigger, which is fine for
  * the form/filter contexts here (no clipping overflow parents).
+ *
+ * FREE TEXT. Pass `onCreate` to let the user commit a value that isn't in the
+ * list — the search box grows a "Use <what they typed>" row, and Enter on an
+ * empty result list takes it. Used for manual orders to a customer who has
+ * never bought anything (influencer seeding), where requiring an existing
+ * record is the whole problem. `createLabel` renames the row. Without
+ * `onCreate` the component stays strictly select-only, as everywhere else.
  */
 export function Combobox({
   value,
@@ -30,6 +37,8 @@ export function Combobox({
   placeholder = "Select…",
   searchPlaceholder = "Search…",
   emptyText = "No matches.",
+  onCreate,
+  createLabel = (q) => `Use “${q}”`,
   className,
   contentClassName,
   disabled,
@@ -43,6 +52,9 @@ export function Combobox({
   placeholder?: string
   searchPlaceholder?: string
   emptyText?: string
+  /** Enables free text. Called with the trimmed query when the user commits it. */
+  onCreate?: (query: string) => void
+  createLabel?: (query: string) => string
   className?: string
   contentClassName?: string
   disabled?: boolean
@@ -103,9 +115,26 @@ export function Combobox({
       ?.scrollIntoView({ block: "nearest" })
   }, [active, open, filtered.length])
 
+  const trimmedQuery = query.trim()
+  // Offer the create row only when the text differs from every option already
+  // shown, so "Jane Doe" typed in full doesn't sit next to an identical "Jane
+  // Doe" the user should be picking instead.
+  const canCreate =
+    !!onCreate &&
+    trimmedQuery.length > 0 &&
+    !options.some(
+      (o) => o.label.trim().toLowerCase() === trimmedQuery.toLowerCase(),
+    )
+
   function commit(opt: ComboboxOption | undefined) {
     if (!opt || opt.disabled) return
     onValueChange(opt.value)
+    setOpen(false)
+  }
+
+  function commitCreate() {
+    if (!canCreate) return
+    onCreate?.(trimmedQuery)
     setOpen(false)
   }
 
@@ -120,7 +149,10 @@ export function Combobox({
     } else if (e.key === "Enter") {
       if (open) {
         e.preventDefault()
-        commit(filtered[active])
+        // Nothing matched what they typed, so Enter means "use it as-is"
+        // rather than doing nothing — the fast path for a new influencer.
+        if (filtered.length === 0) commitCreate()
+        else commit(filtered[active])
       } else {
         e.preventDefault()
         setOpen(true)
@@ -184,10 +216,23 @@ export function Combobox({
             />
           </div>
 
+          {canCreate ? (
+            <button
+              type="button"
+              onClick={commitCreate}
+              className="flex w-full items-center gap-2 border-b border-border px-2.5 py-2 text-left text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground"
+            >
+              <Plus className="size-4 shrink-0 text-muted-foreground" />
+              <span className="truncate">{createLabel(trimmedQuery)}</span>
+            </button>
+          ) : null}
+
           {filtered.length === 0 ? (
-            <p className="px-3 py-6 text-center text-sm text-muted-foreground">
-              {emptyText}
-            </p>
+            canCreate ? null : (
+              <p className="px-3 py-6 text-center text-sm text-muted-foreground">
+                {emptyText}
+              </p>
+            )
           ) : (
             <ul
               ref={listRef}

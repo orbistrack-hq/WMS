@@ -25,6 +25,7 @@ import {
   markCompletedAtStore,
   reopenOrder,
   returnOrder,
+  setOrderPromo,
   setStatus,
   toggleHold,
 } from "../actions"
@@ -42,6 +43,7 @@ export function OrderActions({
   status,
   onHold,
   backordered,
+  isPromo,
   canForceFulfill,
   combinable,
 }: {
@@ -49,6 +51,7 @@ export function OrderActions({
   status: OrderStatus
   onHold: boolean
   backordered: boolean
+  isPromo: boolean
   canForceFulfill: boolean
   combinable: Combinable[]
 }) {
@@ -67,6 +70,36 @@ export function OrderActions({
   }
 
   const active = isActive(status)
+
+  // Reporting-only marker, so unlike every other control here it stays usable
+  // after the order is terminal — retro-flagging an influencer order that was
+  // fulfilled last month is the common case. Hidden on cancelled orders, which
+  // never reach the margin reports at all. Toggling only moves the order's cost
+  // between "net profit" and "promo spend"; no inventory moves.
+  const promoToggle =
+    status === "cancelled" ? null : (
+      <div className="flex flex-col gap-1.5 rounded-lg border border-border p-2.5">
+        <label
+          htmlFor="promo-toggle"
+          className="flex cursor-pointer items-center gap-2 text-sm font-medium"
+        >
+          <input
+            id="promo-toggle"
+            type="checkbox"
+            className="size-4 accent-primary"
+            checked={isPromo}
+            disabled={isPending}
+            onChange={(e) => run(() => setOrderPromo(orderId, e.target.checked))}
+          />
+          Promo / giveaway
+        </label>
+        <p className="text-xs text-muted-foreground">
+          {isPromo
+            ? "Excluded from revenue and profit on Analytics; its landed cost is counted as promo spend."
+            : "Mark influencer seeding, samples and gifts so they don't drag down margin."}
+        </p>
+      </div>
+    )
 
   if (!active) {
     return (
@@ -106,6 +139,7 @@ export function OrderActions({
             <RotateCcw data-icon="inline-start" /> Re-open order
           </Button>
         ) : null}
+        {promoToggle}
       </div>
     )
   }
@@ -189,6 +223,8 @@ export function OrderActions({
           <XCircle data-icon="inline-start" /> Cancel
         </Button>
       </div>
+
+      {promoToggle}
 
       {/* Completed at the store — shipped outside OT (e.g. ShipStation) */}
       <div className="flex flex-col gap-2 rounded-lg border border-border p-3">

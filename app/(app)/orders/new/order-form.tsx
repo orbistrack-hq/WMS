@@ -42,6 +42,9 @@ type Line = {
 let keyCounter = 0
 const newKey = () => `line-${keyCounter++}`
 
+/** Sentinel option value for a customer name typed but not yet created. */
+const NEW_CUSTOMER = "__new_customer__"
+
 export function OrderForm({
   sites,
   customers,
@@ -57,9 +60,16 @@ export function OrderForm({
 
   const [siteId, setSiteId] = useState(sites[0]?.id ?? "")
   const [customerId, setCustomerId] = useState("")
+  // A name typed into the customer picker that isn't in the list yet. Held
+  // separately from customerId — the customer row doesn't exist until the order
+  // is submitted, so there is no id to select. Exactly one of the two is ever
+  // set; picking from the list clears this, typing a new name clears that.
+  const [newCustomerName, setNewCustomerName] = useState("")
+  const [newCustomerEmail, setNewCustomerEmail] = useState("")
   const [orderType, setOrderType] = useState<"standard" | "layaway">("standard")
   const [saleDate, setSaleDate] = useState(todayISODate())
   const [notes, setNotes] = useState("")
+  const [isPromo, setIsPromo] = useState(false)
 
   // Ship-to (optional)
   const [shipName, setShipName] = useState("")
@@ -101,9 +111,31 @@ export function OrderForm({
         value: c.id,
         label: c.name ?? "Unnamed customer",
       })),
+      // A name typed but not yet saved needs an option to select, or the
+      // trigger would fall back to the "No customer" placeholder and look like
+      // the entry was discarded. NEW_CUSTOMER is a sentinel, never sent to the
+      // server — submit() reads newCustomerName instead.
+      ...(newCustomerName
+        ? [{ value: NEW_CUSTOMER, label: `${newCustomerName} (new)` }]
+        : []),
     ],
-    [customers],
+    [customers, newCustomerName],
   )
+
+  function pickCustomer(next: string) {
+    // Selecting a real customer (or "No customer") drops the pending new name;
+    // the two are mutually exclusive. Re-selecting the sentinel itself is a
+    // no-op so the typed name survives closing and reopening the picker.
+    if (next === NEW_CUSTOMER) return
+    setCustomerId(next)
+    setNewCustomerName("")
+    setNewCustomerEmail("")
+  }
+
+  function createCustomer(name: string) {
+    setNewCustomerName(name)
+    setCustomerId("")
+  }
 
   function changeSite(next: string) {
     setSiteId(next)
@@ -119,18 +151,50 @@ export function OrderForm({
     )
   }
 
-  function pickSku(key: string, skuId: string) {
+  /**
+   * The price a line should start at. A giveaway defaults to $0 rather than the
+   * SKU's list price — otherwise the order carries phantom revenue someone has
+   * to zero out by hand, and one missed line puts fake income in the books.
+   */
+  function defaultPrice(skuId: string, promo: boolean): string {
+    if (promo) return "0"
     const sku = skuById.get(skuId)
+    return sku ? String(sku.price) : ""
+  }
+
+  function pickSku(key: string, skuId: string) {
     updateLine(key, {
       child_sku_id: skuId,
-      unit_price: sku ? String(sku.price) : "",
+      unit_price: defaultPrice(skuId, isPromo),
     })
+  }
+
+  /**
+   * Turning promo ON zeroes the prices already entered. Turning it OFF restores
+   * each line's list price, since the usual reason to untick is "this isn't a
+   * giveaway after all" and re-typing every price would be busywork. Prices
+   * stay editable either way — a partly-comped order is still expressible.
+   */
+  function togglePromo(next: boolean) {
+    setIsPromo(next)
+    setLines((prev) =>
+      prev.map((l) =>
+        l.child_sku_id
+          ? { ...l, unit_price: defaultPrice(l.child_sku_id, next) }
+          : l,
+      ),
+    )
   }
 
   function addLine() {
     setLines((prev) => [
       ...prev,
-      { key: newKey(), child_sku_id: "", quantity: "1", unit_price: "" },
+      {
+        key: newKey(),
+        child_sku_id: "",
+        quantity: "1",
+        unit_price: isPromo ? "0" : "",
+      },
     ])
   }
 
@@ -174,6 +238,8 @@ export function OrderForm({
     const input: CreateOrderInput = {
       site_id: siteId,
       customer_id: customerId || null,
+      customer_name: newCustomerName || null,
+      customer_email: newCustomerEmail || null,
       order_type: orderType,
       sale_date: saleDate || null,
       ship_to_name: shipName || null,
@@ -184,6 +250,7 @@ export function OrderForm({
       ship_to_postal: shipPostal || null,
       ship_to_country: shipCountry || null,
       notes: notes || null,
+      is_promo: isPromo,
       lines: validLines.map((l) => ({
         child_sku_id: l.child_sku_id,
         quantity: Number(l.quantity),
@@ -365,13 +432,30 @@ export function OrderForm({
               <Label htmlFor="customer">Customer</Label>
               <Combobox
                 id="customer"
-                value={customerId}
-                onValueChange={setCustomerId}
+                value={newCustomerName ? NEW_CUSTOMER : customerId}
+                onValueChange={pickCustomer}
                 options={customerOptions}
                 placeholder="No customer"
-                searchPlaceholder="Search customers…"
+                searchPlaceholder="Search or type a new name…"
                 emptyText="No matching customer."
+                onCreate={createCustomer}
+                createLabel={(q) => `Add “${q}” as a new customer`}
               />
+              {newCustomerName ? (
+                <>
+                  <Input
+                    value={newCustomerEmail}
+                    onChange={(e) => setNewCustomerEmail(e.target.value)}
+                    placeholder="Email (optional)"
+                    type="email"
+                    aria-label="New customer email"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    {newCustomerName} will be added when you create the order.
+                    An existing customer with the same name is reused instead.
+                  </p>
+                </>
+              ) : null}
             </div>
             <div className="flex flex-col gap-1">
               <Label htmlFor="type">Order type</Label>
@@ -392,6 +476,26 @@ export function OrderForm({
                 {orderType === "layaway"
                   ? "Stock is removed now; payment taken later."
                   : "Stock is reserved until fulfilled or cancelled."}
+              </p>
+            </div>
+            <div className="flex flex-col gap-1.5 rounded-lg border border-border p-2.5">
+              <label
+                htmlFor="promo"
+                className="flex cursor-pointer items-center gap-2 text-sm font-medium"
+              >
+                <input
+                  id="promo"
+                  type="checkbox"
+                  className="size-4 accent-primary"
+                  checked={isPromo}
+                  onChange={(e) => togglePromo(e.target.checked)}
+                />
+                Promo / giveaway
+              </label>
+              <p className="text-xs text-muted-foreground">
+                {isPromo
+                  ? "Kept out of revenue and profit on Analytics; its landed cost is reported as promo spend. Stock still ships and is deducted normally."
+                  : "For influencer seeding, samples and gifts you don't expect to earn on."}
               </p>
             </div>
             <div className="flex flex-col gap-1">

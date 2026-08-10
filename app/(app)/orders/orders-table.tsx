@@ -3,7 +3,14 @@
 import { useMemo, useState, useTransition } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { CheckCheck, Loader2, PauseCircle, PlayCircle, Zap } from "lucide-react"
+import {
+  CheckCheck,
+  Gift,
+  Loader2,
+  PauseCircle,
+  PlayCircle,
+  Zap,
+} from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -28,6 +35,7 @@ import {
   bulkForceFulfill,
   bulkFulfill,
   bulkSetHold,
+  bulkSetPromo,
   bulkSetStatus,
   type BulkResult,
 } from "./actions"
@@ -44,6 +52,7 @@ export type OrderTableRow = {
   hold_reason: string | null
   order_type: "standard" | "layaway"
   channel: OrderChannel
+  is_promo: boolean
   sale_date: string
   customerName: string | null
   siteName: string | null
@@ -77,9 +86,19 @@ export function OrdersTable({
     return m
   }, [rows])
 
-  // Only orders that can still take a label/terminal move are selectable.
+  // Anything but a cancelled order is selectable. This used to be isActive()
+  // only — i.e. lifecycle moves — but promo flagging is reporting-only and its
+  // whole point is retro-tagging influencer orders that already SHIPPED, so a
+  // fulfilled order has to be reachable. Cancelled orders never enter the
+  // margin reports and take no lifecycle move, so they stay unselectable.
+  //
+  // Each bulk action then narrows the selection to the rows it can actually
+  // act on (selectedActive / selectedBackordered / selectedNotPromo below),
+  // which is the pattern force-fulfill already used. Selecting everything and
+  // hitting "Mark fulfilled" therefore still only fulfils the open orders
+  // rather than erroring once per closed one.
   const selectableIds = useMemo(
-    () => rows.filter((r) => isActive(r.status)).map((r) => r.id),
+    () => rows.filter((r) => r.status !== "cancelled").map((r) => r.id),
     [rows],
   )
   const allSelected =
@@ -100,9 +119,19 @@ export function OrdersTable({
 
   const selectedIds = [...selected]
   const selectedCount = selectedIds.length
+  // Lifecycle moves (fulfil, stage, hold) only apply to still-open orders.
+  const selectedActive = selectedIds.filter((id) => {
+    const s = byId.get(id)?.status
+    return s ? isActive(s) : false
+  })
   // Force-fulfill only applies to backordered orders (normal fulfill covers the
   // rest); target just those in the selection.
   const selectedBackordered = selectedIds.filter((id) => byId.get(id)?.backordered)
+  // Promo flagging is a toggle, so target only the orders that would actually
+  // change: a selection of ten where nine are already promo shows just
+  // "Unmark promo", and marking the tenth doesn't re-write the other nine.
+  const selectedNotPromo = selectedIds.filter((id) => !byId.get(id)?.is_promo)
+  const selectedPromo = selectedIds.filter((id) => byId.get(id)?.is_promo)
 
   function run(verb: string, fn: () => Promise<BulkResult>) {
     setSummary(null)
@@ -138,8 +167,8 @@ export function OrdersTable({
                   checked={allSelected}
                   disabled={selectableIds.length === 0}
                   onChange={toggleAll}
-                  aria-label="Select all active orders"
-                  title="Select all active orders on this page"
+                  aria-label="Select all orders"
+                  title="Select every order on this page except cancelled ones"
                 />
               </TableHead>
               <TableHead>Order</TableHead>
@@ -155,7 +184,7 @@ export function OrdersTable({
           <TableBody>
             {rows.map((o) => {
               const badge = orderBadge(o.status, o.hold_reason)
-              const selectable = isActive(o.status)
+              const selectable = o.status !== "cancelled"
               const isSelected = selected.has(o.id)
               return (
                 <TableRow key={o.id} data-state={isSelected ? "selected" : undefined}>
@@ -168,7 +197,7 @@ export function OrdersTable({
                       onChange={() => toggle(o.id)}
                       aria-label={`Select order ${o.order_number}`}
                       title={
-                        selectable ? "Select order" : "This order is already closed"
+                        selectable ? "Select order" : "This order is cancelled"
                       }
                     />
                   </TableCell>
@@ -188,6 +217,15 @@ export function OrdersTable({
                       {o.on_hold ? <Badge variant="destructive">Hold</Badge> : null}
                       {o.order_type === "layaway" ? (
                         <Badge variant="outline">Layaway</Badge>
+                      ) : null}
+                      {o.is_promo ? (
+                        <Badge
+                          variant="outline"
+                          className="border-violet-500/50 text-violet-700 dark:text-violet-400"
+                          title="Promo / giveaway — excluded from revenue and profit on Analytics"
+                        >
+                          Promo
+                        </Badge>
                       ) : null}
                       {o.backordered ? (
                         <Badge variant="warning">Backordered</Badge>
@@ -271,26 +309,29 @@ export function OrdersTable({
             {pending ? (
               <Loader2 className="size-4 animate-spin text-muted-foreground" />
             ) : null}
+            {/* Lifecycle moves act on selectedActive, not the raw selection —
+                closed orders can now be selected for promo flagging and must
+                not be dragged into a fulfil/stage call that would only fail. */}
             <Button
               size="sm"
-              disabled={pending}
-              onClick={() => run("fulfilled", () => bulkFulfill(selectedIds))}
+              disabled={pending || selectedActive.length === 0}
+              onClick={() => run("fulfilled", () => bulkFulfill(selectedActive))}
             >
               <CheckCheck className="size-4" /> Mark fulfilled
             </Button>
             <Button
               size="sm"
               variant="outline"
-              disabled={pending}
-              onClick={() => run("moved to picking", () => bulkSetStatus(selectedIds, "picking"))}
+              disabled={pending || selectedActive.length === 0}
+              onClick={() => run("moved to picking", () => bulkSetStatus(selectedActive, "picking"))}
             >
               Picking
             </Button>
             <Button
               size="sm"
               variant="outline"
-              disabled={pending}
-              onClick={() => run("moved to packed", () => bulkSetStatus(selectedIds, "packed"))}
+              disabled={pending || selectedActive.length === 0}
+              onClick={() => run("moved to packed", () => bulkSetStatus(selectedActive, "packed"))}
             >
               Packed
             </Button>
@@ -327,19 +368,50 @@ export function OrdersTable({
                 <Zap className="size-4" /> Force fulfill
               </Button>
             ) : null}
+            {selectedNotPromo.length > 0 ? (
+              <Button
+                size="sm"
+                variant="outline"
+                className="border-violet-500/50 text-violet-700 hover:bg-violet-500/10 dark:text-violet-400"
+                disabled={pending}
+                onClick={() =>
+                  run("marked promo", () => bulkSetPromo(selectedNotPromo, true))
+                }
+              >
+                <Gift className="size-4" /> Mark promo
+                {selectedNotPromo.length !== selectedCount
+                  ? ` (${selectedNotPromo.length})`
+                  : ""}
+              </Button>
+            ) : null}
+            {selectedPromo.length > 0 ? (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={pending}
+                onClick={() =>
+                  run("unmarked promo", () => bulkSetPromo(selectedPromo, false))
+                }
+              >
+                <Gift className="size-4" /> Unmark promo
+                {selectedPromo.length !== selectedCount
+                  ? ` (${selectedPromo.length})`
+                  : ""}
+              </Button>
+            ) : null}
             <Button
               size="sm"
               variant="outline"
-              disabled={pending}
-              onClick={() => run("put on hold", () => bulkSetHold(selectedIds, true))}
+              disabled={pending || selectedActive.length === 0}
+              onClick={() => run("put on hold", () => bulkSetHold(selectedActive, true))}
             >
               <PauseCircle className="size-4" /> Hold
             </Button>
             <Button
               size="sm"
               variant="outline"
-              disabled={pending}
-              onClick={() => run("taken off hold", () => bulkSetHold(selectedIds, false))}
+              disabled={pending || selectedActive.length === 0}
+              onClick={() => run("taken off hold", () => bulkSetHold(selectedActive, false))}
             >
               <PlayCircle className="size-4" /> Unhold
             </Button>

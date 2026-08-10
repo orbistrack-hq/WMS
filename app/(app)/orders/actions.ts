@@ -20,6 +20,15 @@ export type CreateOrderLine = {
 export type CreateOrderInput = {
   site_id: string
   customer_id?: string | null
+  /**
+   * A customer name typed into the form that isn't in the list yet — resolved
+   * to a real customer row before the order is written. Ignored when
+   * customer_id is set. Exists for manual orders to people who have never
+   * bought anything (influencer seeding), who by definition aren't in a table
+   * populated entirely by store sync.
+   */
+  customer_name?: string | null
+  customer_email?: string | null
   channel?: OrderChannel
   order_type?: OrderType
   sale_date?: string | null
@@ -31,6 +40,8 @@ export type CreateOrderInput = {
   ship_to_postal?: string | null
   ship_to_country?: string | null
   notes?: string | null
+  /** Marketing giveaway (influencer seeding). Kept out of profit reporting. */
+  is_promo?: boolean
   lines: CreateOrderLine[]
 }
 
@@ -49,10 +60,30 @@ export async function createOrder(
     return { ok: false, error: "Add at least one line item." }
 
   const supabase = await createClient()
+
+  // Resolve a typed-in customer BEFORE create_order, so a failure here costs
+  // nothing — no group opened, no stock reserved. find_or_create_customer
+  // reuses an existing row on a case-insensitive name match, so seeding the
+  // same influencer twice doesn't mint a duplicate. It has to be an RPC:
+  // customers_read (migration 0037) only exposes a customer once an order
+  // references them, so a plain insert's RETURNING is rejected for a customer
+  // that has no orders yet.
+  let customerId = input.customer_id ?? null
+  const typedName = input.customer_name?.trim()
+  if (!customerId && typedName) {
+    const { data: customer, error: customerError } = await supabase.rpc(
+      "find_or_create_customer",
+      { p_name: typedName, p_email: input.customer_email?.trim() || null },
+    )
+    if (customerError)
+      return { ok: false, error: `Could not add customer: ${rpcError(customerError)}` }
+    customerId = (customer as { id: string } | null)?.id ?? null
+  }
+
   const { data, error } = await supabase.rpc("create_order", {
     p_site_id: input.site_id,
     p_lines: input.lines,
-    p_customer_id: input.customer_id ?? null,
+    p_customer_id: customerId,
     p_channel: input.channel ?? "manual",
     p_order_type: input.order_type ?? "standard",
     p_sale_date: input.sale_date ?? null,
@@ -68,11 +99,57 @@ export async function createOrder(
 
   if (error) return { ok: false, error: rpcError(error) }
 
+  const orderId = data as string
+
+  // Promo marker is set in a second call rather than as a create_order argument:
+  // create_order carries three live overloads (migrations 0010/0024/0072) and a
+  // fourth would risk PostgREST failing to pick a candidate. The order is
+  // already committed at this point, so a failure here leaves a valid — just
+  // unflagged — order, which the detail page's Promo toggle can fix.
+  if (input.is_promo) {
+    const { error: promoError } = await supabase.rpc("set_order_promo", {
+      p_order_id: orderId,
+      p_is_promo: true,
+    })
+    if (promoError)
+      return {
+        ok: false,
+        error: `Order created, but marking it promo failed: ${rpcError(
+          promoError,
+        )} — flag it from the order page.`,
+      }
+  }
+
   revalidatePath("/orders")
   revalidatePath("/inventory")
+  revalidatePath("/reports")
   // Reserving stock changed available — push it to any outbound-enabled store.
   await kickOutboundDrain()
-  return { ok: true, orderId: data as string }
+  return { ok: true, orderId }
+}
+
+/**
+ * Flag/unflag an order as a promo giveaway (influencer seeding, samples).
+ * Reporting-only: /reports pulls these out of revenue and profit and counts
+ * their landed cost as promo spend instead. Inventory is untouched — the goods
+ * shipped either way — so this is safe to toggle at any point, including on
+ * orders that were fulfilled months ago. The DB gates the operator role.
+ */
+export async function setOrderPromo(
+  orderId: string,
+  isPromo: boolean,
+): Promise<ActionResult> {
+  const supabase = await createClient()
+  const { error } = await supabase.rpc("set_order_promo", {
+    p_order_id: orderId,
+    p_is_promo: isPromo,
+  })
+  if (error) return { ok: false, error: rpcError(error) }
+
+  revalidatePath(`/orders/${orderId}`)
+  revalidatePath("/orders")
+  revalidatePath("/reports")
+  return { ok: true }
 }
 
 export async function setStatus(
@@ -336,6 +413,40 @@ export async function bulkSetStatus(
   }
 
   if (succeeded.length) revalidatePath("/orders")
+  return { ok: true, succeeded, failed }
+}
+
+/**
+ * Bulk promo flag / unflag — the practical way to clean up influencer orders
+ * that were entered before the promo flag existed. Reporting-only, so unlike
+ * the other bulk actions it is happy to run over already-fulfilled orders;
+ * that's the main use. Loops set_order_promo rather than a single .in() update
+ * so the operator-role gate and site RLS apply per order, and one refusal
+ * doesn't take the batch down with it.
+ */
+export async function bulkSetPromo(
+  orderIds: string[],
+  isPromo: boolean,
+): Promise<BulkResult> {
+  if (!orderIds?.length) return { ok: false, error: "No orders selected." }
+
+  const supabase = await createClient()
+  const succeeded: string[] = []
+  const failed: BulkFailure[] = []
+
+  for (const orderId of orderIds) {
+    const { error } = await supabase.rpc("set_order_promo", {
+      p_order_id: orderId,
+      p_is_promo: isPromo,
+    })
+    if (error) failed.push({ orderId, error: rpcError(error) })
+    else succeeded.push(orderId)
+  }
+
+  if (succeeded.length) {
+    revalidatePath("/orders")
+    revalidatePath("/reports")
+  }
   return { ok: true, succeeded, failed }
 }
 

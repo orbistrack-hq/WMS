@@ -36,7 +36,7 @@ const PAGE_SIZE = 50
 // aggregate/materialized total per order would remove the cap entirely.
 const COMPUTED_SORT_CAP = 5000
 
-const ORDERS_SELECT = `id, order_number, status, on_hold, backordered, auto_fulfilled, force_fulfilled, store_completed_at, hold_reason, order_type, channel, sale_date, entered_at,
+const ORDERS_SELECT = `id, order_number, status, on_hold, backordered, auto_fulfilled, force_fulfilled, store_completed_at, hold_reason, order_type, channel, is_promo, sale_date, entered_at,
    group_id,
    customer:customers(name),
    site:sites(name, code),
@@ -64,6 +64,7 @@ type OrderRow = {
   hold_reason: string | null
   order_type: "standard" | "layaway"
   channel: OrderChannel
+  is_promo: boolean
   sale_date: string
   entered_at: string
   group_id: string
@@ -276,6 +277,7 @@ export default async function OrdersPage({
               hold_reason: o.hold_reason,
               order_type: o.order_type,
               channel: o.channel,
+              is_promo: o.is_promo,
               sale_date: o.sale_date,
               customerName: o.customer?.name ?? null,
               siteName: o.site?.name ?? null,

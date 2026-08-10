@@ -57,6 +57,7 @@ type OrderDetail = {
   hold_reason: string | null
   order_type: OrderType
   channel: OrderChannel
+  is_promo: boolean
   sale_date: string
   entered_at: string
   fulfilled_at: string | null
@@ -103,7 +104,7 @@ export default async function OrderDetailPage({
   const { data } = await supabase
     .from("orders")
     .select(
-      `id, order_number, status, on_hold, backordered, force_fulfilled, hold_reason, order_type, channel, sale_date, entered_at,
+      `id, order_number, status, on_hold, backordered, force_fulfilled, hold_reason, order_type, channel, is_promo, sale_date, entered_at,
        fulfilled_at, cancelled_at, notes, group_id,
        ship_to_name, ship_to_address1, ship_to_address2, ship_to_city,
        ship_to_region, ship_to_postal, ship_to_country,
@@ -163,6 +164,15 @@ export default async function OrderDetailPage({
           {order.on_hold ? <Badge variant="destructive">Hold</Badge> : null}
           {order.order_type === "layaway" ? (
             <Badge variant="outline">Layaway</Badge>
+          ) : null}
+          {order.is_promo ? (
+            <Badge
+              variant="outline"
+              className="border-violet-500/50 text-violet-700 dark:text-violet-400"
+              title="Promo / giveaway: excluded from revenue and profit on Analytics; its landed cost is reported as promo spend"
+            >
+              Promo
+            </Badge>
           ) : null}
           {order.backordered ? (
             <Badge variant="warning">Backordered</Badge>
@@ -289,6 +299,7 @@ export default async function OrderDetailPage({
                 status={order.status}
                 onHold={order.on_hold}
                 backordered={order.backordered}
+                isPromo={order.is_promo}
                 canForceFulfill={canForceFulfill}
                 combinable={combinable}
               />

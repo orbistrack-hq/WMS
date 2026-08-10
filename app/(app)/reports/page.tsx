@@ -115,10 +115,45 @@ export default async function ReportsPage({
 
   // Probe once so a missing view still renders the "apply migration 0027" hint.
   const { error } = await buildQuery().range(0, 0)
-  const rows = error ? [] : await fetchAllPages<MarginRow>(buildQuery)
-  rows.sort((a, b) => a.sale_date.localeCompare(b.sale_date))
+  const allRows = error ? [] : await fetchAllPages<MarginRow>(buildQuery)
+  allRows.sort((a, b) => a.sale_date.localeCompare(b.sale_date))
 
-  // ---- KPI totals ----------------------------------------------------------
+  // ---- Promo orders --------------------------------------------------------
+  // Influencer seeding / samples / gifts (migration 0091). They fulfil like any
+  // other order — real product COGS, a real allocated share of packaging and
+  // postage — but earn nothing by design, so leaving them in would make Net
+  // profit read as a loss that isn't one and would slander whichever channel
+  // they were entered under. They are pulled out of every profit figure below
+  // and reported on their own "Promo cost" KPI as the marketing spend they are.
+  //
+  // Fetched as a separate id list rather than a column on landed_margin_report:
+  // the flag lives on orders, and joining it in would mean redefining a view
+  // that storefront_monthly_billing also reads. `.eq("is_promo", true)` means
+  // only the flagged ids come back, not the whole order table.
+  //
+  // Paged for the same reason the margin query is: a bare select would stop at
+  // PostgREST's silent 1000-row cap, and a truncated exclusion list is the worst
+  // possible failure here — the promo orders past the cut would quietly rejoin
+  // net profit with no error to notice. fetchAllPages also swallows a failed
+  // query into [], so if migration 0091 hasn't been applied yet this degrades to
+  // "no promo orders" — exactly the pre-0091 behaviour — rather than a 500.
+  const promoIds = new Set(
+    (
+      await fetchAllPages<{ id: string }>(() =>
+        supabase.from("orders").select("id").eq("is_promo", true).order("id"),
+      )
+    ).map((r) => r.id),
+  )
+
+  const rows = allRows.filter((r) => !promoIds.has(r.order_id))
+  const promoRows = allRows.filter((r) => promoIds.has(r.order_id))
+
+  // Promo orders are costed, never credited: their landed cost is the spend,
+  // and any stray revenue on a partly-comped order is ignored here rather than
+  // quietly netted off — the KPI answers "what did seeding cost us".
+  const promoCost = promoRows.reduce((sum, r) => sum + num(r.landed_cost), 0)
+
+  // ---- KPI totals (paying orders only) -------------------------------------
   const t = rows.reduce(
     (acc, r) => {
       acc.revenue += num(r.revenue)
@@ -180,6 +215,19 @@ export default async function ReportsPage({
           : "text-destructive",
     },
   ]
+
+  // Only shown once there's something to show — an operation that never seeds
+  // influencers shouldn't carry a permanent $0 tile.
+  if (promoRows.length > 0) {
+    kpis.push({
+      label: "Promo cost",
+      value: formatCurrency(promoCost),
+      sub: `${promoRows.length} giveaway order${
+        promoRows.length === 1 ? "" : "s"
+      } — excluded above`,
+      tone: "text-violet-600 dark:text-violet-400",
+    })
+  }
 
   // ---- Trend series --------------------------------------------------------
   const trendMap = new Map<string, TrendPoint>()
@@ -256,11 +304,17 @@ export default async function ReportsPage({
   // returns full precision on purpose (migration 0089) so that the totals above
   // are exact; an allocated share like 1.7528333 is correct arithmetic but
   // nonsense in a spreadsheet cell, so each row is formatted on the way out.
-  const csvRows = rows.map((r) => ({
+  //
+  // The export keeps ALL rows, promo included, with an is_promo column — the
+  // on-screen KPIs answer "how did we do", but a spreadsheet is where someone
+  // reconciles against the books and needs to see every fulfilled order. The
+  // column is what lets them re-split it the same way we did.
+  const csvRows = allRows.map((r) => ({
     order_number: r.order_number,
     sale_date: r.sale_date,
     site_name: r.site_name ?? "",
     channel: r.channel,
+    is_promo: promoIds.has(r.order_id) ? "yes" : "no",
     revenue: num(r.revenue).toFixed(2),
     discount: num(r.discount).toFixed(2),
     product_cogs: num(r.product_cogs).toFixed(2),
@@ -275,6 +329,7 @@ export default async function ReportsPage({
     { key: "sale_date", label: "Sale date" },
     { key: "site_name", label: "Site" },
     { key: "channel", label: "Channel" },
+    { key: "is_promo", label: "Promo" },
     { key: "revenue", label: "Revenue" },
     { key: "discount", label: "Discount" },
     { key: "product_cogs", label: "Product COGS" },
@@ -296,7 +351,11 @@ export default async function ReportsPage({
     <>
       <PageHeader
         title="Analytics"
-        description="Revenue, COGS, and fully-landed margin for fulfilled orders — product cost plus allocated packaging and shipping."
+        description={
+          promoRows.length > 0
+            ? "Revenue, COGS, and fully-landed margin for fulfilled orders — product cost plus allocated packaging and shipping. Promo/giveaway orders are excluded and shown as promo cost."
+            : "Revenue, COGS, and fully-landed margin for fulfilled orders — product cost plus allocated packaging and shipping."
+        }
         action={
           <ExportButton
             columns={csvColumns}
@@ -358,6 +417,14 @@ export default async function ReportsPage({
               <CardTitle className="text-base">
                 By {dim === "site" ? "site" : "channel"}
               </CardTitle>
+              {promoRows.length > 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  {promoRows.length} promo order
+                  {promoRows.length === 1 ? "" : "s"} (
+                  {formatCurrency(promoCost)}) excluded — included in the CSV
+                  export.
+                </p>
+              ) : null}
             </CardHeader>
             {breakdown.length === 0 ? (
               <CardContent className="py-8 text-sm text-muted-foreground">
