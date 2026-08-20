@@ -26,6 +26,7 @@ import {
   deleteConnection,
   registerWebhooks,
   runOutboundDrainNow,
+  repushAllStock,
   setConnectionActive,
   setCredentials,
   setInventoryOutbound,
@@ -225,6 +226,26 @@ function ConnectionCard({
     })
   }
 
+  function repushStock() {
+    setError(null)
+    setNote(null)
+    startTransition(async () => {
+      const res = await repushAllStock(conn.id)
+      if (!res.ok) setError(res.error)
+      else {
+        setNote(
+          `Re-queued ${res.enqueued} SKU${res.enqueued === 1 ? "" : "s"}: ` +
+            `${res.pushed} sent` +
+            (res.skipped ? `, ${res.skipped} skipped` : "") +
+            (res.failed ? `, ${res.failed} failed` : "") +
+            "." +
+            (res.firstError ? ` First error: ${res.firstError}` : ""),
+        )
+        router.refresh()
+      }
+    })
+  }
+
   function saveSince(value: string | null) {
     setError(null)
     setNote(null)
@@ -385,8 +406,19 @@ function ConnectionCard({
           >
             <ArrowUpFromLine data-icon="inline-start" /> Sync inventory now
           </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={isPending || !conn.sync_inventory_outbound}
+            onClick={repushStock}
+            title="Re-queue every mapped SKU on this site at its current available, then push. Use after stock moved while this store was off, paused, or unmapped."
+          >
+            Re-push all stock
+          </Button>
           <span className="text-xs text-muted-foreground">
-            Pushes available (on-hand − reserved) to this store.
+            Pushes available (on-hand − reserved) to this store. &quot;Sync
+            inventory now&quot; only flushes what is already queued; &quot;Re-push
+            all stock&quot; re-queues every mapped SKU from current stock.
           </span>
         </div>
       ) : null}

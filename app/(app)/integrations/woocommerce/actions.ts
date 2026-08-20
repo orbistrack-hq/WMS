@@ -18,7 +18,11 @@ import {
   toProgress,
   type JobProgress,
 } from "@/lib/store-sync/jobs"
-import { drainOutboundInventory, kickOutboundDrain } from "@/lib/store-sync/outbound"
+import { drainOutboundInventory } from "@/lib/store-sync/outbound"
+import {
+  reconcileAndDrainSite,
+  reconcileOutboundForSite,
+} from "@/lib/store-sync/reconcile"
 import { cutoffQueryDate } from "@/lib/store-sync/cutoff"
 import {
   normalizeWooOrder,
@@ -90,11 +94,21 @@ export async function setConnectionActive(
   isActive: boolean,
 ): Promise<ActionResult> {
   const supabase = await createClient()
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("store_connections")
     .update({ is_active: isActive })
     .eq("id", id)
+    .select("site_id, sync_inventory_outbound")
+    .maybeSingle()
   if (error) return { ok: false, error: err(error) }
+
+  // Re-activating is the moment the outbound gate in tg_enqueue_outbound_inventory
+  // (migration 0026) flips back on. Every stock movement while the connection was
+  // inactive enqueued NOTHING, so without a reconcile the storefront would stay
+  // stale until some future movement happened to touch each SKU. Best-effort.
+  if (isActive && data?.sync_inventory_outbound) {
+    await reconcileAndDrainSite(data.site_id as string | null)
+  }
 
   revalidatePath("/integrations/woocommerce")
   return { ok: true }
@@ -146,20 +160,28 @@ export async function setSyncOrdersSince(
  * Turn OUTBOUND inventory sync on/off for one connection (migration 0026). Off
  * by default so stores are enabled one at a time. Enabling it makes future WMS
  * stock changes push available (on_hand − reserved) to this store as
- * stock_quantity; turning it on also nudges the drain to flush queued jobs.
+ * stock_quantity.
+ *
+ * Enabling RECONCILES before draining (migration 0093): while the flag was off
+ * the enqueue trigger dropped every movement on the floor, so the queue is empty
+ * and draining alone would push nothing. Reconcile seeds one job per mapped SKU
+ * from current stock, so switching a store on converges it instead of only
+ * catching whatever moves next.
  */
 export async function setInventoryOutbound(
   id: string,
   enabled: boolean,
 ): Promise<ActionResult> {
   const supabase = await createClient()
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("store_connections")
     .update({ sync_inventory_outbound: enabled })
     .eq("id", id)
+    .select("site_id")
+    .maybeSingle()
   if (error) return { ok: false, error: err(error) }
 
-  if (enabled) await kickOutboundDrain()
+  if (enabled) await reconcileAndDrainSite(data?.site_id as string | null)
   revalidatePath("/integrations/woocommerce")
   return { ok: true }
 }
@@ -214,6 +236,63 @@ export async function runOutboundDrainNow(): Promise<
     }
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "Drain failed." }
+  }
+}
+
+/**
+ * Re-push ALL stock for one connection's site (migration 0093).
+ *
+ * "Sync inventory now" can only drain jobs that already exist, which is useless
+ * for the case this exists to fix: stock that moved while the store was off,
+ * inactive, or unmapped never got a job at all, so the queue is empty and the
+ * drain reports "0 sent" while the storefront sits on stale numbers. This
+ * reconciles first — one job per mapped SKU at current available — and then
+ * drains. It also revives SKUs whose earlier job went terminal ('skipped' on a
+ * bad mapping, 'failed' after the cap), so run it after fixing a mapping and
+ * re-syncing products.
+ *
+ * Safe to press repeatedly: the reconcile upserts against the one-pending-per-
+ * SKU index and pushes SET an absolute stock_quantity.
+ */
+export async function repushAllStock(connectionId: string): Promise<
+  | { ok: true; enqueued: number; pushed: number; skipped: number; failed: number; firstError?: string }
+  | { ok: false; error: string }
+> {
+  // Authorize through the USER's client: RLS decides whether they can see this
+  // connection at all. The reconcile/drain then run with the service role.
+  const supabase = await createClient()
+  const { data: conn, error: connErr } = await supabase
+    .from("store_connections")
+    .select("site_id, is_active, sync_inventory_outbound")
+    .eq("id", connectionId)
+    .maybeSingle()
+  if (connErr) return { ok: false, error: err(connErr) }
+  if (!conn) return { ok: false, error: "Connection not found." }
+  if (!conn.is_active) return { ok: false, error: "This connection is paused." }
+  if (!conn.sync_inventory_outbound)
+    return { ok: false, error: "Turn on outbound stock for this store first." }
+
+  const reconciled = await reconcileOutboundForSite(conn.site_id as string)
+  if (reconciled.error) return { ok: false, error: reconciled.error }
+
+  try {
+    const admin = createAdminClient()
+    await admin.rpc("reap_stuck_outbound_inventory_jobs")
+    const summary = await drainOutboundInventory(admin, {
+      limit: 500,
+      deadlineMs: 25_000,
+    })
+    revalidatePath("/integrations/woocommerce")
+    return {
+      ok: true,
+      enqueued: reconciled.enqueued,
+      pushed: summary.pushed,
+      skipped: summary.skipped,
+      failed: summary.failed,
+      firstError: summary.firstError,
+    }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Re-push failed." }
   }
 }
 
