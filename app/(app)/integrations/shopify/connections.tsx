@@ -27,6 +27,7 @@ import {
   registerWebhooks,
   runOutboundDrainNow,
   repushAllStock,
+  backfillInventoryItemIds,
   setConnectionActive,
   setCredentials,
   setInventoryOutbound,
@@ -216,8 +217,11 @@ function ConnectionCard({
             ? `Recovered ${res.reaped} stuck job${res.reaped === 1 ? "" : "s"}. `
             : "") +
             `Inventory pushed: ${res.pushed} sent` +
-            (res.skipped ? `, ${res.skipped} skipped` : "") +
-            (res.failed ? `, ${res.failed} failed` : "") +
+            (res.deferred
+              ? `, ${res.deferred} parked${res.throttled ? " (rate limited)" : ""} — these retry automatically`
+              : "") +
+            (res.failed ? `, ${res.failed} failed (will retry)` : "") +
+            (res.skipped ? `, ${res.skipped} skipped — needs a mapping fix` : "") +
             "." +
             (res.firstError ? ` First error: ${res.firstError}` : ""),
         )
@@ -236,10 +240,34 @@ function ConnectionCard({
         setNote(
           `Re-queued ${res.enqueued} SKU${res.enqueued === 1 ? "" : "s"}: ` +
             `${res.pushed} sent` +
-            (res.skipped ? `, ${res.skipped} skipped` : "") +
-            (res.failed ? `, ${res.failed} failed` : "") +
+            (res.deferred
+              ? `, ${res.deferred} parked${res.throttled ? " (rate limited)" : ""} — these retry automatically`
+              : "") +
+            (res.failed ? `, ${res.failed} failed (will retry)` : "") +
+            (res.skipped ? `, ${res.skipped} skipped — needs a mapping fix` : "") +
             "." +
+            (res.deadlineHit ? " Ran out of time; the rest continue in the background." : "") +
             (res.firstError ? ` First error: ${res.firstError}` : ""),
+        )
+        router.refresh()
+      }
+    })
+  }
+
+  function backfillInventoryIds() {
+    setError(null)
+    setNote(null)
+    startTransition(async () => {
+      const res = await backfillInventoryItemIds(conn.id)
+      if (!res.ok) setError(res.error)
+      else if (res.matched === 0) {
+        setNote("Every mapped SKU already has a Shopify inventory item. Nothing to fill.")
+      } else {
+        setNote(
+          `Filled ${res.filled} of ${res.matched} missing inventory item${res.matched === 1 ? "" : "s"}.` +
+            (res.stillMissing
+              ? ` ${res.stillMissing} still missing — those variants no longer exist on the store.`
+              : " Re-push all stock to send them."),
         )
         router.refresh()
       }
@@ -414,6 +442,15 @@ function ConnectionCard({
             title="Re-queue every mapped SKU on this site at its current available, then push. Use after stock moved while this store was off, paused, or unmapped."
           >
             Re-push all stock
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={isPending || !conn.has_token}
+            onClick={backfillInventoryIds}
+            title="Fill in missing Shopify inventory item IDs, which outbound stock pushes need. Fixes SKUs that skip with 'Missing Shopify inventory_item_id'."
+          >
+            Backfill inventory IDs
           </Button>
           <span className="text-xs text-muted-foreground">
             Pushes available (on-hand − reserved) to this store. &quot;Sync

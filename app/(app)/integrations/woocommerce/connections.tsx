@@ -249,8 +249,11 @@ function ConnectionCard({
             ? `Recovered ${res.reaped} stuck job${res.reaped === 1 ? "" : "s"}. `
             : "") +
             `Inventory pushed: ${res.pushed} sent` +
-            (res.skipped ? `, ${res.skipped} skipped` : "") +
-            (res.failed ? `, ${res.failed} failed` : "") +
+            (res.deferred
+              ? `, ${res.deferred} parked${res.throttled ? " (rate limited)" : ""} — these retry automatically`
+              : "") +
+            (res.failed ? `, ${res.failed} failed (will retry)` : "") +
+            (res.skipped ? `, ${res.skipped} skipped — needs a mapping fix` : "") +
             "." +
             (res.firstError ? ` First error: ${res.firstError}` : ""),
         )
@@ -269,9 +272,13 @@ function ConnectionCard({
         setNote(
           `Re-queued ${res.enqueued} SKU${res.enqueued === 1 ? "" : "s"}: ` +
             `${res.pushed} sent` +
-            (res.skipped ? `, ${res.skipped} skipped` : "") +
-            (res.failed ? `, ${res.failed} failed` : "") +
+            (res.deferred
+              ? `, ${res.deferred} parked${res.throttled ? " (rate limited)" : ""} — these retry automatically`
+              : "") +
+            (res.failed ? `, ${res.failed} failed (will retry)` : "") +
+            (res.skipped ? `, ${res.skipped} skipped — needs a mapping fix` : "") +
             "." +
+            (res.deadlineHit ? " Ran out of time; the rest continue in the background." : "") +
             (res.firstError ? ` First error: ${res.firstError}` : ""),
         )
         router.refresh()

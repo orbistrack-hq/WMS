@@ -32,8 +32,31 @@ import { createAdminClient } from "@/lib/supabase/admin"
  */
 
 const SHOPIFY_API_VERSION = "2024-10"
-/** Polite spacing between store API calls (Shopify REST allows ~2 req/s). */
-const PUSH_GAP_MS = 300
+/**
+ * Spacing between store API calls, per channel.
+ *
+ * Shopify's REST leaky bucket refills at 2 requests/second. The old flat 300ms
+ * paced us at ~3.3/s, which drains the burst allowance and then earns a steady
+ * stream of 429s — self-inflicted throttling that used to burn retry attempts
+ * and trip the circuit breaker. 550ms keeps us just under the refill rate with
+ * a little headroom for clock/latency jitter.
+ *
+ * Woo has no published global limit (it's the customer's own host), so its gap
+ * only exists to be polite to a small origin.
+ */
+const PUSH_GAP_MS: Record<string, number> = {
+  shopify: 550,
+  woocommerce: 300,
+}
+const DEFAULT_PUSH_GAP_MS = 400
+/** Fallback park when a 429 arrives without a usable Retry-After header. */
+const DEFAULT_THROTTLE_BACKOFF_MS = 60_000
+/**
+ * Rough wall-clock cost of one job: the inter-call gap plus a typical store
+ * round trip. Used only to size the claim against the time budget — see the note
+ * in drainOutboundInventory.
+ */
+const ESTIMATED_JOB_MS = 800
 
 // --- Per-run circuit breaker -------------------------------------------------
 // After this many consecutive transient failures on one store WITHIN a run, we
@@ -50,8 +73,15 @@ export type DrainSummary = {
   pushed: number
   skipped: number
   failed: number
-  /** Parked by the circuit breaker (store tripped); will retry after cooldown. */
+  /**
+   * Parked without penalty — by the circuit breaker (store tripped) or by rate
+   * limiting. These are NOT lost: they return to 'pending' with a future
+   * next_attempt_at and the scheduled drain picks them up. Report them
+   * separately from `skipped`, which is terminal.
+   */
   deferred?: number
+  /** Subset of `deferred` that was parked because the store rate-limited us. */
+  throttled?: number
   /** Store keys (channel:source) tripped this run. */
   trippedSources?: string[]
   /** True when we stopped early because the time budget (deadlineMs) elapsed. */
@@ -73,13 +103,42 @@ type ClaimedJob = {
   inventory_location_id: string | null
 }
 
-/** Outcome of a single push attempt. */
+/**
+ * Outcome of a single push attempt.
+ *   skip      — permanent (bad mapping, dead variant); terminal, no retry.
+ *   retry     — transient (5xx, timeout, missing token); backoff + attempt burned.
+ *   throttled — the store told us to slow down. NOT a failure of this job and
+ *               not a signal the store is unhealthy: it means we asked too fast.
+ *               Parking it costs nothing, whereas counting it as a retry burned
+ *               an attempt (cap 8 -> permanently 'failed') and tripped the
+ *               circuit breaker, punishing good data for our own pacing.
+ */
 type PushOutcome =
   | { ok: true }
-  | { ok: false; skip: true; error: string } // won't be fixed by retrying
-  | { ok: false; skip: false; error: string } // transient; retry with backoff
+  | { ok: false; kind: "skip"; error: string }
+  | { ok: false; kind: "retry"; error: string }
+  | { ok: false; kind: "throttled"; error: string; retryAfterMs: number }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+/**
+ * Parse a Retry-After header. Shopify sends seconds (often fractional, e.g.
+ * "2.0"); the HTTP spec also allows an absolute date. Clamped to something sane
+ * so a hostile or garbled value can't park a job for hours.
+ */
+function retryAfterMs(header: string | null): number {
+  if (!header) return DEFAULT_THROTTLE_BACKOFF_MS
+  const seconds = Number(header)
+  if (Number.isFinite(seconds) && seconds > 0) {
+    return Math.min(Math.max(seconds * 1000, 1_000), 15 * 60 * 1000)
+  }
+  const when = Date.parse(header)
+  if (Number.isFinite(when)) {
+    const delta = when - Date.now()
+    if (delta > 0) return Math.min(delta, 15 * 60 * 1000)
+  }
+  return DEFAULT_THROTTLE_BACKOFF_MS
+}
 
 /**
  * Claim and process up to `limit` due jobs. Safe to run concurrently (claims
@@ -99,8 +158,17 @@ export async function drainOutboundInventory(
     opts.deadlineMs && opts.deadlineMs > 0 ? Date.now() + opts.deadlineMs : Infinity
   const summary: DrainSummary = { claimed: 0, pushed: 0, skipped: 0, failed: 0 }
 
+  // Don't claim more than the time budget can plausibly process. Claiming flips
+  // rows to 'processing', and anything we don't reach before the deadline is
+  // invisible to the next drain until the reaper frees it 5 minutes later. So an
+  // over-large claim doesn't just waste effort — it PARKS the backlog. Sizing the
+  // claim to the budget keeps the surplus 'pending' and immediately re-claimable.
+  const effectiveLimit = Number.isFinite(deadline)
+    ? Math.max(1, Math.min(limit, Math.floor((opts.deadlineMs as number) / ESTIMATED_JOB_MS)))
+    : limit
+
   const { data, error } = await admin.rpc("claim_outbound_inventory_jobs", {
-    p_limit: limit,
+    p_limit: effectiveLimit,
   })
   if (error) {
     summary.firstError = error.message
@@ -121,6 +189,12 @@ export async function drainOutboundInventory(
   const tripped = new Set<string>()
   const cooldownUntil = new Date(Date.now() + CIRCUIT_COOLDOWN_MS).toISOString()
   const storeKey = (job: ClaimedJob) => `${job.channel ?? "?"}:${job.source ?? "?"}`
+
+  // Rate-limit state (per run). Once a store 429s, every remaining job for it is
+  // parked at the same wake-up time instead of being fired into the same wall.
+  // Separate from `tripped` because throttling isn't a health signal and must
+  // not count toward CIRCUIT_FAIL_THRESHOLD.
+  const throttledUntil = new Map<string, string>()
 
   for (let i = 0; i < jobs.length; i++) {
     // Time budget: bail before touching the next job once the deadline passes.
@@ -143,17 +217,36 @@ export async function drainOutboundInventory(
       continue
     }
 
+    // Store already rate-limited us this run: park at the same wake-up time
+    // rather than spending another call to be told the same thing.
+    const throttleUntil = throttledUntil.get(key)
+    if (throttleUntil) {
+      await deferJob(admin, job.job_id, throttleUntil)
+      summary.deferred = (summary.deferred ?? 0) + 1
+      summary.throttled = (summary.throttled ?? 0) + 1
+      continue
+    }
+
     const outcome = await pushJob(admin, job, tokenBySource, wooCredsBySource)
 
     if (outcome.ok) {
       summary.pushed++
       consecutiveFails.set(key, 0) // healthy again — reset the counter
       await complete(admin, job.job_id, { ok: true })
-    } else if (outcome.skip) {
+    } else if (outcome.kind === "skip") {
       // Permanent (bad mapping / disabled connection): terminal, and it does NOT
       // reflect store health, so it must not trip the breaker.
       summary.skipped++
       await complete(admin, job.job_id, { ok: false, skip: true, error: outcome.error })
+    } else if (outcome.kind === "throttled") {
+      // We asked too fast. Park this job and the rest of this store's jobs until
+      // the store says it's ready. No attempt burned, breaker untouched.
+      const until = new Date(Date.now() + outcome.retryAfterMs).toISOString()
+      throttledUntil.set(key, until)
+      await deferJob(admin, job.job_id, until)
+      summary.deferred = (summary.deferred ?? 0) + 1
+      summary.throttled = (summary.throttled ?? 0) + 1
+      if (!summary.firstError) summary.firstError = outcome.error
     } else {
       // Transient failure (timeout / 5xx / auth): retryable, and a signal the
       // store may be unhealthy. Count it; trip the breaker at the threshold.
@@ -168,9 +261,15 @@ export async function drainOutboundInventory(
       await complete(admin, job.job_id, { ok: false, skip: false, error: outcome.error })
     }
 
-    // Space out real API calls; skips (no network) don't need the gap.
-    if (outcome.ok || !outcome.skip) {
-      if (i < jobs.length - 1) await sleep(PUSH_GAP_MS)
+    // Space out real API calls; skips (no network) don't need the gap. Pace by
+    // the channel we just called, not a single global constant — Shopify's 2/s
+    // bucket is much tighter than a self-hosted Woo origin's.
+    if (outcome.ok || outcome.kind !== "skip") {
+      if (i < jobs.length - 1) {
+        await sleep(
+          PUSH_GAP_MS[job.channel ?? ""] ?? DEFAULT_PUSH_GAP_MS,
+        )
+      }
     }
   }
 
@@ -184,13 +283,13 @@ async function pushJob(
   wooCredsBySource: Map<string, WooCreds | null>,
 ): Promise<PushOutcome> {
   if (!job.channel || !job.source) {
-    return { ok: false, skip: true, error: "No active outbound connection for this site." }
+    return { ok: false, kind: "skip", error: "No active outbound connection for this site." }
   }
   if (job.channel === "shopify") return pushShopify(admin, job, tokenBySource)
   if (job.channel === "woocommerce") return pushWoo(admin, job, wooCredsBySource)
   return {
     ok: false,
-    skip: true,
+    kind: "skip",
     error: `Outbound push for channel '${job.channel}' is not implemented yet.`,
   }
 }
@@ -208,14 +307,14 @@ async function pushShopify(
   if (!job.store_inventory_item_id) {
     return {
       ok: false,
-      skip: true,
+      kind: "skip",
       error: "Missing Shopify inventory_item_id — re-sync products to map it.",
     }
   }
   if (!job.inventory_location_id) {
     return {
       ok: false,
-      skip: true,
+      kind: "skip",
       error: "No Shopify location set on the connection — re-sync products.",
     }
   }
@@ -233,7 +332,7 @@ async function pushShopify(
   }
   if (!token) {
     // Transient from the queue's POV: once the token is set, a retry succeeds.
-    return { ok: false, skip: false, error: "Store access token not set." }
+    return { ok: false, kind: "retry", error: "Store access token not set." }
   }
 
   const url = `https://${source}/admin/api/${SHOPIFY_API_VERSION}/inventory_levels/set.json`
@@ -258,13 +357,22 @@ async function pushShopify(
     const msg = `Shopify ${r.status}: ${body.slice(0, 300)}`
     // 404/422 mean the item/location mapping is wrong — retrying won't help.
     if (r.status === 404 || r.status === 422) {
-      return { ok: false, skip: true, error: msg }
+      return { ok: false, kind: "skip", error: msg }
     }
-    // 429 / 5xx / auth: transient or fixable — retry with backoff.
-    return { ok: false, skip: false, error: msg }
+    // 429: we exceeded the leaky bucket. Park, don't penalise — see PushOutcome.
+    if (r.status === 429) {
+      return {
+        ok: false,
+        kind: "throttled",
+        error: msg,
+        retryAfterMs: retryAfterMs(r.headers.get("retry-after")),
+      }
+    }
+    // 5xx / auth: transient or fixable — retry with backoff.
+    return { ok: false, kind: "retry", error: msg }
   } catch (e) {
     const msg = e instanceof Error ? e.message : "network error"
-    return { ok: false, skip: false, error: `Could not reach Shopify: ${msg}` }
+    return { ok: false, kind: "retry", error: `Could not reach Shopify: ${msg}` }
   }
 }
 
@@ -283,7 +391,7 @@ async function pushWoo(
   if (!job.store_variant_id) {
     return {
       ok: false,
-      skip: true,
+      kind: "skip",
       error: "Missing WooCommerce product/variation id — re-sync products.",
     }
   }
@@ -304,7 +412,7 @@ async function pushWoo(
   }
   if (!creds) {
     // Transient from the queue's POV: once creds are set, a retry succeeds.
-    return { ok: false, skip: false, error: "Store API credentials not set." }
+    return { ok: false, kind: "retry", error: "Store API credentials not set." }
   }
 
   // Variable products are addressed via the parent; simple products directly.
@@ -335,13 +443,23 @@ async function pushWoo(
     const msg = `WooCommerce ${r.status}: ${body.slice(0, 300)}`
     // 400/404 mean the product/variation id is wrong — retrying won't help.
     if (r.status === 400 || r.status === 404) {
-      return { ok: false, skip: true, error: msg }
+      return { ok: false, kind: "skip", error: msg }
     }
-    // 429 / 5xx / auth: transient or fixable — retry with backoff.
-    return { ok: false, skip: false, error: msg }
+    // 429: a WAF or host-level limiter (Woo itself has none). Same treatment as
+    // Shopify — park, don't penalise the job for our pacing.
+    if (r.status === 429) {
+      return {
+        ok: false,
+        kind: "throttled",
+        error: msg,
+        retryAfterMs: retryAfterMs(r.headers.get("retry-after")),
+      }
+    }
+    // 5xx / auth: transient or fixable — retry with backoff.
+    return { ok: false, kind: "retry", error: msg }
   } catch (e) {
     const msg = e instanceof Error ? e.message : "network error"
-    return { ok: false, skip: false, error: `Could not reach WooCommerce: ${msg}` }
+    return { ok: false, kind: "retry", error: `Could not reach WooCommerce: ${msg}` }
   }
 }
 

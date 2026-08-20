@@ -4,7 +4,7 @@
 -- connection left NO job at all, so no amount of draining ever pushed it.
 -- Uses the seeded SKU at MAIN.
 begin;
-select plan(9);
+select plan(12);
 \set SKU  '''a0000000-0000-0000-0000-000000000001'''
 \set MAIN '''11111111-1111-1111-1111-111111111111'''
 
@@ -69,12 +69,38 @@ select is(
      where child_sku_id = :SKU and status = 'pending'),
   1, 'reconcile gives a terminally skipped SKU a fresh pending job');
 
--- ---- Unmapped SKUs stay out of the queue ------------------------------------
+-- ---- Channel-aware mapping gate (migration 0094) -----------------------------
+-- Shopify writes stock by InventoryItem, NOT by variant. A SKU with a variant id
+-- but no inventory_item_id is unpushable, and enqueuing it only manufactures a
+-- terminal 'skipped' row that every later reconcile regenerates.
 delete from store_outbound_inventory_jobs where child_sku_id = :SKU;
-update child_skus set store_variant_id = null where id = :SKU;
+update child_skus set store_inventory_item_id = null where id = :SKU;
 select is(
   public.reconcile_outbound_inventory_for_site(:MAIN),
-  0, 'an unmapped SKU is not enqueued (nothing to address on the store)');
+  0, 'Shopify: a SKU without store_inventory_item_id is NOT enqueued');
+select is(
+  (select count(*)::int from reconcile_outbound_blockers
+     where child_sku_id = :SKU),
+  1, 'the unpushable SKU is visible in reconcile_outbound_blockers instead');
+
+-- The same SKU IS pushable on a Woo connection, which addresses stock by
+-- product/variation id — proving the gate follows the channel, not the column.
+update store_connections
+   set channel = 'woocommerce', source = 'https://example.test', inventory_location_id = null
+ where site_id = :MAIN;
+select is(
+  public.reconcile_outbound_inventory_for_site(:MAIN),
+  1, 'WooCommerce: the same SKU is enqueued on store_variant_id alone');
+
+-- Shopify with no location on the connection can address nothing either.
+delete from store_outbound_inventory_jobs where child_sku_id = :SKU;
+update child_skus set store_inventory_item_id = 'inv-1' where id = :SKU;
+update store_connections
+   set channel = 'shopify', source = 'test.myshopify.com', inventory_location_id = null
+ where site_id = :MAIN;
+select is(
+  public.reconcile_outbound_inventory_for_site(:MAIN),
+  0, 'Shopify: no inventory_location_id on the connection enqueues nothing');
 
 select * from finish();
 rollback;

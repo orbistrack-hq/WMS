@@ -184,6 +184,8 @@ export async function runOutboundDrainNow(): Promise<
       pushed: number
       skipped: number
       failed: number
+      deferred: number
+      throttled: number
       firstError?: string
     }
   | { ok: false; error: string }
@@ -223,6 +225,8 @@ export async function runOutboundDrainNow(): Promise<
       pushed: summary.pushed,
       skipped: summary.skipped,
       failed: summary.failed,
+      deferred: summary.deferred ?? 0,
+      throttled: summary.throttled ?? 0,
       firstError: summary.firstError,
     }
   } catch (e) {
@@ -246,7 +250,18 @@ export async function runOutboundDrainNow(): Promise<
  * SKU index and pushes SET an absolute available.
  */
 export async function repushAllStock(connectionId: string): Promise<
-  | { ok: true; enqueued: number; pushed: number; skipped: number; failed: number; firstError?: string }
+  | {
+      ok: true
+      enqueued: number
+      pushed: number
+      skipped: number
+      failed: number
+      /** Parked without penalty (rate limit / circuit breaker) — retries itself. */
+      deferred: number
+      throttled: number
+      deadlineHit: boolean
+      firstError?: string
+    }
   | { ok: false; error: string }
 > {
   // Authorize through the USER's client: RLS decides whether they can see this
@@ -280,10 +295,121 @@ export async function repushAllStock(connectionId: string): Promise<
       pushed: summary.pushed,
       skipped: summary.skipped,
       failed: summary.failed,
+      deferred: summary.deferred ?? 0,
+      throttled: summary.throttled ?? 0,
+      deadlineHit: Boolean(summary.deadlineHit),
       firstError: summary.firstError,
     }
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "Re-push failed." }
+  }
+}
+
+/**
+ * Backfill child_skus.store_inventory_item_id for one connection's site.
+ *
+ * Outbound stock on Shopify is written to inventory_levels/set.json, which
+ * addresses an InventoryItem — NOT the variant. importShopifyProduct only
+ * records that id when Shopify's variant payload carries inventory_item_id, so
+ * anything imported before migration 0026 (or through a path that didn't have
+ * it) ends up mapped by store_variant_id yet unpushable, and every outbound job
+ * for it dies as a permanent 'skipped'.
+ *
+ * A full product re-sync would fix this as a side effect, but it also rewrites
+ * names, prices and costs — too blunt when all you need is the missing id. This
+ * pages the catalog and fills ONLY the null ids, matching on store_variant_id.
+ * Nothing else on the SKU is touched.
+ */
+export async function backfillInventoryItemIds(connectionId: string): Promise<
+  | { ok: true; matched: number; filled: number; stillMissing: number }
+  | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data: conn, error: connErr } = await supabase
+    .from("store_connections")
+    .select("site_id, source")
+    .eq("id", connectionId)
+    .maybeSingle()
+  if (connErr) return { ok: false, error: err(connErr) }
+  if (!conn) return { ok: false, error: "Connection not found." }
+
+  const admin = createAdminClient()
+  const { data: secret } = await admin
+    .from("store_secrets")
+    .select("access_token")
+    .eq("connection_id", connectionId)
+    .maybeSingle()
+  if (!secret?.access_token) {
+    return { ok: false, error: "Set this store's Admin API access token first." }
+  }
+  const token = secret.access_token as string
+
+  // The SKUs that need it: mapped to a variant, but with no inventory item.
+  const { data: gaps, error: gapErr } = await admin
+    .from("child_skus")
+    .select("id, store_variant_id")
+    .eq("site_id", conn.site_id)
+    .is("store_inventory_item_id", null)
+    .not("store_variant_id", "is", null)
+  if (gapErr) return { ok: false, error: err(gapErr) }
+  if (!gaps || gaps.length === 0) {
+    return { ok: true, matched: 0, filled: 0, stillMissing: 0 }
+  }
+  const wanted = new Map<string, string>() // store_variant_id -> child_sku_id
+  for (const g of gaps) {
+    if (g.store_variant_id) wanted.set(String(g.store_variant_id), g.id as string)
+  }
+
+  // Page the catalog for variant -> inventory_item_id.
+  const found = new Map<string, string>() // child_sku_id -> inventory_item_id
+  let url: string | null =
+    `https://${conn.source}/admin/api/${SHOPIFY_API_VERSION}/products.json?limit=250`
+  try {
+    for (let page = 0; url && page < 40; page++) {
+      const r: Response = await fetch(url, {
+        headers: {
+          "X-Shopify-Access-Token": token,
+          "Content-Type": "application/json",
+        },
+      })
+      if (!r.ok) {
+        const raw = await r.text().catch(() => "")
+        console.error(`[shopify] inventory-item backfill ${r.status}: ${raw}`)
+        return { ok: false, error: shopifyApiError(r.status, raw) }
+      }
+      const body = (await r.json()) as { products?: ShopifyProduct[] }
+      for (const product of body.products ?? []) {
+        for (const v of product.variants ?? []) {
+          if (v.id == null || v.inventory_item_id == null) continue
+          const childId = wanted.get(String(v.id))
+          if (childId) found.set(childId, String(v.inventory_item_id))
+        }
+      }
+      url = nextPageUrl(r.headers.get("link"))
+    }
+  } catch {
+    return { ok: false, error: "Could not reach Shopify. Try again." }
+  }
+
+  // Each row takes a different value, so this is a per-row update rather than a
+  // single statement. Service role: the connection read above authorized us.
+  let filled = 0
+  for (const [childId, invItemId] of found) {
+    const { error: upErr } = await admin
+      .from("child_skus")
+      .update({ store_inventory_item_id: invItemId })
+      .eq("id", childId)
+    if (!upErr) filled++
+  }
+
+  revalidatePath("/integrations/shopify")
+  return {
+    ok: true,
+    matched: wanted.size,
+    filled,
+    // Variants that no longer exist on the store, or that Shopify returned
+    // without an inventory item — a re-sync won't fix these either.
+    stillMissing: wanted.size - filled,
   }
 }
 

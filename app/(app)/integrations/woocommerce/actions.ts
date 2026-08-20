@@ -194,6 +194,8 @@ export async function runOutboundDrainNow(): Promise<
       pushed: number
       skipped: number
       failed: number
+      deferred: number
+      throttled: number
       firstError?: string
     }
   | { ok: false; error: string }
@@ -232,6 +234,8 @@ export async function runOutboundDrainNow(): Promise<
       pushed: summary.pushed,
       skipped: summary.skipped,
       failed: summary.failed,
+      deferred: summary.deferred ?? 0,
+      throttled: summary.throttled ?? 0,
       firstError: summary.firstError,
     }
   } catch (e) {
@@ -255,7 +259,18 @@ export async function runOutboundDrainNow(): Promise<
  * SKU index and pushes SET an absolute stock_quantity.
  */
 export async function repushAllStock(connectionId: string): Promise<
-  | { ok: true; enqueued: number; pushed: number; skipped: number; failed: number; firstError?: string }
+  | {
+      ok: true
+      enqueued: number
+      pushed: number
+      skipped: number
+      failed: number
+      /** Parked without penalty (rate limit / circuit breaker) — retries itself. */
+      deferred: number
+      throttled: number
+      deadlineHit: boolean
+      firstError?: string
+    }
   | { ok: false; error: string }
 > {
   // Authorize through the USER's client: RLS decides whether they can see this
@@ -289,6 +304,9 @@ export async function repushAllStock(connectionId: string): Promise<
       pushed: summary.pushed,
       skipped: summary.skipped,
       failed: summary.failed,
+      deferred: summary.deferred ?? 0,
+      throttled: summary.throttled ?? 0,
+      deadlineHit: Boolean(summary.deadlineHit),
       firstError: summary.firstError,
     }
   } catch (e) {
