@@ -253,7 +253,9 @@ function ConnectionCard({
               ? `, ${res.deferred} parked${res.throttled ? " (rate limited)" : ""} — these retry automatically`
               : "") +
             (res.failed ? `, ${res.failed} failed (will retry)` : "") +
-            (res.skipped ? `, ${res.skipped} skipped — needs a mapping fix` : "") +
+            (res.skipped
+              ? `, ${res.skipped} skipped${res.firstSkipReason ? ` — ${res.firstSkipReason}` : " — needs a mapping fix"}`
+              : "") +
             "." +
             (res.firstError ? ` First error: ${res.firstError}` : ""),
         )
@@ -276,7 +278,9 @@ function ConnectionCard({
               ? `, ${res.deferred} parked${res.throttled ? " (rate limited)" : ""} — these retry automatically`
               : "") +
             (res.failed ? `, ${res.failed} failed (will retry)` : "") +
-            (res.skipped ? `, ${res.skipped} skipped — needs a mapping fix` : "") +
+            (res.skipped
+              ? `, ${res.skipped} skipped${res.firstSkipReason ? ` — ${res.firstSkipReason}` : " — needs a mapping fix"}`
+              : "") +
             "." +
             (res.deadlineHit ? " Ran out of time; the rest continue in the background." : "") +
             (res.firstError ? ` First error: ${res.firstError}` : ""),

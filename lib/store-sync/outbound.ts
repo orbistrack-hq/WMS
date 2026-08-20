@@ -52,11 +52,11 @@ const DEFAULT_PUSH_GAP_MS = 400
 /** Fallback park when a 429 arrives without a usable Retry-After header. */
 const DEFAULT_THROTTLE_BACKOFF_MS = 60_000
 /**
- * Rough wall-clock cost of one job: the inter-call gap plus a typical store
- * round trip. Used only to size the claim against the time budget — see the note
- * in drainOutboundInventory.
+ * How many jobs to claim per batch. Small, because claiming flips rows to
+ * 'processing' and anything the run doesn't reach is invisible to the next drain
+ * until the reaper frees it. See drainOutboundInventory.
  */
-const ESTIMATED_JOB_MS = 800
+const CLAIM_BATCH_SIZE = 25
 
 // --- Per-run circuit breaker -------------------------------------------------
 // After this many consecutive transient failures on one store WITHIN a run, we
@@ -87,6 +87,13 @@ export type DrainSummary = {
   /** True when we stopped early because the time budget (deadlineMs) elapsed. */
   deadlineHit?: boolean
   firstError?: string
+  /**
+   * Why the first permanently-skipped job was skipped. Reported separately from
+   * firstError because a skip is a DATA problem the operator must fix (bad or
+   * missing mapping), not a transport failure that will clear on its own — and
+   * "31 skipped" with no reason attached is unactionable.
+   */
+  firstSkipReason?: string
 }
 
 type ClaimedJob = {
@@ -148,6 +155,15 @@ function retryAfterMs(header: string | null): number {
  * stop before claiming/processing further jobs and return what we've done so
  * far. Any already-claimed-but-unprocessed job is left 'processing' for the
  * reaper to recover — this is what stops a slow store from blocking the caller.
+ *
+ * Jobs are claimed in SMALL BATCHES inside a loop rather than one big up-front
+ * claim, because job costs vary by three orders of magnitude: a push is a ~500ms
+ * network round trip, while a skip (bad mapping) is pure DB work. A single claim
+ * sized for the worst case wastes the whole run when the queue happens to be
+ * full of skips — the symptom was a drain reporting "0 sent, 31 skipped" and
+ * stopping, having never reached a single pushable SKU. Batching lets cheap
+ * outcomes buy more work, and keeps unreached rows 'pending' (immediately
+ * re-claimable) instead of stranded in 'processing' until the reaper.
  */
 export async function drainOutboundInventory(
   admin: SupabaseClient,
@@ -158,29 +174,10 @@ export async function drainOutboundInventory(
     opts.deadlineMs && opts.deadlineMs > 0 ? Date.now() + opts.deadlineMs : Infinity
   const summary: DrainSummary = { claimed: 0, pushed: 0, skipped: 0, failed: 0 }
 
-  // Don't claim more than the time budget can plausibly process. Claiming flips
-  // rows to 'processing', and anything we don't reach before the deadline is
-  // invisible to the next drain until the reaper frees it 5 minutes later. So an
-  // over-large claim doesn't just waste effort — it PARKS the backlog. Sizing the
-  // claim to the budget keeps the surplus 'pending' and immediately re-claimable.
-  const effectiveLimit = Number.isFinite(deadline)
-    ? Math.max(1, Math.min(limit, Math.floor((opts.deadlineMs as number) / ESTIMATED_JOB_MS)))
-    : limit
-
-  const { data, error } = await admin.rpc("claim_outbound_inventory_jobs", {
-    p_limit: effectiveLimit,
-  })
-  if (error) {
-    summary.firstError = error.message
-    return summary
-  }
-  const jobs = (data ?? []) as ClaimedJob[]
-  summary.claimed = jobs.length
-  if (jobs.length === 0) return summary
-
   // Resolve credentials once per source (avoid re-reading the sealed secrets
   // table for every job of the same store). Shopify: an access token; Woo: a
-  // consumer key/secret pair.
+  // consumer key/secret pair. Held across batches — the whole point is that a
+  // run is one conversation with the store.
   const tokenBySource = new Map<string, string | null>()
   const wooCredsBySource = new Map<string, WooCreds | null>()
 
@@ -196,81 +193,104 @@ export async function drainOutboundInventory(
   // not count toward CIRCUIT_FAIL_THRESHOLD.
   const throttledUntil = new Map<string, string>()
 
-  for (let i = 0; i < jobs.length; i++) {
-    // Time budget: bail before touching the next job once the deadline passes.
-    // Remaining claimed jobs stay 'processing'; the reaper resets them to
-    // 'pending' and the next drain retries them.
+  while (summary.claimed < limit) {
     if (Date.now() >= deadline) {
       summary.deadlineHit = true
       break
     }
 
-    const job = jobs[i]
-    const key = storeKey(job)
-
-    // Circuit open for this store: park the job for the cooldown instead of
-    // spending a timeout on a store we already know is failing. No API call, no
-    // attempt burned. It retries once the cooldown elapses.
-    if (tripped.has(key)) {
-      await deferJob(admin, job.job_id, cooldownUntil)
-      summary.deferred = (summary.deferred ?? 0) + 1
-      continue
+    const { data, error } = await admin.rpc("claim_outbound_inventory_jobs", {
+      p_limit: Math.min(CLAIM_BATCH_SIZE, limit - summary.claimed),
+    })
+    if (error) {
+      if (!summary.firstError) summary.firstError = error.message
+      break
     }
+    const jobs = (data ?? []) as ClaimedJob[]
+    if (jobs.length === 0) break // queue drained
+    summary.claimed += jobs.length
 
-    // Store already rate-limited us this run: park at the same wake-up time
-    // rather than spending another call to be told the same thing.
-    const throttleUntil = throttledUntil.get(key)
-    if (throttleUntil) {
-      await deferJob(admin, job.job_id, throttleUntil)
-      summary.deferred = (summary.deferred ?? 0) + 1
-      summary.throttled = (summary.throttled ?? 0) + 1
-      continue
-    }
-
-    const outcome = await pushJob(admin, job, tokenBySource, wooCredsBySource)
-
-    if (outcome.ok) {
-      summary.pushed++
-      consecutiveFails.set(key, 0) // healthy again — reset the counter
-      await complete(admin, job.job_id, { ok: true })
-    } else if (outcome.kind === "skip") {
-      // Permanent (bad mapping / disabled connection): terminal, and it does NOT
-      // reflect store health, so it must not trip the breaker.
-      summary.skipped++
-      await complete(admin, job.job_id, { ok: false, skip: true, error: outcome.error })
-    } else if (outcome.kind === "throttled") {
-      // We asked too fast. Park this job and the rest of this store's jobs until
-      // the store says it's ready. No attempt burned, breaker untouched.
-      const until = new Date(Date.now() + outcome.retryAfterMs).toISOString()
-      throttledUntil.set(key, until)
-      await deferJob(admin, job.job_id, until)
-      summary.deferred = (summary.deferred ?? 0) + 1
-      summary.throttled = (summary.throttled ?? 0) + 1
-      if (!summary.firstError) summary.firstError = outcome.error
-    } else {
-      // Transient failure (timeout / 5xx / auth): retryable, and a signal the
-      // store may be unhealthy. Count it; trip the breaker at the threshold.
-      summary.failed++
-      if (!summary.firstError) summary.firstError = outcome.error
-      const n = (consecutiveFails.get(key) ?? 0) + 1
-      consecutiveFails.set(key, n)
-      if (n >= CIRCUIT_FAIL_THRESHOLD) {
-        tripped.add(key)
-        summary.trippedSources = [...(summary.trippedSources ?? []), key]
+    for (let i = 0; i < jobs.length; i++) {
+      // Time budget: bail before touching the next job once the deadline passes.
+      // Remaining claimed jobs stay 'processing'; the reaper resets them to
+      // 'pending' and the next drain retries them.
+      if (Date.now() >= deadline) {
+        summary.deadlineHit = true
+        break
       }
-      await complete(admin, job.job_id, { ok: false, skip: false, error: outcome.error })
-    }
 
-    // Space out real API calls; skips (no network) don't need the gap. Pace by
-    // the channel we just called, not a single global constant — Shopify's 2/s
-    // bucket is much tighter than a self-hosted Woo origin's.
-    if (outcome.ok || outcome.kind !== "skip") {
-      if (i < jobs.length - 1) {
-        await sleep(
-          PUSH_GAP_MS[job.channel ?? ""] ?? DEFAULT_PUSH_GAP_MS,
-        )
+      const job = jobs[i]
+      const key = storeKey(job)
+
+      // Circuit open for this store: park the job for the cooldown instead of
+      // spending a timeout on a store we already know is failing. No API call, no
+      // attempt burned. It retries once the cooldown elapses.
+      if (tripped.has(key)) {
+        await deferJob(admin, job.job_id, cooldownUntil)
+        summary.deferred = (summary.deferred ?? 0) + 1
+        continue
+      }
+
+      // Store already rate-limited us this run: park at the same wake-up time
+      // rather than spending another call to be told the same thing.
+      const throttleUntil = throttledUntil.get(key)
+      if (throttleUntil) {
+        await deferJob(admin, job.job_id, throttleUntil)
+        summary.deferred = (summary.deferred ?? 0) + 1
+        summary.throttled = (summary.throttled ?? 0) + 1
+        continue
+      }
+
+      const outcome = await pushJob(admin, job, tokenBySource, wooCredsBySource)
+
+      if (outcome.ok) {
+        summary.pushed++
+        consecutiveFails.set(key, 0) // healthy again — reset the counter
+        await complete(admin, job.job_id, { ok: true })
+      } else if (outcome.kind === "skip") {
+        // Permanent (bad mapping / disabled connection): terminal, and it does NOT
+        // reflect store health, so it must not trip the breaker.
+        summary.skipped++
+        if (!summary.firstSkipReason) summary.firstSkipReason = outcome.error
+        await complete(admin, job.job_id, { ok: false, skip: true, error: outcome.error })
+      } else if (outcome.kind === "throttled") {
+        // We asked too fast. Park this job and the rest of this store's jobs until
+        // the store says it's ready. No attempt burned, breaker untouched.
+        const until = new Date(Date.now() + outcome.retryAfterMs).toISOString()
+        throttledUntil.set(key, until)
+        await deferJob(admin, job.job_id, until)
+        summary.deferred = (summary.deferred ?? 0) + 1
+        summary.throttled = (summary.throttled ?? 0) + 1
+        if (!summary.firstError) summary.firstError = outcome.error
+      } else {
+        // Transient failure (timeout / 5xx / auth): retryable, and a signal the
+        // store may be unhealthy. Count it; trip the breaker at the threshold.
+        summary.failed++
+        if (!summary.firstError) summary.firstError = outcome.error
+        const n = (consecutiveFails.get(key) ?? 0) + 1
+        consecutiveFails.set(key, n)
+        if (n >= CIRCUIT_FAIL_THRESHOLD) {
+          tripped.add(key)
+          summary.trippedSources = [...(summary.trippedSources ?? []), key]
+        }
+        await complete(admin, job.job_id, { ok: false, skip: false, error: outcome.error })
+      }
+
+      // Space out real API calls; skips (no network) don't need the gap. Pace by
+      // the channel we just called, not a single global constant — Shopify's 2/s
+      // bucket is much tighter than a self-hosted Woo origin's.
+      if (outcome.ok || outcome.kind !== "skip") {
+        if (i < jobs.length - 1) {
+          await sleep(
+            PUSH_GAP_MS[job.channel ?? ""] ?? DEFAULT_PUSH_GAP_MS,
+          )
+        }
       }
     }
+
+    // The inner loop only breaks on the deadline; propagate that out of the
+    // batch loop so we don't claim another batch we can't process.
+    if (summary.deadlineHit) break
   }
 
   return summary

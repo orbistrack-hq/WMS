@@ -197,6 +197,7 @@ export async function runOutboundDrainNow(): Promise<
       deferred: number
       throttled: number
       firstError?: string
+      firstSkipReason?: string
     }
   | { ok: false; error: string }
 > {
@@ -237,6 +238,7 @@ export async function runOutboundDrainNow(): Promise<
       deferred: summary.deferred ?? 0,
       throttled: summary.throttled ?? 0,
       firstError: summary.firstError,
+      firstSkipReason: summary.firstSkipReason,
     }
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "Drain failed." }
@@ -270,6 +272,7 @@ export async function repushAllStock(connectionId: string): Promise<
       throttled: number
       deadlineHit: boolean
       firstError?: string
+      firstSkipReason?: string
     }
   | { ok: false; error: string }
 > {
@@ -308,6 +311,7 @@ export async function repushAllStock(connectionId: string): Promise<
       throttled: summary.throttled ?? 0,
       deadlineHit: Boolean(summary.deadlineHit),
       firstError: summary.firstError,
+      firstSkipReason: summary.firstSkipReason,
     }
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "Re-push failed." }
