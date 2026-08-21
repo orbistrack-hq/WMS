@@ -21,6 +21,7 @@ import {
   cancelOrder,
   combineOrders,
   forceFulfillOrder,
+  fulfillCancelledOrder,
   fulfillOrder,
   markCompletedAtStore,
   reopenOrder,
@@ -138,6 +139,35 @@ export function OrderActions({
           >
             <RotateCcw data-icon="inline-start" /> Re-open order
           </Button>
+        ) : null}
+        {status === "cancelled" && canForceFulfill ? (
+          <div className="flex flex-col gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3">
+            <div className="flex items-center gap-1.5 text-sm font-medium">
+              <PackageCheck className="size-4 text-amber-600" /> Shipped anyway
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Use if this order was cancelled here but ShipStation shipped it
+              anyway (e.g. the ShipStation alignment check flagged it). Depletes
+              on-hand for its items — cancelling already released the
+              reservation without touching on-hand — and marks it fulfilled.
+              The reason is written to the inventory ledger.
+            </p>
+            <Button
+              size="sm"
+              variant="outline"
+              className="w-fit border-amber-500/50"
+              disabled={isPending}
+              onClick={() => {
+                const reason = window.prompt(
+                  'Mark this cancelled order fulfilled?\n\nEnter a reason (saved to the inventory ledger) — e.g. "shipped in ShipStation per alignment check":',
+                )
+                if (reason && reason.trim())
+                  run(() => fulfillCancelledOrder(orderId, reason))
+              }}
+            >
+              <PackageCheck data-icon="inline-start" /> Mark fulfilled — shipped anyway
+            </Button>
+          </div>
         ) : null}
         {promoToggle}
       </div>

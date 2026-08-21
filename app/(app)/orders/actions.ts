@@ -212,6 +212,36 @@ export async function forceFulfillOrder(
   return { ok: true }
 }
 
+/**
+ * Correct an order that was cancelled in OT but actually shipped (e.g. the
+ * store/ShipStation shipped it anyway) — admin/manager only. Depletes on_hand
+ * for the shipped units (cancel already released the reservation and never
+ * touched on_hand) and marks the order fulfilled. Reason is required and
+ * written to the inventory ledger. The DB gates the role, so a non-elevated
+ * caller gets a clean "requires the admin or manager role" error.
+ */
+export async function fulfillCancelledOrder(
+  orderId: string,
+  reason: string,
+): Promise<ActionResult> {
+  const trimmed = reason?.trim()
+  if (!trimmed)
+    return { ok: false, error: "A reason is required to fulfill a cancelled order." }
+
+  const supabase = await createClient()
+  const { error } = await supabase.rpc("fulfill_cancelled_order", {
+    p_order_id: orderId,
+    p_reason: trimmed,
+  })
+  if (error) return { ok: false, error: rpcError(error) }
+
+  revalidatePath(`/orders/${orderId}`)
+  revalidatePath("/orders")
+  revalidatePath("/inventory")
+  await kickOutboundDrain()
+  return { ok: true }
+}
+
 export async function cancelOrder(orderId: string): Promise<ActionResult> {
   const supabase = await createClient()
   const { error } = await supabase.rpc("cancel_order", { p_order_id: orderId })
