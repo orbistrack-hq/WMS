@@ -134,6 +134,7 @@ export type LifecycleUpdateOutcome =
   | { status: "fulfilled"; wmsOrderId: string }
   | { status: "cancelled"; wmsOrderId: string }
   | { status: "activated"; wmsOrderId: string }
+  | { status: "reopened"; wmsOrderId: string }
   | { status: "noop"; reason: string }
   | { status: "not_found" }
   | { status: "error"; error: string }
@@ -190,6 +191,22 @@ export async function applyWooLifecycleUpdate(
           order.fulfilledAt ?? order.createdAt ?? new Date().toISOString()
         }, after it was cancelled in OT.`,
       )
+      return { status: "noop", reason: `already ${status}` }
+    }
+    // OT follows the store, never the reverse: a cancelled OT order whose Woo
+    // record is now "open" (not cancelled/refunded/failed, and not completed
+    // either) means the store no longer agrees with OT's cancellation — most
+    // commonly order.deleted firing on a Trash action that got reversed
+    // (WooCommerce trash is reversible; effectiveWooLifecycle can't tell a real
+    // delete from one that gets restored). Reopen rather than leaving OT
+    // permanently stuck on a cancellation the store has moved past.
+    if (status === "cancelled" && order.lifecycle === "open") {
+      const { error } = await client.rpc("reopen_cancelled_order", {
+        p_order_id: wmsOrderId,
+        p_paid: order.paid,
+      })
+      if (error) return { status: "error", error: error.message }
+      return { status: "reopened", wmsOrderId }
     }
     return { status: "noop", reason: `already ${status}` }
   }

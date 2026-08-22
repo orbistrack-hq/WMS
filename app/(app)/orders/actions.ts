@@ -242,6 +242,28 @@ export async function fulfillCancelledOrder(
   return { ok: true }
 }
 
+/**
+ * Reopen an order OT cancelled that the store no longer considers cancelled
+ * (e.g. found via the ShipStation reconcile screen's "cancelled in OT, still
+ * awaiting" bucket — ShipStation only sees paid orders, so treat it as paid).
+ * Re-reserves stock (backorder-tolerant) and moves it back to created. Admin/
+ * manager only, gated in the RPC.
+ */
+export async function reopenCancelledOrder(orderId: string): Promise<ActionResult> {
+  const supabase = await createClient()
+  const { error } = await supabase.rpc("reopen_cancelled_order", {
+    p_order_id: orderId,
+    p_paid: true,
+  })
+  if (error) return { ok: false, error: rpcError(error) }
+
+  revalidatePath(`/orders/${orderId}`)
+  revalidatePath("/orders")
+  revalidatePath("/inventory")
+  await kickOutboundDrain()
+  return { ok: true }
+}
+
 export async function cancelOrder(orderId: string): Promise<ActionResult> {
   const supabase = await createClient()
   const { error } = await supabase.rpc("cancel_order", { p_order_id: orderId })

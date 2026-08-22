@@ -24,6 +24,7 @@ import {
   fulfillCancelledOrder,
   fulfillOrder,
   markCompletedAtStore,
+  reopenCancelledOrder,
   reopenOrder,
   returnOrder,
   setOrderPromo,
@@ -177,6 +178,36 @@ export function OrderActions({
               }}
             >
               <PackageCheck data-icon="inline-start" /> Mark fulfilled — shipped anyway
+            </Button>
+          </div>
+        ) : null}
+        {status === "cancelled" && canForceFulfill ? (
+          <div className="flex flex-col gap-2 rounded-lg border border-border p-3">
+            <div className="flex items-center gap-1.5 text-sm font-medium">
+              <RotateCcw className="size-4" /> Still active at the store
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Use if the store (Woo/Shopify) no longer shows this as cancelled —
+              e.g. it was trashed then restored, or found via the ShipStation
+              alignment check&apos;s &quot;still awaiting&quot; list. Re-reserves
+              stock (backordering what isn&apos;t available) and puts it back
+              into the normal pick/pack queue.
+            </p>
+            <Button
+              size="sm"
+              variant="outline"
+              className="w-fit"
+              disabled={isPending}
+              onClick={() => {
+                if (
+                  confirm(
+                    "Reopen this order? It goes back to Created and re-reserves stock (backordering any shortfall).",
+                  )
+                )
+                  run(() => reopenCancelledOrder(orderId))
+              }}
+            >
+              <RotateCcw data-icon="inline-start" /> Reopen — still active
             </Button>
           </div>
         ) : null}
