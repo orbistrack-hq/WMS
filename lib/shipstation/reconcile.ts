@@ -191,22 +191,29 @@ export function ssBeforeFloor(
 
 /** Run the full OT ⇄ ShipStation reconciliation. `db` must be service-role.
  *  `ignoreBefore` (ISO date) hides orders placed before a go-live floor from the
- *  SS-only presence buckets; pass null to show everything. */
+ *  SS-only presence buckets; pass null to show everything.
+ *  `opts` overrides the default lookback windows (OT_LOOKBACK_DAYS / 45,
+ *  SHIPPED_LOOKBACK_DAYS / 7) — for a one-off deeper historical audit further
+ *  back than the normal daily sweep needs, without touching the defaults every
+ *  other caller relies on. */
 export async function reconcileShipStation(
   db: SupabaseClient,
   apiKey: string,
   apiSecret: string,
   ignoreBefore: string | null = null,
+  opts?: { otLookbackDays?: number; shippedLookbackDays?: number },
 ): Promise<ReconcileResult> {
   const now = Date.now()
   const floor = ignoreBefore ? Date.parse(ignoreBefore) : null
   const floorMs = floor != null && !Number.isNaN(floor) ? floor : null
-  const shippedSince = new Date(now - SHIPPED_LOOKBACK_DAYS * 86_400_000)
+  const shippedLookbackDays = opts?.shippedLookbackDays ?? SHIPPED_LOOKBACK_DAYS
+  const otLookbackDays = opts?.otLookbackDays ?? OT_LOOKBACK_DAYS
+  const shippedSince = new Date(now - shippedLookbackDays * 86_400_000)
     .toISOString()
     .slice(0, 10)
 
   // OT orders (bounded window) with the fields every check needs.
-  const otSince = new Date(now - OT_LOOKBACK_DAYS * 86_400_000).toISOString()
+  const otSince = new Date(now - otLookbackDays * 86_400_000).toISOString()
   const ot: OtOrder[] = []
   const pageSize = 1000
   for (let from = 0; ; from += pageSize) {

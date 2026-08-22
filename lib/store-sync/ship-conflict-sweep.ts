@@ -25,13 +25,22 @@ export type ShipConflictSweepSummary = {
  * shippedNotFulfilled bucket, filtered to the cancelled case). Idempotent via
  * flagShipConflict — a repeat sweep pass over an already-flagged order is a
  * harmless no-op. Service-role client required.
+ *
+ * `lookbackDays`, when passed, widens BOTH of reconcileShipStation's lookback
+ * windows (OT order history + ShipStation shipped-order history) beyond their
+ * normal defaults (45 / 7 days) — for a one-off deeper historical audit run
+ * manually (e.g. `?days=365`), not the routine daily cron.
  */
 export async function sweepShipConflicts(
   admin: SupabaseClient,
   apiKey: string,
   apiSecret: string,
+  lookbackDays?: number,
 ): Promise<ShipConflictSweepSummary> {
-  const result = await reconcileShipStation(admin, apiKey, apiSecret, null)
+  const result = await reconcileShipStation(admin, apiKey, apiSecret, null, {
+    otLookbackDays: lookbackDays,
+    shippedLookbackDays: lookbackDays,
+  })
   const candidates = result.shippedNotFulfilled.filter((r) =>
     r.note?.includes("cancelled"),
   )

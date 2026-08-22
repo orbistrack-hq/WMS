@@ -17,6 +17,12 @@ export const maxDuration = 60
  * webhook — this catches the order shipping without one. Driven by a Vercel
  * Cron (Authorization: Bearer CRON_SECRET) or a manual call forwarding the
  * worker secret (x-wms-worker-key / ?key=).
+ *
+ * Optional `?days=N` widens both of reconcileShipStation's lookback windows
+ * (OT order history + ShipStation shipped-order history) past their normal
+ * 45/7-day defaults, for a one-off deeper historical audit — e.g.
+ * `?key=...&days=365` to check the last year for any earlier instance of this
+ * same cancelled-but-shipped drift. Omit for the routine cron run.
  */
 function authorized(req: Request): boolean {
   if (verifyWorkerSecret(req.headers.get("x-wms-worker-key"))) return true
@@ -45,10 +51,20 @@ async function handle(req: Request) {
       { status: 200 },
     )
   }
+  let lookbackDays: number | undefined
+  try {
+    const raw = new URL(req.url).searchParams.get("days")
+    if (raw) {
+      const n = Number.parseInt(raw, 10)
+      if (Number.isFinite(n) && n > 0) lookbackDays = n
+    }
+  } catch {
+    // ignore malformed URL
+  }
   try {
     const admin = createAdminClient()
-    const summary = await sweepShipConflicts(admin, apiKey, apiSecret)
-    return NextResponse.json({ ok: true, ...summary }, { status: 200 })
+    const summary = await sweepShipConflicts(admin, apiKey, apiSecret, lookbackDays)
+    return NextResponse.json({ ok: true, lookbackDays: lookbackDays ?? "default", ...summary }, { status: 200 })
   } catch (err) {
     const message = err instanceof Error ? err.message : "sweep failed"
     return NextResponse.json({ error: message }, { status: 500 })

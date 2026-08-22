@@ -157,9 +157,11 @@ export function OrderActions({
             <p className="text-xs text-muted-foreground">
               Use if this order was cancelled here but ShipStation shipped it
               anyway (e.g. the ShipStation alignment check flagged it). Depletes
-              on-hand for its items — cancelling already released the
-              reservation without touching on-hand — and marks it fulfilled.
-              The reason is written to the inventory ledger.
+              on-hand for its items and marks it fulfilled. If that would put
+              on-hand below what's currently reserved, it backorders just
+              enough of the newest other open order(s) reserving the same SKU
+              instead — they reserved stock this order had already shipped.
+              Everything is written to the inventory ledger.
             </p>
             <Button
               size="sm"
