@@ -132,6 +132,12 @@ export const NAV_TREE: NavEntry[] = [
         icon: Clock,
         description: "Open orders awaiting stock — units owed per SKU",
       },
+      {
+        label: "Needs recount",
+        href: "/reports/needs-recount",
+        icon: ClipboardList,
+        description: "SKUs a correction couldn't reflect in on-hand — physical count is off",
+      },
     ],
   },
   {
