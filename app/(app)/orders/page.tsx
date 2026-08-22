@@ -1,5 +1,5 @@
 import Link from "next/link"
-import { Plus, ClipboardList, Clock } from "lucide-react"
+import { Plus, ClipboardList, Clock, AlertTriangle } from "lucide-react"
 
 import { createClient } from "@/lib/supabase/server"
 import { cn } from "@/lib/utils"
@@ -137,6 +137,16 @@ export default async function OrdersPage({
   if (sp.channel) heldCountQuery = heldCountQuery.eq("channel", sp.channel)
   const { count: heldCount } = await heldCountQuery
 
+  // Orders WMS detected shipped at the store after being cancelled here (a
+  // later webhook race, or the scheduled ShipStation cross-check sweep) — see
+  // orders.ship_conflict_at / lib/store-sync/ship-conflict.ts. Surfaced across
+  // every filter, not just the current view, since these need attention
+  // regardless of what the list happens to be scoped to right now.
+  const { count: shipConflictCount } = await supabase
+    .from("orders")
+    .select("id", { count: "estimated", head: true })
+    .not("ship_conflict_at", "is", null)
+
   // Link to the held-orders view, preserving the current non-status filters.
   const heldParams = new URLSearchParams()
   if (sp.site) heldParams.set("site", sp.site)
@@ -204,6 +214,17 @@ export default async function OrdersPage({
       />
 
       <OrdersFilters sites={sites ?? []} />
+
+      {shipConflictCount ? (
+        <Link
+          href="/integrations/shipstation"
+          className="flex w-fit items-center gap-1.5 self-start rounded-md bg-destructive/10 px-2.5 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/15"
+        >
+          <AlertTriangle className="size-3.5" />
+          {shipConflictCount} order{shipConflictCount === 1 ? "" : "s"} shipped
+          after being cancelled — review
+        </Link>
+      ) : null}
 
       {sp.status !== "pending_payment" && heldCount ? (
         <Link

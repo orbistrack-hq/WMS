@@ -47,6 +47,7 @@ export function OrderActions({
   isPromo,
   canForceFulfill,
   combinable,
+  shipConflictNote,
 }: {
   orderId: string
   status: OrderStatus
@@ -55,6 +56,9 @@ export function OrderActions({
   isPromo: boolean
   canForceFulfill: boolean
   combinable: Combinable[]
+  /** Set when WMS detected this order shipped at the store after being
+   *  cancelled here (webhook race or the scheduled ShipStation sweep). */
+  shipConflictNote?: string | null
 }) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
@@ -145,6 +149,11 @@ export function OrderActions({
             <div className="flex items-center gap-1.5 text-sm font-medium">
               <PackageCheck className="size-4 text-amber-600" /> Shipped anyway
             </div>
+            {shipConflictNote ? (
+              <p className="rounded-md bg-destructive/10 px-2.5 py-2 text-xs font-medium text-destructive">
+                ⚠ {shipConflictNote}
+              </p>
+            ) : null}
             <p className="text-xs text-muted-foreground">
               Use if this order was cancelled here but ShipStation shipped it
               anyway (e.g. the ShipStation alignment check flagged it). Depletes

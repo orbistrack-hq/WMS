@@ -62,6 +62,8 @@ type OrderDetail = {
   entered_at: string
   fulfilled_at: string | null
   cancelled_at: string | null
+  ship_conflict_at: string | null
+  ship_conflict_note: string | null
   notes: string | null
   group_id: string
   ship_to_name: string | null
@@ -105,7 +107,7 @@ export default async function OrderDetailPage({
     .from("orders")
     .select(
       `id, order_number, status, on_hold, backordered, force_fulfilled, hold_reason, order_type, channel, is_promo, sale_date, entered_at,
-       fulfilled_at, cancelled_at, notes, group_id,
+       fulfilled_at, cancelled_at, ship_conflict_at, ship_conflict_note, notes, group_id,
        ship_to_name, ship_to_address1, ship_to_address2, ship_to_city,
        ship_to_region, ship_to_postal, ship_to_country,
        customer:customers(name, email),
@@ -184,6 +186,14 @@ export default async function OrderDetailPage({
               title="Force-fulfilled: shipped while backordered via an admin/manager override (inventory-neutral)"
             >
               Force fulfilled
+            </Badge>
+          ) : null}
+          {order.ship_conflict_at ? (
+            <Badge
+              variant="destructive"
+              title={order.ship_conflict_note ?? "Shipped at the store after being cancelled in OT"}
+            >
+              Shipped after cancel
             </Badge>
           ) : null}
         </div>
@@ -302,6 +312,7 @@ export default async function OrderDetailPage({
                 isPromo={order.is_promo}
                 canForceFulfill={canForceFulfill}
                 combinable={combinable}
+                shipConflictNote={order.ship_conflict_note}
               />
             </CardContent>
           </Card>

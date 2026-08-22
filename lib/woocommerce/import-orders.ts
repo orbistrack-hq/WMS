@@ -4,6 +4,7 @@ import { storeAutoFulfillEnabled } from "../store-sync/config"
 import { isBeforeSyncCutoff } from "../store-sync/cutoff"
 import { applyToHeldOrder } from "../store-sync/promote"
 import { markStoreCompleted } from "../store-sync/store-completed"
+import { flagShipConflict } from "../store-sync/ship-conflict"
 import type { NormalizedStoreOrder } from "./types"
 
 export type OrderImportOutcome =
@@ -177,6 +178,19 @@ export async function applyWooLifecycleUpdate(
   const status = current?.status as string | undefined
   if (!status) return { status: "not_found" }
   if (status === "fulfilled" || status === "cancelled") {
+    // The dangerous half of this no-op: the store now says it shipped, but OT
+    // already shows cancelled — the exact drift that leaves an order looking
+    // cancelled while it's physically gone. Flag it so it surfaces on the order
+    // instead of only being found by manually running the ShipStation check.
+    if (status === "cancelled" && order.lifecycle === "fulfilled") {
+      await flagShipConflict(
+        client,
+        wmsOrderId,
+        `WooCommerce reported this order shipped/completed on ${
+          order.fulfilledAt ?? order.createdAt ?? new Date().toISOString()
+        }, after it was cancelled in OT.`,
+      )
+    }
     return { status: "noop", reason: `already ${status}` }
   }
 
