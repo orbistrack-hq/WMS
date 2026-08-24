@@ -124,8 +124,11 @@ export default async function ReportsPage({
   // sale_date has heavy ties and tied rows can shuffle between page requests,
   // duplicating some and dropping others. Sorting for display happens below.
   const buildQuery = () => {
+    // p_from/p_to bound the query itself (migration 0104) rather than
+    // filtering the output after the fact — see that migration for why the
+    // old .gte()/.lte()-on-a-view approach never actually shrank the work.
     let q = supabase
-      .from("landed_margin_report")
+      .rpc("landed_margin_report", { p_from: sp.from, p_to: sp.to })
       .select(
         `order_id, order_number, sale_date, site_id, site_name, channel,
          revenue, discount, product_cogs, packaging_cost, shipping_cost,
@@ -133,14 +136,12 @@ export default async function ReportsPage({
       )
       .order("order_id")
 
-    if (sp.from) q = q.gte("sale_date", sp.from)
-    if (sp.to) q = q.lte("sale_date", sp.to)
     if (sp.site) q = q.eq("site_id", sp.site)
     if (sp.channel) q = q.eq("channel", sp.channel)
     return q
   }
 
-  // Probe once so a missing view still renders the "apply migration 0027" hint.
+  // Probe once so a missing function still renders the "apply migration 0104" hint.
   const { error } = await buildQuery().range(0, 0)
   const allRows = error ? [] : await fetchAllPages<MarginRow>(buildQuery)
   allRows.sort((a, b) => a.sale_date.localeCompare(b.sale_date))
@@ -399,7 +400,7 @@ export default async function ReportsPage({
           <CardContent className="py-8 text-sm text-destructive">
             Could not load analytics: {error.message}
             <span className="mt-1 block text-muted-foreground">
-              If this view is missing, apply migration 0027
+              If this function is missing, apply migration 0104
               (landed_margin_report).
             </span>
           </CardContent>
