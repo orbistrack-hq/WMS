@@ -1,5 +1,6 @@
 import { ArrowDown } from "lucide-react"
 import Link from "next/link"
+import { redirect } from "next/navigation"
 
 import { createClient } from "@/lib/supabase/server"
 import { fetchAllPages } from "@/lib/supabase/fetch-all"
@@ -19,6 +20,8 @@ import { TrendChart, type TrendPoint } from "./trend-chart"
 import { ExportButton } from "./export-button"
 
 export const dynamic = "force-dynamic"
+
+const REPORTS_DEFAULT_WINDOW_DAYS = 90
 
 type SearchParams = {
   from?: string
@@ -80,6 +83,30 @@ export default async function ReportsPage({
   searchParams: Promise<SearchParams>
 }) {
   const sp = await searchParams
+
+  // landed_margin_report is a plain (non-materialized) view — an unbounded
+  // sale_date range recomputes it over EVERY fulfilled order in the site's
+  // history on every load, which is what blew the statement timeout here.
+  // Canonicalize to an explicit, bounded range instead of ever letting the
+  // query run with `from`/`to` both absent: redirect once so the URL (and
+  // therefore the date inputs, which read straight from the URL) always
+  // shows the range actually being queried — no silent "looks unfiltered
+  // but isn't" mismatch with the Clear button in reports-filters.tsx.
+  if (!sp.from || !sp.to) {
+    const to = sp.to ?? new Date().toISOString().slice(0, 10)
+    const from =
+      sp.from ??
+      new Date(new Date(to).getTime() - REPORTS_DEFAULT_WINDOW_DAYS * 86400000)
+        .toISOString()
+        .slice(0, 10)
+    const next = new URLSearchParams(
+      Object.entries(sp).filter(([, v]) => v) as [string, string][],
+    )
+    next.set("from", from)
+    next.set("to", to)
+    redirect(`/reports?${next.toString()}`)
+  }
+
   const supabase = await createClient()
 
   const grain = sp.grain === "month" ? "month" : "day"
