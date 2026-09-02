@@ -33,6 +33,22 @@ import {
 } from "@/lib/woocommerce/types"
 
 export type ActionResult = { ok: true } | { ok: false; error: string }
+
+/** Mark an order-id collision (migration 0107) as handled by a human. */
+export async function resolveOrderIdCollision(
+  id: string,
+  note: string,
+): Promise<ActionResult> {
+  const supabase = await createClient()
+  const { error } = await supabase
+    .from("store_order_import_collisions")
+    .update({ resolved_at: new Date().toISOString(), resolved_note: note.trim() || null })
+    .eq("id", id)
+  if (error) return { ok: false, error: err(error) }
+
+  revalidatePath("/integrations/woocommerce")
+  return { ok: true }
+}
 export type SyncResult =
   | {
       ok: true

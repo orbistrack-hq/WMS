@@ -26,6 +26,10 @@ import {
   mapOutboundJobs,
 } from "@/components/outbound-queue-card"
 import { Connections, type Connection } from "./connections"
+import {
+  OrderIdCollisionsCard,
+  type OrderIdCollision,
+} from "./order-id-collisions-card"
 
 export const dynamic = "force-dynamic"
 
@@ -58,8 +62,16 @@ type ImportRow = {
 export default async function WooCommerceIntegrationPage() {
   const supabase = await createClient()
 
-  const [connRes, sitesRes, importsRes, secretsRes, outboundRes, queueRes, hdrs] =
-    await Promise.all([
+  const [
+    connRes,
+    sitesRes,
+    importsRes,
+    secretsRes,
+    outboundRes,
+    queueRes,
+    collisionsRes,
+    hdrs,
+  ] = await Promise.all([
     supabase
       .from("store_connections")
       .select(
@@ -97,6 +109,17 @@ export default async function WooCommerceIntegrationPage() {
       .order("status")
       .order("next_attempt_at")
       .limit(500),
+    // Orders where a store re-used an external_order_id already on file for a
+    // different order (migration 0107) — left unresolved so ops can see it.
+    supabase
+      .from("store_order_import_collisions")
+      .select(
+        "id, source, external_order_id, existing_wms_order_id, existing_entered_at, incoming_created_at, note, detected_at, order:orders(order_number)",
+      )
+      .eq("channel", "woocommerce")
+      .is("resolved_at", null)
+      .order("detected_at", { ascending: false })
+      .limit(50),
     headers(),
   ])
 
@@ -164,6 +187,30 @@ export default async function WooCommerceIntegrationPage() {
   )
   const queueRows = mapOutboundJobs(queueRes.data, wooSiteIds)
 
+  const collisions: OrderIdCollision[] = (
+    (collisionsRes.data ?? []) as unknown as {
+      id: string
+      source: string
+      external_order_id: string
+      existing_wms_order_id: string
+      existing_entered_at: string | null
+      incoming_created_at: string | null
+      note: string
+      detected_at: string
+      order: { order_number: string | null } | null
+    }[]
+  ).map((c) => ({
+    id: c.id,
+    source: c.source,
+    external_order_id: c.external_order_id,
+    existing_wms_order_id: c.existing_wms_order_id,
+    existing_entered_at: c.existing_entered_at,
+    incoming_created_at: c.incoming_created_at,
+    note: c.note,
+    detected_at: c.detected_at,
+    order_number: c.order?.order_number ?? null,
+  }))
+
   return (
     <>
       <PageHeader
@@ -172,6 +219,8 @@ export default async function WooCommerceIntegrationPage() {
       />
 
       <div className="flex flex-col gap-4">
+        <OrderIdCollisionsCard rows={collisions} />
+
         <Card>
           <CardHeader>
             <CardTitle className="text-base">Setup</CardTitle>

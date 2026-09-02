@@ -5,6 +5,10 @@ import { isBeforeSyncCutoff } from "../store-sync/cutoff"
 import { applyToHeldOrder } from "../store-sync/promote"
 import { markStoreCompleted } from "../store-sync/store-completed"
 import { flagShipConflict } from "../store-sync/ship-conflict"
+import {
+  flagOrderIdCollision,
+  isOrderIdCollision,
+} from "../store-sync/order-id-collision"
 import type { NormalizedStoreOrder } from "./types"
 
 export type OrderImportOutcome =
@@ -136,6 +140,7 @@ export type LifecycleUpdateOutcome =
   | { status: "activated"; wmsOrderId: string }
   | { status: "reopened"; wmsOrderId: string }
   | { status: "noop"; reason: string }
+  | { status: "collision"; wmsOrderId: string }
   | { status: "not_found" }
   | { status: "error"; error: string }
 
@@ -173,11 +178,32 @@ export async function applyWooLifecycleUpdate(
 
   const { data: current } = await client
     .from("orders")
-    .select("status")
+    .select("status, site_id, entered_at")
     .eq("id", wmsOrderId)
     .maybeSingle()
   const status = current?.status as string | undefined
   if (!status) return { status: "not_found" }
+
+  // The store re-used external_order_id for a genuinely different order (seen
+  // on a WooCommerce post-id counter reset) — the incoming order's own
+  // created-at is way off from the one WMS imported under this id. Guessing
+  // wrong here means fulfilling/cancelling an unrelated order and consuming
+  // its inventory, so flag it for a human instead of mutating anything.
+  if (isOrderIdCollision(current?.entered_at as string | null, order.createdAt)) {
+    await flagOrderIdCollision(client, {
+      channel: "woocommerce",
+      source,
+      externalOrderId: order.externalOrderId,
+      siteId: current!.site_id as string,
+      existingWmsOrderId: wmsOrderId,
+      existingEnteredAt: (current?.entered_at as string | null) ?? null,
+      incomingCreatedAt: order.createdAt,
+      incomingPayload: order,
+      note: `Incoming WooCommerce order #${order.number ?? order.externalOrderId} dated ${order.createdAt} doesn't match the order WMS already has on file under this id (entered ${current?.entered_at}). Left untouched.`,
+    })
+    return { status: "collision", wmsOrderId }
+  }
+
   if (status === "fulfilled" || status === "cancelled") {
     // The dangerous half of this no-op: the store now says it shipped, but OT
     // already shows cancelled — the exact drift that leaves an order looking
