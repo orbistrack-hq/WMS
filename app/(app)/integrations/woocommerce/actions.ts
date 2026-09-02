@@ -624,19 +624,21 @@ export async function registerWebhooks(
     for (const topic of WEBHOOK_TOPICS) {
       const found = existingByTopic.get(topic)
       if (found) {
-        // Already active -> nothing to do. Otherwise (disabled/paused) PUT it
-        // back to active so the manual button actually recovers a dead hook.
-        if ((found.status ?? "active") === "active") {
-          result.existing++
-          continue
-        }
+        // Always PUT the current secret + active status, even when already
+        // active: Woo's GET never returns the secret, so there's no way to tell
+        // whether an existing hook still carries a since-rotated secret. Without
+        // this, rotating the webhook secret in WMS silently desyncs from
+        // whatever an already-active hook was created with, and this button
+        // reports "already set" while every delivery keeps 401ing.
+        const wasActive = (found.status ?? "active") === "active"
         const pr = await fetch(`${base}/webhooks/${found.id}`, {
           method: "PUT",
           headers: auth,
-          body: JSON.stringify({ status: "active" }),
+          body: JSON.stringify({ status: "active", secret: webhookSecret }),
         })
         if (pr.status === 200) {
-          result.reactivated++
+          if (wasActive) result.existing++
+          else result.reactivated++
         } else {
           result.failed++
           if (!result.firstError) {
