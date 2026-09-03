@@ -40,6 +40,7 @@ import {
   isMissingWeight,
   missingWeightParentIds,
 } from "@/lib/catalog/missing-weight"
+import { openWeightConflicts } from "@/lib/catalog/weight-conflict"
 import { CatalogFilters } from "./catalog-filters"
 
 export const dynamic = "force-dynamic"
@@ -50,6 +51,7 @@ type SearchParams = {
   active?: string
   page?: string
   missing?: string
+  conflict?: string
 }
 
 type ChildRow = {
@@ -96,6 +98,16 @@ export default async function CatalogPage({
   const missingCount = missingProductIds.length
   const showingMissing = sp.missing === "true"
 
+  // Store syncs that tried to CHANGE a weight WMS already had (migration 0108).
+  // The write was refused, so the weight on screen is still ours — but one of
+  // the two systems is wrong and someone has to say which. Self-clearing:
+  // correcting the weight in WMS retires the row (see lib/catalog/weight-conflict).
+  const conflicts = await openWeightConflicts(supabase)
+  const conflictProductIds = [...new Set(conflicts.map((c) => c.productId))]
+  const conflictIdSet = new Set(conflictProductIds)
+  const conflictCount = conflictProductIds.length
+  const showingConflicts = sp.conflict === "true"
+
   const pathMap = categoryPathMap(categories)
   const categoryOptions = flattenCategoryTree(buildCategoryTree(categories)).map(
     (n) => ({ id: n.id, label: `${indent(n.depth)}${n.name}` }),
@@ -122,6 +134,7 @@ export default async function CatalogPage({
   // An empty `in` list matches nothing, which is exactly right when there are
   // none left to fix.
   if (showingMissing) query = query.in("id", missingProductIds)
+  if (showingConflicts) query = query.in("id", conflictProductIds)
 
   const { data, error, count } = await query
   const fetched = (data ?? []) as unknown as ProductRow[]
@@ -182,6 +195,32 @@ export default async function CatalogPage({
       />
 
       <CatalogFilters categories={categoryOptions} />
+
+      {showingConflicts ? (
+        <div className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          <span className="flex items-center gap-2">
+            <TriangleAlert className="size-4 shrink-0" />
+            Showing products where a store tried to change a weight WMS already
+            had. The store write was refused — open each and decide which side
+            is right.
+          </span>
+          <Link
+            href={catalogHref({ conflict: undefined })}
+            className="inline-flex items-center gap-1 font-medium hover:underline"
+          >
+            <X className="size-3.5" /> Clear
+          </Link>
+        </div>
+      ) : conflictCount > 0 ? (
+        <Link
+          href={catalogHref({ conflict: "true" })}
+          className="mb-4 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm font-medium text-destructive transition-colors hover:bg-destructive/15"
+        >
+          <TriangleAlert className="size-4 shrink-0" />
+          {conflictCount} {conflictCount === 1 ? "product has" : "products have"}{" "}
+          a SKU whose weight the store disagrees with — review it
+        </Link>
+      ) : null}
 
       {showingMissing ? (
         <div className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300">
@@ -268,6 +307,9 @@ export default async function CatalogPage({
                 const missingWeights = missingIdSet.has(p.id)
                   ? p.child_skus.filter(isMissingWeight).length
                   : 0
+                const disputedWeights = conflictIdSet.has(p.id)
+                  ? conflicts.filter((c) => c.productId === p.id).length
+                  : 0
                 return (
                   <TableRow key={p.id}>
                     <TableCell className="font-medium">
@@ -285,6 +327,15 @@ export default async function CatalogPage({
                           >
                             <Scale />
                             {missingWeights} missing weight
+                          </Badge>
+                        ) : null}
+                        {disputedWeights > 0 ? (
+                          <Badge
+                            variant="destructive"
+                            title="The store sent a different weight for these SKUs; the write was refused"
+                          >
+                            <Scale />
+                            {disputedWeights} weight disputed
                           </Badge>
                         ) : null}
                       </div>
