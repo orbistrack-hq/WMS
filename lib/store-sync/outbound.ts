@@ -210,6 +210,19 @@ export async function drainOutboundInventory(
     if (jobs.length === 0) break // queue drained
     summary.claimed += jobs.length
 
+    // Delegate SKUs (e.g. BOGO reward variants) hold no stock of their own —
+    // see BOGO-SHARED-STOCK-SPEC.md §7/§15. The inventory_ledger trigger
+    // should never enqueue a job for one (their own inventory_levels row stays
+    // at zero and unused), but this is a defense-in-depth check: it stops a
+    // stray or future ledger write against a delegate's own row from pushing
+    // a stock number to the store, which would silently re-enable stock
+    // tracking there and reintroduce the exact bug the delegation exists to
+    // prevent.
+    const delegateTargets = await fetchDelegateTargets(
+      admin,
+      jobs.map((j) => j.child_sku_id),
+    )
+
     for (let i = 0; i < jobs.length; i++) {
       // Time budget: bail before touching the next job once the deadline passes.
       // Remaining claimed jobs stay 'processing'; the reaper resets them to
@@ -221,6 +234,16 @@ export async function drainOutboundInventory(
 
       const job = jobs[i]
       const key = storeKey(job)
+
+      // Delegate: terminal skip, no network call, doesn't reflect store health.
+      const delegatesTo = delegateTargets.get(job.child_sku_id)
+      if (delegatesTo) {
+        summary.skipped++
+        const msg = `Delegate SKU shares stock with child_sku ${delegatesTo} — no independent stock number is published (BOGO-SHARED-STOCK-SPEC.md).`
+        if (!summary.firstSkipReason) summary.firstSkipReason = msg
+        await complete(admin, job.job_id, { ok: false, skip: true, error: msg })
+        continue
+      }
 
       // Circuit open for this store: park the job for the cooldown instead of
       // spending a timeout on a store we already know is failing. No API call, no
@@ -294,6 +317,37 @@ export async function drainOutboundInventory(
   }
 
   return summary
+}
+
+/**
+ * Look up which of the given child SKUs are stock delegates (BOGO reward
+ * variants that share stock with a paid counterpart), mapping each delegate's
+ * id to the child_sku_id it delegates to. Non-delegates are simply absent
+ * from the returned map.
+ *
+ * Fails open on a query error: an empty map falls back to today's behaviour
+ * (push proceeds) rather than blocking legitimate stock pushes because of a
+ * transient DB hiccup. The DB-side trigger not enqueueing delegate jobs in
+ * the first place is the primary defense; this is the backstop.
+ */
+async function fetchDelegateTargets(
+  admin: SupabaseClient,
+  childSkuIds: string[],
+): Promise<Map<string, string | null>> {
+  const map = new Map<string, string | null>()
+  const ids = [...new Set(childSkuIds)]
+  if (ids.length === 0) return map
+
+  const { data, error } = await admin
+    .from("child_skus")
+    .select("id, delegates_to_child_sku_id")
+    .in("id", ids)
+  if (error || !data) return map
+
+  for (const row of data as { id: string; delegates_to_child_sku_id: string | null }[]) {
+    if (row.delegates_to_child_sku_id) map.set(row.id, row.delegates_to_child_sku_id)
+  }
+  return map
 }
 
 async function pushJob(
