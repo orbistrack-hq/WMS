@@ -50,6 +50,12 @@ const RULES: Rule[] = [
   { re: /(?:^|[^a-z0-9])(hp)(?![a-z0-9])/gi, grams: 224 },
   { re: /(?:^|[^a-z0-9])(qp)(?![a-z0-9])/gi, grams: 112 },
   { re: /(?:^|[^a-z0-9])(fp)(?![a-z0-9])/gi, grams: 448 },
+  // The same shorthand half-spelled, as Bud Club's menu variations say it
+  // ("FULL P"). Longer than "quarter"/"half" alone, so it wins over the ounce
+  // reading of those words.
+  { re: new RegExp(`(?:^|[^a-z0-9])(full${SEP}p)(?![a-z0-9])`, "gi"), grams: 448 },
+  { re: new RegExp(`(?:^|[^a-z0-9])(half${SEP}p)(?![a-z0-9])`, "gi"), grams: 224 },
+  { re: new RegExp(`(?:^|[^a-z0-9])(quarter${SEP}p)(?![a-z0-9])`, "gi"), grams: 112 },
   // Ounce multiples that name a pound fraction.
   { re: new RegExp(`(?:^|[^a-z0-9])(16${SEP}${OZ})(?![a-z0-9])`, "gi"), grams: 448 },
   { re: new RegExp(`(?:^|[^a-z0-9])(8${SEP}${OZ})(?![a-z0-9])`, "gi"), grams: 224 },
@@ -117,6 +123,29 @@ export function parseWeightGrams(
     if (g != null) return g
   }
   return null
+}
+
+/**
+ * Weight of a WooCommerce variation from its attribute text, falling back to
+ * the SKU ONLY when the variation has no attribute text at all.
+ *
+ * parseWeightGrams(attrText, sku) also falls back when the attributes are
+ * present but name something other than a weight — a flavor. Bud Club's
+ * "2G BARE CARTS (LIVE RESIN)" varies by flavor ("AZUL RUNTZ") with SKUs like
+ * BC-VAP-BCLR-AR2G, so every flavor read as a 2g weight variant and the sync
+ * gave all 29 flavor products the parent's name. A flavor that isn't a weight
+ * must stay a product of its own.
+ *
+ * Shopify keeps parseWeightGrams: its single-variant products send
+ * "Default Title", which legitimately needs the SKU fallback.
+ */
+export function wooVariationGrams(
+  attrText: string | null | undefined,
+  sku: string | null | undefined,
+): number | null {
+  return (attrText ?? "").trim()
+    ? parseWeightGrams(attrText)
+    : parseWeightGrams(sku)
 }
 
 /** Display label for a weight, e.g. 3.5 -> "3.5g", 28 -> "28g". */

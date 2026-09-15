@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest"
 
-import { parseWeightGrams, stripWeightSuffix, weightLabel } from "./weight"
+import {
+  parseWeightGrams,
+  stripWeightSuffix,
+  weightLabel,
+  wooVariationGrams,
+} from "./weight"
 
 describe("parseWeightGrams", () => {
   it("parses gram tokens", () => {
@@ -99,6 +104,47 @@ describe("parseWeightGrams — store text beats the SKU code", () => {
     // Both importers call parseWeightGrams(storeText, sku) in this order.
     expect(parseWeightGrams("1-2-lb", "BC-SR-BOX-HP")).toBe(224)
     expect(parseWeightGrams("Default Title", "OZ-SR-OS")).toBe(28)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Regression: Sync products gave 150 Bud Club flavor products their parent's
+// name (reported by J 2026-09-14). Flavor attributes don't parse, so the old
+// call fell back to SKU codes ending in "2G"/"1G" and treated each flavor as
+// a weight variant. Strings below are live store values.
+// ---------------------------------------------------------------------------
+describe("wooVariationGrams", () => {
+  it("does not read a weight out of the SKU when the attribute is a flavor", () => {
+    expect(wooVariationGrams("AZUL RUNTZ", "BC-VAP-BCLR-AR2G")).toBeNull()
+    expect(wooVariationGrams("WHITE CHERRY GELATO", "BC-EXT-BR-WCG1G")).toBeNull()
+    expect(wooVariationGrams("YUZU LEMON FROYO WHIP", "BC-FRO-YLFW3.5G")).toBeNull()
+  })
+
+  it("still reads weight attributes", () => {
+    expect(wooVariationGrams("3.5G", "BC-SR3.5G")).toBe(3.5)
+    expect(wooVariationGrams("1-2-lb", "BC-SR-BOX-HP")).toBe(224)
+    expect(wooVariationGrams("1/4 LB", "BC-TR-QP")).toBe(112)
+  })
+
+  it("falls back to the SKU only when there is no attribute text", () => {
+    expect(wooVariationGrams("", "BC-SR7G")).toBe(7)
+    expect(wooVariationGrams("   ", "BC-SR7G")).toBe(7)
+    expect(wooVariationGrams(null, "BC-SR-BOX-FP")).toBe(448)
+  })
+})
+
+describe("parseWeightGrams — half-spelled pound shorthand", () => {
+  it("reads FULL P / HALF P / QUARTER P", () => {
+    // Bud Club "FROYO (QP)" and "DEZZERTS MENU (QP)" full-pound variations.
+    expect(parseWeightGrams("FULL P")).toBe(448)
+    expect(parseWeightGrams("half-p")).toBe(224)
+    expect(parseWeightGrams("Quarter P")).toBe(112)
+  })
+
+  it("does not change the words on their own or inside longer words", () => {
+    expect(parseWeightGrams("quarter")).toBe(7)
+    expect(parseWeightGrams("half pound")).toBe(224)
+    expect(parseWeightGrams("full pack")).toBeNull()
   })
 })
 
