@@ -75,7 +75,7 @@ export default async function WooCommerceIntegrationPage() {
     supabase
       .from("store_connections")
       .select(
-        "id, source, site_id, is_active, last_synced_at, sync_inventory_outbound, sync_orders_since, site:sites(name)",
+        "id, source, source_aliases, site_id, is_active, last_synced_at, sync_inventory_outbound, sync_orders_since, site:sites(name)",
       )
       .eq("channel", "woocommerce")
       .order("source"),
@@ -154,6 +154,7 @@ export default async function WooCommerceIntegrationPage() {
     (connRes.data ?? []) as unknown as {
       id: string
       source: string
+      source_aliases: string[] | null
       site_id: string
       is_active: boolean
       last_synced_at: string | null
@@ -167,6 +168,7 @@ export default async function WooCommerceIntegrationPage() {
     return {
       id: c.id,
       source: c.source,
+      source_aliases: c.source_aliases ?? [],
       site_name: c.site?.name ?? "—",
       is_active: c.is_active,
       has_consumer_key: cred?.has_consumer_key ?? false,

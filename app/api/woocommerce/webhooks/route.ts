@@ -4,6 +4,7 @@ import { NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { normalizeWooSource, verifyWooSignature } from "@/lib/woocommerce/types"
 import { processWooEvent } from "@/lib/woocommerce/process-event"
+import { resolveWooSource } from "@/lib/woocommerce/resolve-source"
 import {
   dedupeKey,
   publishToQueue,
@@ -31,7 +32,9 @@ export async function POST(req: Request) {
   const raw = await req.text()
   const signature = req.headers.get("x-wc-webhook-signature")
   const topic = req.headers.get("x-wc-webhook-topic") ?? ""
-  const source = normalizeWooSource(req.headers.get("x-wc-webhook-source") ?? "")
+  const headerSource = normalizeWooSource(
+    req.headers.get("x-wc-webhook-source") ?? "",
+  )
 
   // WooCommerce sends a non-JSON connectivity ping ("webhook_id=...") when a
   // webhook is saved or activated. It carries no order data and is NOT signed,
@@ -46,6 +49,12 @@ export async function POST(req: Request) {
   }
 
   const supabase = createAdminClient()
+
+  // A store can answer to more than one domain (store_connections.source_aliases,
+  // e.g. budclub.com -> budclubshop.com). Collapse to the canonical source here
+  // so the secret lookup, queued job and order idempotency key all use one
+  // string regardless of which domain the store sent from.
+  const source = await resolveWooSource(supabase, headerSource)
 
   // Authenticate per-store: verify the signature against THIS store's own
   // webhook secret (entered by the client). Falls back to a global env secret.
@@ -72,6 +81,7 @@ export async function POST(req: Request) {
     // with connMatched:true => the stored secret value doesn't match the store.
     console.warn("[woo-webhook] 401 invalid signature", {
       source,
+      headerSource,
       connMatched: Boolean(connRow),
       secretSource: storeSecret?.webhook_secret
         ? "per-store"

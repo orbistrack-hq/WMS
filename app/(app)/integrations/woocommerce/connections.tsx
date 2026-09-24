@@ -42,6 +42,7 @@ type SiteOption = { id: string; name: string }
 export type Connection = {
   id: string
   source: string
+  source_aliases: string[]
   site_name: string
   is_active: boolean
   has_consumer_key: boolean
@@ -295,6 +296,11 @@ function ConnectionCard({
       <div className="flex items-center justify-between gap-2">
         <div className="flex min-w-0 flex-col">
           <span className="truncate text-sm font-medium">{conn.source}</span>
+          {conn.source_aliases.length > 0 ? (
+            <span className="truncate text-xs text-muted-foreground">
+              also accepts {conn.source_aliases.join(", ")}
+            </span>
+          ) : null}
           <span className="text-xs text-muted-foreground">
             → {conn.site_name}
           </span>

@@ -96,6 +96,22 @@ export async function createConnection(
   if (!siteId) return { ok: false, error: "Pick the WMS site this store feeds." }
 
   const supabase = await createClient()
+
+  // A domain that's already an alias of an existing connection IS that store —
+  // a second connection for it would start a fresh idempotency key and
+  // re-import every past order as new.
+  const { data: aliased } = await supabase
+    .from("store_connections")
+    .select("source")
+    .eq("channel", "woocommerce")
+    .contains("source_aliases", [source])
+    .maybeSingle()
+  if (aliased)
+    return {
+      ok: false,
+      error: `${source} is already connected as an alternate domain of ${aliased.source}.`,
+    }
+
   const { error } = await supabase
     .from("store_connections")
     .insert({ channel: "woocommerce", source, site_id: siteId })
