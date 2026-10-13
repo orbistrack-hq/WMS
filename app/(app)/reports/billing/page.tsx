@@ -2,7 +2,6 @@ import Link from "next/link"
 import { Receipt, TriangleAlert } from "lucide-react"
 
 import { createClient } from "@/lib/supabase/server"
-import { fetchAllPagesChecked } from "@/lib/supabase/fetch-all"
 import { PageHeader, Placeholder } from "@/components/page-header"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
@@ -19,28 +18,27 @@ type SearchParams = { from?: string; to?: string; site?: string }
 /**
  * Per-brand fulfilment billing for a period — what each brand owes us.
  *
- * Reads the migration-0030 cost data (through the period-bounded function from
- * migration 0111) plus the pick-fee ledger. That migration built
- * the cost side and said outright that the invoice / paid-unpaid layer was "a
+ * Everything comes from ONE call, brand_billing_summary (migration 0112), which
+ * does the per-brand roll-up in the database. The page used to download every
+ * cost row, charge, order and line item in the period (~20 requests) to sum
+ * them here; each was a chance to time out. That migration built on 0030's cost
+ * data, which said outright that the invoice / paid-unpaid layer was "a
  * deliberate later phase"; until that phase lands, the person doing billing
  * exports this grid and pastes it into the Fulfillment Payment Tracker
  * workbook, which holds invoice numbers and paid status. The CSV/copy column
  * order matches that workbook's Invoices sheet (columns B–I) so it is a clean
  * paste with no rearranging — do not reorder exportColumns without updating it.
  *
- * TWO COSTS, TWO GRAINS:
- *   packaging            lives at the FULFILLMENT GROUP grain (one row per group
- *                        in storefront_fulfillment_cost_for_period)
- *   pick fees            live at the ORDER grain (billing_charges, snapshotted
- *                        at fulfilment with the fee schedule that was in force)
- * They cannot be summed in one pass without fanning out, so each is rolled up
- * to the brand separately and then merged on site_id.
+ * TWO COSTS, TWO GRAINS (rolled up separately inside the function):
+ *   packaging            FULFILLMENT GROUP grain — fulfilled groups whose
+ *                        billing_date is in the period
+ *   pick fees            ORDER grain (billing_charges, snapshotted at
+ *                        fulfilment with the fee schedule that was in force)
  *
  * POSTAGE IS DELIBERATELY ABSENT. ShipStation buys the labels and bills the
- * carrier charge directly, so it never reaches this ledger. shipping_cost is
- * therefore not read from the view at all — a column reading $0.00 on a billing
- * screen invites someone to treat it as "no postage owed" rather than "not ours
- * to bill", so it is removed rather than shown empty.
+ * carrier charge directly, so it never reaches this ledger. A column reading
+ * $0.00 on a billing screen invites someone to treat it as "no postage owed"
+ * rather than "not ours to bill", so it is removed rather than shown empty.
  *
  * THE BILLING BASIS IS FULFILMENT, NOT SHIPMENT. OT does not track when a
  * parcel actually leaves — ShipStation does, and the shipments table here is
@@ -51,71 +49,33 @@ type SearchParams = { from?: string; to?: string; site?: string }
  * Say "fulfilled" in anything user-facing; "shipped" implies a carrier event
  * this system never sees.
  *
- * DATES ARE PACIFIC. The app is Pacific end-to-end (migration 0055). Period
- * bounds are compared against billing_date (already a date) and against
- * fulfilled_at rendered in the app zone — never the host's UTC — or an order
- * fulfilled after 5pm on the last of the month lands in the wrong invoice.
+ * DATES ARE PACIFIC. The app is Pacific end-to-end (migration 0055); the
+ * function pins its own timezone, so period days are Pacific days and an order
+ * fulfilled after 5pm on the last of the month stays in that month's invoice.
  */
 
-type CostRow = {
-  group_id: string
+type SummaryRow = {
   site_id: string
-  site_name: string | null
+  site_name: string
   channel: string
   storefront: string | null
-  billing_date: string
-  group_status: string
-  channel_count: number
-  packaging_cost: number | string
-}
-
-const STORE_CHANNELS = new Set(["shopify", "woocommerce"])
-
-type ChargeRow = {
-  amount: number | string
-  order_id: string
-  orders: {
-    id: string
-    site_id: string
-    status: string
-    fulfilled_at: string | null
-    sale_date: string
-  } | null
-}
-
-type OrderRow = {
-  id: string
-  order_number: string
-  site_id: string
-  fulfilled_at: string | null
-  sale_date: string
+  fulfilled_groups: number | string
+  open_groups: number | string
+  packaging: number | string
+  store_gap_groups: number | string
+  manual_gap_groups: number | string
+  mixed_channel_groups: number | string
+  orders: number | string
+  units: number | string
+  pick_fees: number | string
+  missing_fee_order_ids: string[]
+  missing_fee_order_numbers: string[]
 }
 
 const num = (v: number | string | null | undefined) => Number(v ?? 0)
 
-/**
- * The UTC instant at which a Pacific calendar day starts (or ends).
- *
- * Needed because fulfilled_at is a timestamptz and the period bounds are
- * Pacific calendar dates. The offset is read from the runtime's tz database for
- * that specific date rather than hardcoded, so the PST/PDT switch is handled —
- * a fixed -08:00 would silently shift every summer month by an hour and move
- * orders across the month boundary.
- */
-function pacificBound(day: string, edge: "start" | "end"): string {
-  const probe = new Date(`${day}T12:00:00Z`)
-  const offset =
-    new Intl.DateTimeFormat("en-US", {
-      timeZone: "America/Los_Angeles",
-      timeZoneName: "longOffset",
-    })
-      .formatToParts(probe)
-      .find((p) => p.type === "timeZoneName")?.value ?? "GMT-08:00"
-  const sign = offset.includes("-") ? "-" : "+"
-  const hhmm = offset.replace(/^GMT[+-]?/, "") || "08:00"
-  const time = edge === "start" ? "00:00:00.000" : "23:59:59.999"
-  return new Date(`${day}T${time}${sign}${hhmm}`).toISOString()
-}
+/** Attempts before the page gives up and shows the "did not fully load" card. */
+const SUMMARY_ATTEMPTS = 3
 
 function defaultRange() {
   const today = todayISODate()
@@ -136,180 +96,78 @@ export default async function BillingReportPage({
   const from = sp.from || fallback.from
   const to = sp.to || fallback.to
 
-  const { data: sites } = await supabase.from("sites").select("id, name").order("name")
-
-  const fromTs = pacificBound(from, "start")
-  const toTs = pacificBound(to, "end")
-
-  // EVERY READ HERE IS CHECKED. A query that dies partway (a timeout on page 3
-  // of 3) leaves a smaller total that looks exactly like a quieter month, and
-  // someone invoices from it. Any failed read replaces the report with an
-  // error instead of rendering what did load.
-  const loadErrors: unknown[] = []
-  const checked = <T,>({ rows, error }: { rows: T[]; error: unknown }): T[] => {
-    if (error) loadErrors.push(error)
-    return rows
-  }
-
-  // --- Packaging, group grain ----------------------------------------------
-  // The function, not the 0030 view: the view aggregates all history before
-  // the period filter applies and times out under the app role (0111).
-  const allCostRows = checked(
-    await fetchAllPagesChecked<CostRow>(() =>
-      supabase
-        .rpc("storefront_fulfillment_cost_for_period", {
-          p_from: from,
-          p_to: to,
-          p_site: sp.site || null,
-        })
-        .select(
-          `group_id, site_id, site_name, channel, storefront, billing_date,
-           group_status, channel_count, packaging_cost`,
-        )
-        .order("group_id"),
-    ),
-  )
-
-  // --- Pick fees, order grain ----------------------------------------------
-  // !inner so a charge whose order is missing/cancelled drops out server-side.
-  const rawChargeRows = checked(
-    await fetchAllPagesChecked<ChargeRow>(() => {
-      const q = supabase
-        .from("billing_charges")
-        .select(`amount, order_id, orders!inner(id, site_id, status, fulfilled_at, sale_date)`)
-        .eq("fee_type", "pick_fee")
-        .neq("orders.status", "cancelled")
-        .gte("orders.fulfilled_at", fromTs)
-        .lte("orders.fulfilled_at", toTs)
-        .order("order_id")
-      return sp.site ? q.eq("orders.site_id", sp.site) : q
-    }),
-  )
-
-  // --- Fulfilled orders in the window, to catch ones we never charged for ---
-  const orderRows = checked(
-    await fetchAllPagesChecked<OrderRow>(() => {
-      const q = supabase
-        .from("orders")
-        .select("id, order_number, site_id, fulfilled_at, sale_date")
-        .eq("status", "fulfilled")
-        .gte("fulfilled_at", fromTs)
-        .lte("fulfilled_at", toTs)
-        .order("id")
-      return sp.site ? q.eq("site_id", sp.site) : q
-    }),
-  )
-
-  // The cost function carries every group that isn't cancelled, which
-  // includes OPEN ones — groups in the window that have not been packed yet. They
-  // have no packaging because nobody has packed them, and billing a brand for a
-  // group that isn't fulfilled yet would be wrong, so only fulfilled groups are
-  // billable. Open groups are counted separately and disclosed, never silently
-  // dropped: a brand asking "why is this month low" deserves the number.
-  const costRows = allCostRows.filter((r) => r.group_status === "fulfilled")
-  const openGroups = allCostRows.filter((r) => r.group_status !== "fulfilled")
-  const chargeRows = rawChargeRows.filter((c) => Boolean(c.orders))
-
-  // --- Units per billed order ----------------------------------------------
-  // Chunked to keep the .in() list off the URL length limit, and each chunk is
-  // paged for the same max-rows reason: 200 orders can easily be more than a
-  // thousand line items, and a silent cut here would understate unit counts.
-  const billedOrderIds = Array.from(new Set(chargeRows.map((c) => c.order_id)))
-  const unitsByOrder = new Map<string, number>()
-  for (let i = 0; i < billedOrderIds.length; i += 200) {
-    const chunk = billedOrderIds.slice(i, i + 200)
-    const lines = checked(
-      await fetchAllPagesChecked<{ order_id: string; quantity: number }>(() =>
-        supabase
-          .from("order_line_items")
-          .select("order_id, quantity")
-          .in("order_id", chunk)
-          .order("id"),
-      ),
-    )
-    for (const li of lines) {
-      unitsByOrder.set(li.order_id, (unitsByOrder.get(li.order_id) ?? 0) + num(li.quantity))
+  // A transient failure (a timeout, a dropped connection) is retried quietly
+  // with a short backoff. Only if every attempt fails does the page show an
+  // error — and it shows the error rather than any numbers, because a partial
+  // or empty total looks exactly like a quieter month and gets invoiced.
+  const loadSummary = async () => {
+    let last: unknown = null
+    for (let attempt = 1; attempt <= SUMMARY_ATTEMPTS; attempt++) {
+      const { data, error } = await supabase.rpc("brand_billing_summary", {
+        p_from: from,
+        p_to: to,
+        p_site: sp.site || null,
+      })
+      if (!error) return { data: (data ?? []) as SummaryRow[], error: null }
+      last = error
+      if (attempt < SUMMARY_ATTEMPTS) await new Promise((r) => setTimeout(r, 400 * attempt))
     }
+    return { data: [] as SummaryRow[], error: last }
   }
 
-  // --- Roll both grains up to the brand ------------------------------------
-  type Brand = {
-    siteId: string
-    name: string
-    channel: string
-    storefront: string | null
-    groups: number
-    orders: number
-    units: number
-    packaging: number
-    pickFees: number
-  }
-  const brands = new Map<string, Brand>()
-  const get = (siteId: string, name: string | null): Brand => {
-    const cur = brands.get(siteId) ?? {
-      siteId,
-      name: name ?? "—",
-      channel: "manual",
-      storefront: null,
-      groups: 0,
-      orders: 0,
-      units: 0,
-      packaging: 0,
-      pickFees: 0,
-    }
-    brands.set(siteId, cur)
-    return cur
-  }
+  const [{ data: sites }, summary] = await Promise.all([
+    supabase.from("sites").select("id, name").order("name"),
+    loadSummary(),
+  ])
+  const loadFailed = summary.error !== null
 
-  for (const r of costRows) {
-    const b = get(r.site_id, r.site_name)
-    b.channel = r.channel
-    b.storefront = r.storefront
-    b.groups += 1
-    b.packaging += num(r.packaging_cost)
-  }
-  for (const c of chargeRows) {
-    if (!c.orders) continue
-    const b = get(c.orders.site_id, null)
-    b.orders += 1
-    b.pickFees += num(c.amount)
-    b.units += unitsByOrder.get(c.order_id) ?? 0
-  }
-  // A brand seen only via pick fees has no name yet; backfill from sites.
-  const siteName = new Map((sites ?? []).map((s) => [s.id, s.name]))
-  for (const b of brands.values()) {
-    if (b.name === "—") b.name = siteName.get(b.siteId) ?? "—"
-  }
-
-  const rows = Array.from(brands.values()).sort((a, b) => a.name.localeCompare(b.name))
+  // Only brands with something billable get a row. Open groups and missing
+  // pick fees are disclosed below regardless — a brand asking "why is this
+  // month low" deserves the number.
+  const rows = summary.data
+    .filter((r) => num(r.fulfilled_groups) > 0 || num(r.orders) > 0)
+    .map((r) => ({
+      siteId: r.site_id,
+      name: r.site_name,
+      channel: r.channel,
+      storefront: r.storefront,
+      orders: num(r.orders),
+      units: num(r.units),
+      packaging: num(r.packaging),
+      pickFees: num(r.pick_fees),
+    }))
 
   const t = rows.reduce(
     (acc, b) => {
-      acc.groups += b.groups
       acc.orders += b.orders
       acc.units += b.units
       acc.packaging += b.packaging
       acc.pickFees += b.pickFees
       return acc
     },
-    { groups: 0, orders: 0, units: 0, packaging: 0, pickFees: 0 },
+    { orders: 0, units: 0, packaging: 0, pickFees: 0 },
   )
   const totalBillable = t.packaging + t.pickFees
 
   // --- Under-billing checks -------------------------------------------------
   // Both are money we earned and would otherwise invoice short.
-  const chargedIds = new Set(chargeRows.map((c) => c.order_id))
-  const missingPickFee = orderRows.filter((o) => !chargedIds.has(o.id))
+  const missingPickFee = summary.data.flatMap((r) =>
+    r.missing_fee_order_ids.map((id, i) => ({
+      id,
+      order_number: r.missing_fee_order_numbers[i],
+    })),
+  )
   // Only FULFILLED groups can have a packaging gap. Split by channel because the
   // two halves are cleared in different places: the Packaging gaps report covers
   // store-channel orders only (migration 0062 scopes it to shopify/woocommerce),
   // so a manual-channel gap will never show up there and has to be cleared on
   // the packing screen. Sending someone to an empty report is how they conclude
   // the warning is broken and start ignoring it.
-  const gaps = costRows.filter((r) => num(r.packaging_cost) === 0)
-  const storeGaps = gaps.filter((r) => STORE_CHANNELS.has(r.channel))
-  const manualGaps = gaps.filter((r) => !STORE_CHANNELS.has(r.channel))
-  const mixedChannel = costRows.filter((r) => Number(r.channel_count) > 1)
+  const sumOf = (k: keyof SummaryRow) => summary.data.reduce((a, r) => a + num(r[k] as number), 0)
+  const storeGaps = sumOf("store_gap_groups")
+  const manualGaps = sumOf("manual_gap_groups")
+  const mixedChannel = sumOf("mixed_channel_groups")
+  const openGroups = sumOf("open_groups")
 
   const periodLabel = from.slice(0, 7) === to.slice(0, 7) ? from.slice(0, 7) : `${from} to ${to}`
 
@@ -341,7 +199,7 @@ export default async function BillingReportPage({
         title="Brand billing"
         description="What each brand owes for fulfillment in a period."
         action={
-          loadErrors.length > 0 ? undefined : (
+          loadFailed ? undefined : (
             <div className="flex gap-2">
               <CopyTableButton columns={exportColumns} rows={exportRows} />
               <ExportButton
@@ -356,17 +214,17 @@ export default async function BillingReportPage({
 
       <BillingFilters sites={sites ?? []} />
 
-      {loadErrors.length > 0 ? (
+      {loadFailed ? (
         <Card className="border-destructive/50 bg-destructive/5">
           <CardHeader className="pb-2">
             <CardTitle className="flex items-center gap-2 text-destructive">
               <TriangleAlert className="size-4" />
-              Billing data did not fully load
+              Billing data could not be loaded
             </CardTitle>
           </CardHeader>
           <CardContent className="text-sm">
-            Part of this report failed to load, so any totals would be short. Do not invoice
-            from this screen — reload the page. If it keeps failing, try a shorter period.
+            The database did not answer after several tries, so no totals are shown rather
+            than possibly wrong ones. Reload the page in a minute.
           </CardContent>
         </Card>
       ) : rows.length === 0 ? (
@@ -384,9 +242,9 @@ export default async function BillingReportPage({
           </div>
 
           {missingPickFee.length > 0 ||
-          storeGaps.length > 0 ||
-          manualGaps.length > 0 ||
-          mixedChannel.length > 0 ? (
+          storeGaps > 0 ||
+          manualGaps > 0 ||
+          mixedChannel > 0 ? (
             <Card className="border-amber-500/50 bg-amber-50/50 dark:bg-amber-950/20">
               <CardHeader className="pb-2">
                 <CardTitle className="flex items-center gap-2 text-amber-700 dark:text-amber-400">
@@ -413,10 +271,10 @@ export default async function BillingReportPage({
                     </div>
                   </div>
                 ) : null}
-                {storeGaps.length > 0 ? (
+                {storeGaps > 0 ? (
                   <div>
-                    <span className="font-semibold tabular-nums">{storeGaps.length}</span>{" "}
-                    fulfilled store {storeGaps.length === 1 ? "group has" : "groups have"} no
+                    <span className="font-semibold tabular-nums">{storeGaps}</span>{" "}
+                    fulfilled store {storeGaps === 1 ? "group has" : "groups have"} no
                     packaging recorded. Clear them on the{" "}
                     <Link href="/reports/packaging-gaps" className="font-medium underline">
                       Packaging gaps
@@ -424,10 +282,10 @@ export default async function BillingReportPage({
                     report, then come back and export.
                   </div>
                 ) : null}
-                {manualGaps.length > 0 ? (
+                {manualGaps > 0 ? (
                   <div>
-                    <span className="font-semibold tabular-nums">{manualGaps.length}</span>{" "}
-                    fulfilled manual-channel {manualGaps.length === 1 ? "group has" : "groups have"}{" "}
+                    <span className="font-semibold tabular-nums">{manualGaps}</span>{" "}
+                    fulfilled manual-channel {manualGaps === 1 ? "group has" : "groups have"}{" "}
                     no packaging recorded.{" "}
                     <span className="text-muted-foreground">
                       These do not appear on the Packaging gaps report — it only covers Shopify and
@@ -436,11 +294,11 @@ export default async function BillingReportPage({
                     </span>
                   </div>
                 ) : null}
-                {mixedChannel.length > 0 ? (
+                {mixedChannel > 0 ? (
                   <div>
-                    <span className="font-semibold tabular-nums">{mixedChannel.length}</span>{" "}
-                    {mixedChannel.length === 1 ? "group mixes" : "groups mix"} channels, so brand
-                    attribution on {mixedChannel.length === 1 ? "it" : "them"} is a guess.
+                    <span className="font-semibold tabular-nums">{mixedChannel}</span>{" "}
+                    {mixedChannel === 1 ? "group mixes" : "groups mix"} channels, so brand
+                    attribution on {mixedChannel === 1 ? "it" : "them"} is a guess.
                   </div>
                 ) : null}
               </CardContent>
@@ -505,10 +363,10 @@ export default async function BillingReportPage({
           </Card>
 
           <p className="text-xs text-muted-foreground">
-            {openGroups.length > 0 ? (
+            {openGroups > 0 ? (
               <>
-                {openGroups.length} {openGroups.length === 1 ? "order is" : "orders are"} still
-                open in this window and {openGroups.length === 1 ? "is" : "are"} not included —
+                {openGroups} {openGroups === 1 ? "order is" : "orders are"} still
+                open in this window and {openGroups === 1 ? "is" : "are"} not included —
                 nothing is billed until it is fulfilled. They appear in the period they are
                 fulfilled in.{" "}
               </>
