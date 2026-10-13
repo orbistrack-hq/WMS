@@ -5,7 +5,26 @@
 -- packaging gaps, fulfilled orders with no pick fee, p_site, and RLS.
 -- Uses seeded SKUs at MAIN (a0..01) and EAST (a0..04) and seeded packaging.
 begin;
-select plan(11);
+select plan(12);
+
+-- Since 0113 the summary is security definer and scopes itself to the
+-- caller's sites, so it needs a caller: an operator, set up front. (The
+-- reference roll-up below still reads the tables directly as the superuser.)
+insert into auth.users(id,email) values
+ ('00000000-0000-0000-0000-0000000112aa','summary-op@example.com'),
+ ('00000000-0000-0000-0000-0000000112bb','summary-client@example.com');
+update profiles set role='operator' where id='00000000-0000-0000-0000-0000000112aa';
+update profiles set role='client'   where id='00000000-0000-0000-0000-0000000112bb';
+insert into user_site_access(user_id,site_id)
+ values ('00000000-0000-0000-0000-0000000112bb', '22222222-2222-2222-2222-222222222222');
+
+-- 12) No caller, no rows — definer must not leak to an unidentified session.
+select is(
+  (select count(*)::int from brand_billing_summary('2026-01-01', '2026-12-31')),
+  0,
+  'no JWT caller: returns nothing');
+
+set local request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000112aa"}';
 \set BOX   '''11111111-0000-0000-0000-000000000001'''
 \set LABEL '''11111111-0000-0000-0000-000000000002'''
 \set MAIN  '''11111111-1111-1111-1111-111111111111'''
@@ -128,15 +147,7 @@ select is(
   array[:MAIN::uuid],
   'p_site returns only that site');
 
--- Under the app role, with RLS.
-insert into auth.users(id,email) values
- ('00000000-0000-0000-0000-0000000112aa','summary-op@example.com'),
- ('00000000-0000-0000-0000-0000000112bb','summary-client@example.com');
-update profiles set role='operator' where id='00000000-0000-0000-0000-0000000112aa';
-update profiles set role='client'   where id='00000000-0000-0000-0000-0000000112bb';
-insert into user_site_access(user_id,site_id)
- values ('00000000-0000-0000-0000-0000000112bb', :EAST::uuid);
-
+-- Under the app role.
 create temp table su as
   select site_id, packaging, orders, units, pick_fees
   from brand_billing_summary('2026-09-01', '2026-09-30');
