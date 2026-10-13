@@ -39,18 +39,31 @@ type Pageable = {
 }
 
 export async function fetchAllPages<T>(build: () => Pageable): Promise<T[]> {
-  const out: T[] = []
+  // A mid-run failure returns what we have rather than throwing the page away.
+  // Callers render a report; a partial report beats an error screen, and the
+  // alternative (throwing) would take out the whole route.
+  return (await fetchAllPagesChecked<T>(build)).rows
+}
+
+/**
+ * Same as fetchAllPages, but also reports whether the read stopped on an error.
+ *
+ * Use this where a partial result is WORSE than none — anything that becomes a
+ * total someone invoices from. A timeout on page 3 of 3 otherwise looks exactly
+ * like a smaller month.
+ */
+export async function fetchAllPagesChecked<T>(
+  build: () => Pageable,
+): Promise<{ rows: T[]; error: unknown }> {
+  const rows: T[] = []
   for (let offset = 0; offset < MAX_ROWS; offset += PAGE_SIZE) {
     const { data, error } = await build().range(offset, offset + PAGE_SIZE - 1)
-    // A mid-run failure returns what we have rather than throwing the page away.
-    // Callers render a report; a partial report beats an error screen, and the
-    // alternative (throwing) would take out the whole route.
-    if (error) break
+    if (error) return { rows, error }
     const batch = (data ?? []) as T[]
-    out.push(...batch)
+    rows.push(...batch)
     // A short page means the end of the result set — the only reliable signal,
     // since the cap makes any single count untrustworthy.
     if (batch.length < PAGE_SIZE) break
   }
-  return out
+  return { rows, error: null }
 }

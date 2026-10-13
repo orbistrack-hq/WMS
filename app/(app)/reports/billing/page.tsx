@@ -2,7 +2,7 @@ import Link from "next/link"
 import { Receipt, TriangleAlert } from "lucide-react"
 
 import { createClient } from "@/lib/supabase/server"
-import { fetchAllPages } from "@/lib/supabase/fetch-all"
+import { fetchAllPagesChecked } from "@/lib/supabase/fetch-all"
 import { PageHeader, Placeholder } from "@/components/page-header"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
@@ -19,7 +19,8 @@ type SearchParams = { from?: string; to?: string; site?: string }
 /**
  * Per-brand fulfilment billing for a period — what each brand owes us.
  *
- * Reads the migration-0030 views plus the pick-fee ledger. That migration built
+ * Reads the migration-0030 cost data (through the period-bounded function from
+ * migration 0111) plus the pick-fee ledger. That migration built
  * the cost side and said outright that the invoice / paid-unpaid layer was "a
  * deliberate later phase"; until that phase lands, the person doing billing
  * exports this grid and pastes it into the Fulfillment Payment Tracker
@@ -29,7 +30,7 @@ type SearchParams = { from?: string; to?: string; site?: string }
  *
  * TWO COSTS, TWO GRAINS:
  *   packaging            lives at the FULFILLMENT GROUP grain (one row per group
- *                        in storefront_fulfillment_cost)
+ *                        in storefront_fulfillment_cost_for_period)
  *   pick fees            live at the ORDER grain (billing_charges, snapshotted
  *                        at fulfilment with the fee schedule that was in force)
  * They cannot be summed in one pass without fanning out, so each is rolled up
@@ -140,47 +141,66 @@ export default async function BillingReportPage({
   const fromTs = pacificBound(from, "start")
   const toTs = pacificBound(to, "end")
 
+  // EVERY READ HERE IS CHECKED. A query that dies partway (a timeout on page 3
+  // of 3) leaves a smaller total that looks exactly like a quieter month, and
+  // someone invoices from it. Any failed read replaces the report with an
+  // error instead of rendering what did load.
+  const loadErrors: unknown[] = []
+  const checked = <T,>({ rows, error }: { rows: T[]; error: unknown }): T[] => {
+    if (error) loadErrors.push(error)
+    return rows
+  }
+
   // --- Packaging, group grain ----------------------------------------------
-  const allCostRows = await fetchAllPages<CostRow>(() => {
-    const q = supabase
-      .from("storefront_fulfillment_cost")
-      .select(
-        `group_id, site_id, site_name, channel, storefront, billing_date,
-         group_status, channel_count, packaging_cost`,
-      )
-      .gte("billing_date", from)
-      .lte("billing_date", to)
-      .order("group_id")
-    return sp.site ? q.eq("site_id", sp.site) : q
-  })
+  // The function, not the 0030 view: the view aggregates all history before
+  // the period filter applies and times out under the app role (0111).
+  const allCostRows = checked(
+    await fetchAllPagesChecked<CostRow>(() =>
+      supabase
+        .rpc("storefront_fulfillment_cost_for_period", {
+          p_from: from,
+          p_to: to,
+          p_site: sp.site || null,
+        })
+        .select(
+          `group_id, site_id, site_name, channel, storefront, billing_date,
+           group_status, channel_count, packaging_cost`,
+        )
+        .order("group_id"),
+    ),
+  )
 
   // --- Pick fees, order grain ----------------------------------------------
   // !inner so a charge whose order is missing/cancelled drops out server-side.
-  const rawChargeRows = await fetchAllPages<ChargeRow>(() => {
-    const q = supabase
-      .from("billing_charges")
-      .select(`amount, order_id, orders!inner(id, site_id, status, fulfilled_at, sale_date)`)
-      .eq("fee_type", "pick_fee")
-      .neq("orders.status", "cancelled")
-      .gte("orders.fulfilled_at", fromTs)
-      .lte("orders.fulfilled_at", toTs)
-      .order("order_id")
-    return sp.site ? q.eq("orders.site_id", sp.site) : q
-  })
+  const rawChargeRows = checked(
+    await fetchAllPagesChecked<ChargeRow>(() => {
+      const q = supabase
+        .from("billing_charges")
+        .select(`amount, order_id, orders!inner(id, site_id, status, fulfilled_at, sale_date)`)
+        .eq("fee_type", "pick_fee")
+        .neq("orders.status", "cancelled")
+        .gte("orders.fulfilled_at", fromTs)
+        .lte("orders.fulfilled_at", toTs)
+        .order("order_id")
+      return sp.site ? q.eq("orders.site_id", sp.site) : q
+    }),
+  )
 
   // --- Fulfilled orders in the window, to catch ones we never charged for ---
-  const orderRows = await fetchAllPages<OrderRow>(() => {
-    const q = supabase
-      .from("orders")
-      .select("id, order_number, site_id, fulfilled_at, sale_date")
-      .eq("status", "fulfilled")
-      .gte("fulfilled_at", fromTs)
-      .lte("fulfilled_at", toTs)
-      .order("id")
-    return sp.site ? q.eq("site_id", sp.site) : q
-  })
+  const orderRows = checked(
+    await fetchAllPagesChecked<OrderRow>(() => {
+      const q = supabase
+        .from("orders")
+        .select("id, order_number, site_id, fulfilled_at, sale_date")
+        .eq("status", "fulfilled")
+        .gte("fulfilled_at", fromTs)
+        .lte("fulfilled_at", toTs)
+        .order("id")
+      return sp.site ? q.eq("site_id", sp.site) : q
+    }),
+  )
 
-  // storefront_fulfillment_cost carries every group that isn't cancelled, which
+  // The cost function carries every group that isn't cancelled, which
   // includes OPEN ones — groups in the window that have not been packed yet. They
   // have no packaging because nobody has packed them, and billing a brand for a
   // group that isn't fulfilled yet would be wrong, so only fulfilled groups are
@@ -198,12 +218,14 @@ export default async function BillingReportPage({
   const unitsByOrder = new Map<string, number>()
   for (let i = 0; i < billedOrderIds.length; i += 200) {
     const chunk = billedOrderIds.slice(i, i + 200)
-    const lines = await fetchAllPages<{ order_id: string; quantity: number }>(() =>
-      supabase
-        .from("order_line_items")
-        .select("order_id, quantity")
-        .in("order_id", chunk)
-        .order("id"),
+    const lines = checked(
+      await fetchAllPagesChecked<{ order_id: string; quantity: number }>(() =>
+        supabase
+          .from("order_line_items")
+          .select("order_id, quantity")
+          .in("order_id", chunk)
+          .order("id"),
+      ),
     )
     for (const li of lines) {
       unitsByOrder.set(li.order_id, (unitsByOrder.get(li.order_id) ?? 0) + num(li.quantity))
@@ -319,20 +341,35 @@ export default async function BillingReportPage({
         title="Brand billing"
         description="What each brand owes for fulfillment in a period."
         action={
-          <div className="flex gap-2">
-            <CopyTableButton columns={exportColumns} rows={exportRows} />
-            <ExportButton
-              columns={exportColumns}
-              rows={exportRows}
-              filename={`brand-billing-${from}-to-${to}.csv`}
-            />
-          </div>
+          loadErrors.length > 0 ? undefined : (
+            <div className="flex gap-2">
+              <CopyTableButton columns={exportColumns} rows={exportRows} />
+              <ExportButton
+                columns={exportColumns}
+                rows={exportRows}
+                filename={`brand-billing-${from}-to-${to}.csv`}
+              />
+            </div>
+          )
         }
       />
 
       <BillingFilters sites={sites ?? []} />
 
-      {rows.length === 0 ? (
+      {loadErrors.length > 0 ? (
+        <Card className="border-destructive/50 bg-destructive/5">
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-destructive">
+              <TriangleAlert className="size-4" />
+              Billing data did not fully load
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="text-sm">
+            Part of this report failed to load, so any totals would be short. Do not invoice
+            from this screen — reload the page. If it keeps failing, try a shorter period.
+          </CardContent>
+        </Card>
+      ) : rows.length === 0 ? (
         <Placeholder icon={Receipt} title="Nothing billable in this period">
           Nothing was fulfilled between {from} and {to}. Try a wider date range.
         </Placeholder>
