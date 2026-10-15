@@ -8,6 +8,7 @@ import {
   ArrowUpFromLine,
   Check,
   KeyRound,
+  PlugZap,
   Plus,
   Power,
   RefreshCw,
@@ -36,6 +37,7 @@ import {
   stepOrderImport,
   cancelOrderImport,
   syncProducts,
+  testConnection,
 } from "./actions"
 import { StoreImportRunner } from "@/components/store-import-runner"
 
@@ -170,6 +172,19 @@ function ConnectionCard({
       const res = await fn()
       if (!res.ok) setError(res.error ?? "Something went wrong.")
       else router.refresh()
+    })
+  }
+
+  function test() {
+    setError(null)
+    setNote(null)
+    startTransition(async () => {
+      const res = await testConnection(conn.id)
+      if (!res.ok) setError(res.error)
+      else {
+        setNote(res.summary)
+        if (res.warnings.length) setError(res.warnings.join(" "))
+      }
     })
   }
 
@@ -370,6 +385,14 @@ function ConnectionCard({
             {conn.has_token || conn.has_secret
               ? "Update credentials"
               : "Add credentials"}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={isPending || !conn.has_token}
+            onClick={test}
+          >
+            <PlugZap data-icon="inline-start" /> Test connection
           </Button>
           <Button
             size="sm"

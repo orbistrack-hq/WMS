@@ -538,6 +538,93 @@ function shopifyApiError(status: number, body: string): string {
   return `Shopify API ${status}${detail ? `: ${detail}` : ""}.${hint}`
 }
 
+export type TestResult =
+  | { ok: true; summary: string; warnings: string[] }
+  | { ok: false; error: string }
+
+/**
+ * Read-only health check: the stored token authorizes against the shop, and it
+ * carries the scopes the sync paths rely on. Writes nothing on either side.
+ */
+export async function testConnection(connectionId: string): Promise<TestResult> {
+  const supabase = await createClient()
+  const { data: conn, error: connErr } = await supabase
+    .from("store_connections")
+    .select("source, sync_inventory_outbound, inventory_location_id")
+    .eq("id", connectionId)
+    .maybeSingle()
+  if (connErr) return { ok: false, error: err(connErr) }
+  if (!conn) return { ok: false, error: "Connection not found." }
+
+  // Secret read goes through the service role; the connection select above (user
+  // client, RLS) is what authorizes the caller for this connection's site.
+  const { data: secret } = await createAdminClient()
+    .from("store_secrets")
+    .select("access_token, api_secret")
+    .eq("connection_id", connectionId)
+    .maybeSingle()
+  if (!secret?.access_token)
+    return { ok: false, error: "Set this store's Admin API access token first." }
+
+  const h = {
+    "X-Shopify-Access-Token": secret.access_token as string,
+    "Content-Type": "application/json",
+  }
+  const warnings: string[] = []
+
+  let shopName = conn.source as string
+  try {
+    const r = await fetch(
+      `https://${conn.source}/admin/api/${SHOPIFY_API_VERSION}/shop.json`,
+      { headers: h, signal: AbortSignal.timeout(15_000) },
+    )
+    if (!r.ok) {
+      const raw = await r.text().catch(() => "")
+      return { ok: false, error: shopifyApiError(r.status, raw) }
+    }
+    const body = (await r.json()) as { shop?: { name?: string } }
+    if (body.shop?.name) shopName = body.shop.name
+  } catch {
+    return { ok: false, error: `Could not reach ${conn.source}. Check the store domain.` }
+  }
+
+  try {
+    const r = await fetch(
+      `https://${conn.source}/admin/oauth/access_scopes.json`,
+      { headers: h, signal: AbortSignal.timeout(15_000) },
+    )
+    if (r.ok) {
+      const body = (await r.json()) as { access_scopes?: { handle: string }[] }
+      const granted = new Set((body.access_scopes ?? []).map((s) => s.handle))
+      // write_x implies read_x.
+      const has = (s: string) =>
+        granted.has(s) || granted.has(s.replace(/^read_/, "write_"))
+      const needed = ["read_orders", "read_products", "read_customers", "read_inventory"]
+      if (conn.sync_inventory_outbound) needed.push("write_inventory", "read_locations")
+      const missing = needed.filter((s) => !has(s))
+      if (missing.length)
+        warnings.push(
+          `Token is missing scope${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}. Add ${missing.length === 1 ? "it" : "them"} to the custom app, reinstall, and update the token.`,
+        )
+    } else {
+      warnings.push(`Could not read the token's scopes (Shopify API ${r.status}).`)
+    }
+  } catch {
+    warnings.push("Could not read the token's scopes (request failed).")
+  }
+
+  if (!secret.api_secret)
+    warnings.push("No API secret saved — webhook deliveries can't be verified.")
+  if (conn.sync_inventory_outbound && !conn.inventory_location_id)
+    warnings.push("No Shopify location captured yet — run Sync products so outbound stock has a target.")
+
+  return {
+    ok: true,
+    summary: `Connected to ${shopName} (${conn.source}) — access token accepted.`,
+    warnings,
+  }
+}
+
 /** Extract the rel="next" URL from a Shopify Link header, if any. */
 function nextPageUrl(linkHeader: string | null): string | null {
   if (!linkHeader) return null

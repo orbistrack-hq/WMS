@@ -465,6 +465,96 @@ async function loadCreds(
   }
 }
 
+export type TestResult =
+  | { ok: true; summary: string; warnings: string[] }
+  | { ok: false; error: string }
+
+/**
+ * Read-only health check: the stored keys authorize against the store, and the
+ * WMS webhooks are present and active. Writes nothing on either side.
+ */
+export async function testConnection(connectionId: string): Promise<TestResult> {
+  const { creds, error: credErr } = await loadCreds(connectionId)
+  if (!creds) return { ok: false, error: credErr ?? "Missing credentials." }
+  const base = `${creds.source}/wp-json/wc/v3`
+  const auth = { Authorization: authHeader(creds.key, creds.secret) }
+  const warnings: string[] = []
+
+  let productCount: string | null = null
+  try {
+    const r = await fetch(`${base}/products?per_page=1`, {
+      headers: auth,
+      signal: AbortSignal.timeout(15_000),
+    })
+    if (!r.ok) {
+      const raw = await r.text().catch(() => "")
+      return { ok: false, error: wooApiError(r.status, raw) }
+    }
+    productCount = r.headers.get("x-wp-total")
+  } catch {
+    return { ok: false, error: `Could not reach ${creds.source}. Check the store URL and that the site is up.` }
+  }
+
+  const { data: secretRow } = await createAdminClient()
+    .from("store_secrets")
+    .select("webhook_secret")
+    .eq("connection_id", connectionId)
+    .maybeSingle()
+  if (!secretRow?.webhook_secret) warnings.push("No webhook secret saved.")
+
+  const h = await headers()
+  const host = h.get("host")
+  const proto = host?.startsWith("localhost") ? "http" : "https"
+  const deliveryUrl = host ? `${proto}://${host}/api/woocommerce/webhooks` : null
+
+  if (deliveryUrl) {
+    try {
+      const r = await fetch(`${base}/webhooks?per_page=100`, {
+        headers: auth,
+        signal: AbortSignal.timeout(15_000),
+      })
+      if (r.ok) {
+        const hooks = (await r.json()) as {
+          topic?: string
+          status?: string
+          delivery_url?: string
+        }[]
+        const ours = (Array.isArray(hooks) ? hooks : []).filter(
+          (w) => w.delivery_url === deliveryUrl,
+        )
+        const active = new Set(
+          ours.filter((w) => w.status === "active").map((w) => w.topic),
+        )
+        const missing = WEBHOOK_TOPICS.filter(
+          (t) => !ours.some((w) => w.topic === t),
+        )
+        const inactive = WEBHOOK_TOPICS.filter(
+          (t) => !active.has(t) && !missing.includes(t),
+        )
+        if (missing.length)
+          warnings.push(`Webhooks not registered: ${missing.join(", ")}.`)
+        if (inactive.length)
+          warnings.push(
+            `Webhooks disabled by the store: ${inactive.join(", ")} — click Register webhooks to re-enable.`,
+          )
+      } else {
+        warnings.push(`Could not list webhooks (WooCommerce API ${r.status}).`)
+      }
+    } catch {
+      warnings.push("Could not list webhooks (request failed).")
+    }
+  }
+
+  return {
+    ok: true,
+    summary:
+      `Connected to ${creds.source} — API keys accepted` +
+      (productCount != null ? `, ${productCount} products visible` : "") +
+      ".",
+    warnings,
+  }
+}
+
 /**
  * Backfill: pull every product from the connected store via the Woo REST API
  * and upsert each (simple product or each variation of a variable product) into
