@@ -60,13 +60,30 @@ async function handle(req: Request) {
     if (reap.error) reapError = reap.error.message
     else if (typeof reap.data === "number") reaped = reap.data
 
+    // Revive: 'failed' is terminal in the queue, so without this a store that
+    // was slow for a few hours leaves SKUs that never retry and a failed badge
+    // that never clears (migration 0115). Pushes are absolute SETs, so retrying
+    // one that already landed is harmless.
+    let revived = 0
+    let reviveError: string | null = null
+    const revive = await admin.rpc("revive_failed_outbound_inventory_jobs")
+    if (revive.error) reviveError = revive.error.message
+    else if (typeof revive.data === "number") revived = revive.data
+
     // Bound the drain below maxDuration so we finish and record outcomes.
     const summary = await drainOutboundInventory(admin, {
       limit: 100,
       deadlineMs: 50_000,
     })
     return NextResponse.json(
-      { ok: true, reaped, ...(reapError ? { reapError } : {}), ...summary },
+      {
+        ok: true,
+        reaped,
+        ...(reapError ? { reapError } : {}),
+        revived,
+        ...(reviveError ? { reviveError } : {}),
+        ...summary,
+      },
       { status: 200 },
     )
   } catch (err) {
