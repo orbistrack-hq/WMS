@@ -25,6 +25,7 @@ import {
   OUTBOUND_QUEUE_SELECT,
   mapOutboundJobs,
 } from "@/components/outbound-queue-card"
+import { loadCredentialStatus } from "@/lib/store-sync/credential-status"
 import { Connections, type Connection } from "./connections"
 
 export const dynamic = "force-dynamic"
@@ -58,7 +59,7 @@ type ImportRow = {
 export default async function ShopifyIntegrationPage() {
   const supabase = await createClient()
 
-  const [connRes, sitesRes, importsRes, secretsRes, outboundRes, queueRes, hdrs] =
+  const [connRes, sitesRes, importsRes, outboundRes, queueRes, hdrs] =
     await Promise.all([
     supabase
       .from("store_connections")
@@ -80,12 +81,6 @@ export default async function ShopifyIntegrationPage() {
       .eq("channel", "shopify")
       .order("received_at", { ascending: false })
       .limit(50),
-    // Boolean-only view: the raw token/secret are sealed from the API role and
-    // never leave the database. We only learn whether each field is set.
-    supabase
-      .from("store_credential_status")
-      .select("connection_id, has_token, has_secret")
-      .eq("channel", "shopify"),
     supabase
       .from("store_outbound_sync_status")
       .select("site_id, pending, processing, failed, skipped"),
@@ -113,17 +108,9 @@ export default async function ShopifyIntegrationPage() {
 
   // Any user who can see a connection (RLS site-scoped) can manage it.
   const canManage = true
-  const credByConn = new Map(
-    (
-      (secretsRes.data ?? []) as {
-        connection_id: string
-        has_token: boolean
-        has_secret: boolean
-      }[]
-    ).map((s) => [
-      s.connection_id,
-      { hasToken: s.has_token, hasSecret: s.has_secret },
-    ]),
+  // Only ids the user client returned (RLS) — see loadCredentialStatus.
+  const { byConn: credByConn, error: credError } = await loadCredentialStatus(
+    ((connRes.data ?? []) as { id: string }[]).map((c) => c.id),
   )
   const host = hdrs.get("host") ?? "your-app.vercel.app"
   const proto = host.startsWith("localhost") ? "http" : "https"
@@ -149,8 +136,8 @@ export default async function ShopifyIntegrationPage() {
       shop_domain: c.source,
       site_name: c.site?.name ?? "—",
       is_active: c.is_active,
-      has_token: cred?.hasToken ?? false,
-      has_secret: cred?.hasSecret ?? false,
+      has_token: cred?.has_token ?? false,
+      has_secret: cred?.has_secret ?? false,
       last_synced_at: c.last_synced_at,
       sync_inventory_outbound: c.sync_inventory_outbound ?? false,
       has_location: Boolean(c.inventory_location_id),
@@ -231,7 +218,12 @@ export default async function ShopifyIntegrationPage() {
               Each store maps to the WMS site whose stock and SKUs it draws from.
             </CardDescription>
           </CardHeader>
-          <CardContent>
+          <CardContent className="flex flex-col gap-3">
+            {credError ? (
+              <p className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                {credError} The credential badges below may be wrong.
+              </p>
+            ) : null}
             <Connections
               connections={connections}
               sites={sitesRes.data ?? []}

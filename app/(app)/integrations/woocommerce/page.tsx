@@ -25,6 +25,7 @@ import {
   OUTBOUND_QUEUE_SELECT,
   mapOutboundJobs,
 } from "@/components/outbound-queue-card"
+import { loadCredentialStatus } from "@/lib/store-sync/credential-status"
 import { Connections, type Connection } from "./connections"
 import {
   OrderIdCollisionsCard,
@@ -66,7 +67,6 @@ export default async function WooCommerceIntegrationPage() {
     connRes,
     sitesRes,
     importsRes,
-    secretsRes,
     outboundRes,
     queueRes,
     collisionsRes,
@@ -92,13 +92,6 @@ export default async function WooCommerceIntegrationPage() {
       .eq("channel", "woocommerce")
       .order("received_at", { ascending: false })
       .limit(50),
-    // Boolean-only view: raw credentials are sealed from the API role.
-    supabase
-      .from("store_credential_status")
-      .select(
-        "connection_id, has_consumer_key, has_consumer_secret, has_webhook_secret",
-      )
-      .eq("channel", "woocommerce"),
     supabase
       .from("store_outbound_sync_status")
       .select("site_id, pending, processing, failed, skipped"),
@@ -136,15 +129,9 @@ export default async function WooCommerceIntegrationPage() {
   )
 
   const canManage = true
-  const credByConn = new Map(
-    (
-      (secretsRes.data ?? []) as {
-        connection_id: string
-        has_consumer_key: boolean
-        has_consumer_secret: boolean
-        has_webhook_secret: boolean
-      }[]
-    ).map((s) => [s.connection_id, s]),
+  // Only ids the user client returned (RLS) — see loadCredentialStatus.
+  const { byConn: credByConn, error: credError } = await loadCredentialStatus(
+    ((connRes.data ?? []) as { id: string }[]).map((c) => c.id),
   )
   const host = hdrs.get("host") ?? "your-app.vercel.app"
   const proto = host.startsWith("localhost") ? "http" : "https"
@@ -280,7 +267,12 @@ export default async function WooCommerceIntegrationPage() {
               Each store maps to the WMS site whose stock and SKUs it draws from.
             </CardDescription>
           </CardHeader>
-          <CardContent>
+          <CardContent className="flex flex-col gap-3">
+            {credError ? (
+              <p className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                {credError} The credential badges below may be wrong.
+              </p>
+            ) : null}
             <Connections
               connections={connections}
               sites={sitesRes.data ?? []}
