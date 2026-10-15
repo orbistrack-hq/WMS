@@ -104,9 +104,10 @@ export function IntakeFlow({
   const [units, setUnits] = useState<Record<string, string>>({})
   const [idemKey, setIdemKey] = useState("")
   const [allocNote, setAllocNote] = useState("")
-  // FB-4: shake (packing loss) grams + a stable ref for idempotency.
-  const [shakeGrams, setShakeGrams] = useState("")
-  const [shakeRef, setShakeRef] = useState("")
+  // FB-4: shake (packing loss) grams per brand (site), each with a stable ref
+  // for idempotency, so shake can be reported per brand.
+  const [shakeGrams, setShakeGrams] = useState<Record<string, string>>({})
+  const [shakeRefs, setShakeRefs] = useState<Record<string, string>>({})
   const [savedShake, setSavedShake] = useState(0)
 
   // Step 4
@@ -146,7 +147,9 @@ export function IntakeFlow({
         sum += (parseInt(units[ch.id] || "0", 10) || 0) * ch.gramsPerUnit
     return sum
   }, [clients, units])
-  const shakeNum = Math.max(0, parseFloat(shakeGrams) || 0)
+  const shakeFor = (siteId: string) =>
+    Math.max(0, parseFloat(shakeGrams[siteId] || "") || 0)
+  const shakeNum = clients.reduce((sum, c) => sum + shakeFor(c.siteId), 0)
   const committed = allocatedGrams + shakeNum
   const remaining = poolAvailable - committed
   const isOver = committed > poolAvailable
@@ -186,9 +189,11 @@ export function IntakeFlow({
       setClients(res.clients)
       setPoolAvailable(res.parentAvailableGrams)
       setUnits({})
-      setShakeGrams("")
+      setShakeGrams({})
       setIdemKey(crypto.randomUUID())
-      setShakeRef(crypto.randomUUID())
+      setShakeRefs(
+        Object.fromEntries(res.clients.map((c) => [c.siteId, crypto.randomUUID()])),
+      )
       setAllocateOnly(asAllocateOnly)
       setStep("allocate")
     })
@@ -229,8 +234,13 @@ export function IntakeFlow({
         lines,
         idempotencyKey: idemKey,
         note: allocNote,
-        shakeGrams: shakeNum,
-        shakeRef,
+        shakes: clients
+          .map((c) => ({
+            siteId: c.siteId,
+            grams: shakeFor(c.siteId),
+            ref: shakeRefs[c.siteId],
+          }))
+          .filter((s) => s.grams > 0 && s.ref),
         shakeBatch: batchNo,
       })
       if (!res.ok) return setError(res.error)
@@ -255,7 +265,7 @@ export function IntakeFlow({
     setUnits({})
     setResult(null)
     setAllocNote("")
-    setShakeGrams("")
+    setShakeGrams({})
     setSavedShake(0)
     setAllocateOnly(false)
   }
@@ -554,6 +564,30 @@ export function IntakeFlow({
                           </div>
                         )
                       })}
+                      <div className="mt-1 flex items-center justify-between gap-3 border-t border-border pt-3">
+                        <div className="flex min-w-0 flex-col">
+                          <span className="text-sm font-medium">Shake / loss (grams)</span>
+                          <span className="text-xs text-muted-foreground">
+                            Lost packing for {c.siteName} — not sent to the store
+                          </span>
+                        </div>
+                        <Input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          inputMode="decimal"
+                          aria-label={`${c.siteName} shake grams`}
+                          value={shakeGrams[c.siteId] ?? ""}
+                          onChange={(e) =>
+                            setShakeGrams((prev) => ({
+                              ...prev,
+                              [c.siteId]: e.target.value,
+                            }))
+                          }
+                          className="w-24 text-right tabular-nums"
+                          placeholder="0"
+                        />
+                      </div>
                     </CardContent>
                   </Card>
                 )
@@ -609,25 +643,6 @@ export function IntakeFlow({
                     Parent inventory nearly exhausted.
                   </p>
                 ) : null}
-
-                <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="shake">Shake / loss (grams)</Label>
-                  <Input
-                    id="shake"
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    inputMode="decimal"
-                    value={shakeGrams}
-                    onChange={(e) => setShakeGrams(e.target.value)}
-                    placeholder="0"
-                    className="tabular-nums"
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Flower lost during packing — counted as a loss out of central
-                    inventory, not sent to any store.
-                  </p>
-                </div>
 
                 <div className="flex flex-col gap-1.5">
                   <Label htmlFor="anote">Note (optional)</Label>

@@ -2,10 +2,11 @@
 -- Checks it against the same roll-up computed independently from the base
 -- tables (what the page used to do client-side), plus the specific cases the
 -- page's warnings depend on: Pacific month edges, open groups, manual-channel
--- packaging gaps, fulfilled orders with no pick fee, p_site, and RLS.
+-- packaging gaps, fulfilled orders with no pick fee, p_site, RLS, and (0114)
+-- per-brand shake grams.
 -- Uses seeded SKUs at MAIN (a0..01) and EAST (a0..04) and seeded packaging.
 begin;
-select plan(12);
+select plan(13);
 
 -- Since 0113 the summary is security definer and scopes itself to the
 -- caller's sites, so it needs a caller: an operator, set up front. (The
@@ -146,6 +147,24 @@ select is(
   (select array_agg(site_id) from brand_billing_summary('2026-09-01', '2026-09-30', :MAIN::uuid)),
   array[:MAIN::uuid],
   'p_site returns only that site');
+
+-- 13) Shake per brand (0114): MAIN's tagged, non-reversed September shake only.
+--     Excluded: a reversed entry, an untagged (pre-0114) entry, and one at
+--     00:30 Pacific Oct 1, which belongs to October.
+insert into parent_inventory_ledger(product_id, site_id, delta_grams, reason, reference_type, created_at, reversed_at)
+select cs.product_id, v.site_id, v.delta, 'shake', 'shake', v.at, v.rev
+from child_skus cs,
+ (values (:MAIN::uuid, -5.00, '2026-09-10 12:00 America/Los_Angeles'::timestamptz, null::timestamptz),
+         (:MAIN::uuid, -1.50, '2026-09-30 23:00 America/Los_Angeles', null),
+         (:MAIN::uuid, -3.00, '2026-09-11 12:00 America/Los_Angeles', now()),
+         (null::uuid,  -2.00, '2026-09-12 12:00 America/Los_Angeles', null),
+         (:MAIN::uuid, -4.00, '2026-10-01 00:30 America/Los_Angeles', null))
+   as v(site_id, delta, at, rev)
+where cs.id = 'a0000000-0000-0000-0000-000000000001';
+select results_eq(
+  $$ select site_id, shake_grams from brand_billing_summary('2026-09-01', '2026-09-30') order by site_id $$,
+  $$ values (:MAIN::uuid, 6.50::numeric), (:EAST::uuid, 0::numeric) $$,
+  'shake: MAIN September is 6.5 g (tagged, not reversed, in period); EAST none');
 
 -- Under the app role.
 create temp table su as

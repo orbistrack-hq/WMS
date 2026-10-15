@@ -161,9 +161,9 @@ export async function saveAllocation(input: {
   lines: { child_sku_id: string; units: number }[]
   idempotencyKey: string
   note?: string | null
-  // FB-4: optional packing shake recorded as a loss from the central pool.
-  shakeGrams?: number
-  shakeRef?: string
+  // FB-4: optional packing shake per brand (site), each recorded as a loss from
+  // the central pool tagged with that site so it can be reported per brand.
+  shakes?: { siteId: string; grams: number; ref: string }[]
   shakeBatch?: string | null
 }): Promise<Result<{ result: AllocationResult; shakeGrams: number }>> {
   const lines = input.lines.filter((l) => l.units > 0)
@@ -179,20 +179,25 @@ export async function saveAllocation(input: {
   })
   if (error) return { ok: false, error: rpcError(error) }
 
-  // Record shake as a loss out of the central pool (idempotent on the ref, so a
-  // retry never double-debits). Done after the allocation so both draw from the
-  // same pool; the DB non-negative guard blocks a shake that would overdraw.
-  const shake = Number(input.shakeGrams ?? 0)
-  if (shake > 0 && input.shakeRef) {
+  // Record each brand's shake as a loss out of the central pool (idempotent on
+  // its ref, so a retry never double-debits). Done after the allocation so both
+  // draw from the same pool; the DB non-negative guard blocks a shake that
+  // would overdraw.
+  const shakes = (input.shakes ?? []).filter(
+    (s) => Number(s.grams) > 0 && s.ref && s.siteId,
+  )
+  let shake = 0
+  for (const s of shakes) {
     const { error: shErr } = await supabase.rpc("record_shake", {
       p_product_id: input.productId,
-      p_grams: shake,
-      p_ref_id: input.shakeRef,
-      p_site_id: null,
+      p_grams: Number(s.grams),
+      p_ref_id: s.ref,
+      p_site_id: s.siteId,
       p_batch_no: input.shakeBatch?.trim() || null,
       p_note: null,
     })
     if (shErr) return { ok: false, error: rpcError(shErr) }
+    shake += Number(s.grams)
   }
 
   // Push each changed child's new available out to its client store (Step 6).

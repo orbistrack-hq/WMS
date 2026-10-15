@@ -70,6 +70,7 @@ type SummaryRow = {
   pick_fees: number | string
   missing_fee_order_ids: string[]
   missing_fee_order_numbers: string[]
+  shake_grams: number | string
 }
 
 const num = (v: number | string | null | undefined) => Number(v ?? 0)
@@ -121,11 +122,11 @@ export default async function BillingReportPage({
   ])
   const loadFailed = summary.error !== null
 
-  // Only brands with something billable get a row. Open groups and missing
-  // pick fees are disclosed below regardless — a brand asking "why is this
-  // month low" deserves the number.
+  // Only brands with something billable (or shake to report) get a row. Open
+  // groups and missing pick fees are disclosed below regardless — a brand
+  // asking "why is this month low" deserves the number.
   const rows = summary.data
-    .filter((r) => num(r.fulfilled_groups) > 0 || num(r.orders) > 0)
+    .filter((r) => num(r.fulfilled_groups) > 0 || num(r.orders) > 0 || num(r.shake_grams) > 0)
     .map((r) => ({
       siteId: r.site_id,
       name: r.site_name,
@@ -135,6 +136,7 @@ export default async function BillingReportPage({
       units: num(r.units),
       packaging: num(r.packaging),
       pickFees: num(r.pick_fees),
+      shakeGrams: num(r.shake_grams),
     }))
 
   const t = rows.reduce(
@@ -143,9 +145,10 @@ export default async function BillingReportPage({
       acc.units += b.units
       acc.packaging += b.packaging
       acc.pickFees += b.pickFees
+      acc.shakeGrams += b.shakeGrams
       return acc
     },
-    { orders: 0, units: 0, packaging: 0, pickFees: 0 },
+    { orders: 0, units: 0, packaging: 0, pickFees: 0, shakeGrams: 0 },
   )
   const totalBillable = t.packaging + t.pickFees
 
@@ -320,6 +323,7 @@ export default async function BillingReportPage({
                     <TableHead className="text-right">Packaging</TableHead>
                     <TableHead className="text-right">Pick fees</TableHead>
                     <TableHead className="text-right">Total billable</TableHead>
+                    <TableHead className="text-right">Shake</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -340,6 +344,9 @@ export default async function BillingReportPage({
                       <TableCell className="text-right font-semibold tabular-nums">
                         {formatCurrency(b.packaging + b.pickFees)}
                       </TableCell>
+                      <TableCell className="text-right tabular-nums text-muted-foreground">
+                        {formatGrams(b.shakeGrams)}
+                      </TableCell>
                     </TableRow>
                   ))}
                   <TableRow className="border-t-2 font-semibold">
@@ -356,6 +363,9 @@ export default async function BillingReportPage({
                     <TableCell className="text-right tabular-nums">
                       {formatCurrency(totalBillable)}
                     </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatGrams(t.shakeGrams)}
+                    </TableCell>
                   </TableRow>
                 </TableBody>
               </Table>
@@ -371,7 +381,9 @@ export default async function BillingReportPage({
                 fulfilled in.{" "}
               </>
             ) : null}
-            Total billable is packaging plus pick fees. Postage is not included — ShipStation
+            Shake is flower lost while packing for that brand in the period, recorded on the
+            allocate screen; it is not billed and not in the export. Total billable is
+            packaging plus pick fees. Postage is not included — ShipStation
             handles carrier charges directly. Product cost is not included either; that belongs
             to the brand, not to us.
           </p>
@@ -379,6 +391,11 @@ export default async function BillingReportPage({
       )}
     </>
   )
+}
+
+function formatGrams(g: number): string {
+  const v = Math.round(g * 100) / 100
+  return `${v.toLocaleString(undefined, { maximumFractionDigits: 2 })} g`
 }
 
 function Stat({
