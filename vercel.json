@@ -7,6 +7,10 @@
     {
       "path": "/api/store-sync/ship-conflict-sweep",
       "schedule": "30 5 * * *"
+    },
+    {
+      "path": "/api/store-sync/woo-cost-sweep",
+      "schedule": "0 10 * * *"
     }
   ]
 }
