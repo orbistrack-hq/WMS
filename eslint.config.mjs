@@ -15,6 +15,8 @@ const eslintConfig = [
       "build/**",
       "node_modules/**",
       "next-env.d.ts",
+      // Claude Code worktrees are full repo copies; lint only this checkout.
+      ".claude/worktrees/**",
     ],
   },
 ]

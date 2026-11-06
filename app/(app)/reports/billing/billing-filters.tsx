@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState, useTransition } from "react"
+import { useState, useTransition } from "react"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 
 import { Input } from "@/components/ui/input"
@@ -41,11 +41,15 @@ export function BillingFilters({ sites }: { sites: SiteOption[] }) {
   const [draftTo, setDraftTo] = useState(to)
 
   // Resync when the URL changes from anywhere else (preset buttons, Clear, back
-  // button) so the inputs never disagree with the report being shown.
-  useEffect(() => {
+  // button) so the inputs never disagree with the report being shown. Done
+  // during render (React's "adjust state when a prop changes" pattern) rather
+  // than in an effect, so there is no extra render with stale drafts.
+  const [syncedRange, setSyncedRange] = useState({ from, to })
+  if (syncedRange.from !== from || syncedRange.to !== to) {
+    setSyncedRange({ from, to })
     setDraftFrom(from)
     setDraftTo(to)
-  }, [from, to])
+  }
 
   const dirty = draftFrom !== from || draftTo !== to
   const invalid = Boolean(draftFrom && draftTo && draftFrom > draftTo)

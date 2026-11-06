@@ -13,7 +13,10 @@ select plan(6);
 \set SKU '''a0000000-0000-0000-0000-000000000001'''
 \set A '''11111111-1111-1111-1111-111111111111'''
 
-insert into orders(id, site_id) values ('99000000-2222-0000-0000-000000000001', :A);
+-- orders.group_id is NOT NULL, so the order needs its fulfillment group.
+insert into fulfillment_groups(id, site_id) values ('99000000-2222-0000-0000-0000000000f1', :A);
+insert into orders(id, site_id, group_id)
+  values ('99000000-2222-0000-0000-000000000001', :A, '99000000-2222-0000-0000-0000000000f1');
 insert into order_line_items(order_id, child_sku_id, quantity, unit_price)
   values ('99000000-2222-0000-0000-000000000001', :SKU, 2, 12);
 select charge_order_pick_fee('99000000-2222-0000-0000-000000000001');
