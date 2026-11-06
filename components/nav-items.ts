@@ -17,6 +17,7 @@ import {
   Plug,
   Truck,
   Settings,
+  Leaf,
 } from "lucide-react"
 
 export type NavItem = {
@@ -76,6 +77,12 @@ export const NAV_TREE: NavEntry[] = [
         href: "/inventory/packaging",
         icon: Package,
         description: "Central packaging stock on hand — receive and adjust",
+      },
+      {
+        label: "Shake",
+        href: "/inventory/shake",
+        icon: Leaf,
+        description: "Weigh shake into quality pots and split it to brands by sales",
       },
     ],
   },

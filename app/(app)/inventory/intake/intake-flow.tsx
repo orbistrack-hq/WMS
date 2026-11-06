@@ -104,11 +104,6 @@ export function IntakeFlow({
   const [units, setUnits] = useState<Record<string, string>>({})
   const [idemKey, setIdemKey] = useState("")
   const [allocNote, setAllocNote] = useState("")
-  // FB-4: shake (packing loss) grams per brand (site), each with a stable ref
-  // for idempotency, so shake can be reported per brand.
-  const [shakeGrams, setShakeGrams] = useState<Record<string, string>>({})
-  const [shakeRefs, setShakeRefs] = useState<Record<string, string>>({})
-  const [savedShake, setSavedShake] = useState(0)
 
   // Step 4
   const [result, setResult] = useState<AllocationResult | null>(null)
@@ -147,10 +142,7 @@ export function IntakeFlow({
         sum += (parseInt(units[ch.id] || "0", 10) || 0) * ch.gramsPerUnit
     return sum
   }, [clients, units])
-  const shakeFor = (siteId: string) =>
-    Math.max(0, parseFloat(shakeGrams[siteId] || "") || 0)
-  const shakeNum = clients.reduce((sum, c) => sum + shakeFor(c.siteId), 0)
-  const committed = allocatedGrams + shakeNum
+  const committed = allocatedGrams
   const remaining = poolAvailable - committed
   const isOver = committed > poolAvailable
   const nearly = !isOver && poolAvailable > 0 && remaining <= poolAvailable * 0.1
@@ -189,11 +181,7 @@ export function IntakeFlow({
       setClients(res.clients)
       setPoolAvailable(res.parentAvailableGrams)
       setUnits({})
-      setShakeGrams({})
       setIdemKey(crypto.randomUUID())
-      setShakeRefs(
-        Object.fromEntries(res.clients.map((c) => [c.siteId, crypto.randomUUID()])),
-      )
       setAllocateOnly(asAllocateOnly)
       setStep("allocate")
     })
@@ -234,18 +222,9 @@ export function IntakeFlow({
         lines,
         idempotencyKey: idemKey,
         note: allocNote,
-        shakes: clients
-          .map((c) => ({
-            siteId: c.siteId,
-            grams: shakeFor(c.siteId),
-            ref: shakeRefs[c.siteId],
-          }))
-          .filter((s) => s.grams > 0 && s.ref),
-        shakeBatch: batchNo,
       })
       if (!res.ok) return setError(res.error)
       setResult(res.result)
-      setSavedShake(res.shakeGrams)
       setSyncRows(null)
       loadSync(res.result.allocation_id)
       setStep("done")
@@ -265,8 +244,6 @@ export function IntakeFlow({
     setUnits({})
     setResult(null)
     setAllocNote("")
-    setShakeGrams({})
-    setSavedShake(0)
     setAllocateOnly(false)
   }
 
@@ -564,30 +541,6 @@ export function IntakeFlow({
                           </div>
                         )
                       })}
-                      <div className="mt-1 flex items-center justify-between gap-3 border-t border-border pt-3">
-                        <div className="flex min-w-0 flex-col">
-                          <span className="text-sm font-medium">Shake / loss (grams)</span>
-                          <span className="text-xs text-muted-foreground">
-                            Lost packing for {c.siteName} — not sent to the store
-                          </span>
-                        </div>
-                        <Input
-                          type="number"
-                          min="0"
-                          step="0.01"
-                          inputMode="decimal"
-                          aria-label={`${c.siteName} shake grams`}
-                          value={shakeGrams[c.siteId] ?? ""}
-                          onChange={(e) =>
-                            setShakeGrams((prev) => ({
-                              ...prev,
-                              [c.siteId]: e.target.value,
-                            }))
-                          }
-                          className="w-24 text-right tabular-nums"
-                          placeholder="0"
-                        />
-                      </div>
                     </CardContent>
                   </Card>
                 )
@@ -614,14 +567,6 @@ export function IntakeFlow({
                     {fmtGrams(allocatedGrams)}
                   </span>
                 </div>
-                {shakeNum > 0 ? (
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="text-muted-foreground">Shake (loss)</span>
-                    <span className="font-medium tabular-nums">
-                      {fmtGrams(shakeNum)}
-                    </span>
-                  </div>
-                ) : null}
                 <div
                   className={cn(
                     "flex items-center justify-between rounded-lg border px-3 py-2 text-sm",
@@ -700,9 +645,6 @@ export function IntakeFlow({
                 label="Client SKUs updated"
                 value={String(result.child_count)}
               />
-              {savedShake > 0 ? (
-                <Summary label="Shake (loss)" value={fmtGrams(savedShake)} />
-              ) : null}
             </dl>
 
             {/* Website sync status per child SKU */}

@@ -5,6 +5,7 @@ import {
   Boxes,
   CopyCheck,
   Layers,
+  Leaf,
   Scale,
   TriangleAlert,
   X,
@@ -164,6 +165,12 @@ export default async function CatalogPage({
         description="Master products, their child SKUs per location, and categories."
         action={
           <div className="flex gap-2">
+            <Link
+              href="/catalog/quality"
+              className={buttonVariants({ variant: "outline" })}
+            >
+              <Leaf data-icon="inline-start" /> Strain quality
+            </Link>
             <Link
               href="/catalog/backfill"
               className={buttonVariants({ variant: "outline" })}
