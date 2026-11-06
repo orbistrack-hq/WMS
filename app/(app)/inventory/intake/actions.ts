@@ -161,11 +161,7 @@ export async function saveAllocation(input: {
   lines: { child_sku_id: string; units: number }[]
   idempotencyKey: string
   note?: string | null
-  // FB-4: optional packing shake per brand (site), each recorded as a loss from
-  // the central pool tagged with that site so it can be reported per brand.
-  shakes?: { siteId: string; grams: number; ref: string }[]
-  shakeBatch?: string | null
-}): Promise<Result<{ result: AllocationResult; shakeGrams: number }>> {
+}): Promise<Result<{ result: AllocationResult }>> {
   const lines = input.lines.filter((l) => l.units > 0)
   if (lines.length === 0)
     return { ok: false, error: "Enter at least one quantity to allocate." }
@@ -179,27 +175,6 @@ export async function saveAllocation(input: {
   })
   if (error) return { ok: false, error: rpcError(error) }
 
-  // Record each brand's shake as a loss out of the central pool (idempotent on
-  // its ref, so a retry never double-debits). Done after the allocation so both
-  // draw from the same pool; the DB non-negative guard blocks a shake that
-  // would overdraw.
-  const shakes = (input.shakes ?? []).filter(
-    (s) => Number(s.grams) > 0 && s.ref && s.siteId,
-  )
-  let shake = 0
-  for (const s of shakes) {
-    const { error: shErr } = await supabase.rpc("record_shake", {
-      p_product_id: input.productId,
-      p_grams: Number(s.grams),
-      p_ref_id: s.ref,
-      p_site_id: s.siteId,
-      p_batch_no: input.shakeBatch?.trim() || null,
-      p_note: null,
-    })
-    if (shErr) return { ok: false, error: rpcError(shErr) }
-    shake += Number(s.grams)
-  }
-
   // Push each changed child's new available out to its client store (Step 6).
   await kickOutboundDrain()
 
@@ -211,7 +186,6 @@ export async function saveAllocation(input: {
       total_grams: Number(r.total_grams),
       remaining_grams: Number(r.remaining_grams),
     },
-    shakeGrams: shake > 0 ? shake : 0,
   }
 }
 

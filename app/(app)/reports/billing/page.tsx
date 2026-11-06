@@ -381,8 +381,9 @@ export default async function BillingReportPage({
                 fulfilled in.{" "}
               </>
             ) : null}
-            Shake is flower lost while packing for that brand in the period, recorded on the
-            allocate screen; it is not billed and not in the export. Total billable is
+            Shake is the grams the brand received from the shake pots in the period (split by
+            its share of sales on the Shake screen), plus older shake recorded on the allocate
+            screen; it is not billed and not in the export. Total billable is
             packaging plus pick fees. Postage is not included — ShipStation
             handles carrier charges directly. Product cost is not included either; that belongs
             to the brand, not to us.
