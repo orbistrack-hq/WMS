@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState, useTransition } from "react"
+import { useState, useTransition } from "react"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 
 import { Input } from "@/components/ui/input"
@@ -38,10 +38,14 @@ export function ReportsFilters({ sites }: { sites: SiteOption[] }) {
   // single-value and stay instant.
   const [draftFrom, setDraftFrom] = useState(from)
   const [draftTo, setDraftTo] = useState(to)
-  useEffect(() => {
+  // Resync when the URL changes elsewhere (Clear, back button), during render
+  // rather than in an effect.
+  const [syncedRange, setSyncedRange] = useState({ from, to })
+  if (syncedRange.from !== from || syncedRange.to !== to) {
+    setSyncedRange({ from, to })
     setDraftFrom(from)
     setDraftTo(to)
-  }, [from, to])
+  }
   const datesDirty = draftFrom !== from || draftTo !== to
   const datesInvalid = Boolean(draftFrom && draftTo && draftFrom > draftTo)
 

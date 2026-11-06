@@ -31,7 +31,10 @@ create temp table fo as select create_order(:MAIN,
   '[{"child_sku_id":"98000000-0000-0000-0000-000000000002","quantity":5}]'::jsonb) as id;
 
 -- 1. Non-forced merge is blocked by the reservation.
-select throws_ok($$ select adopt_bogo_sku('98000000-0000-0000-0000-000000000002','98000000-0000-0000-0000-000000000001') $$,
+--    (Two-arg throws_ok treats its 2nd arg as the expected error message, so
+--    match the message with throws_like and keep the description separate.)
+select throws_like($$ select adopt_bogo_sku('98000000-0000-0000-0000-000000000002','98000000-0000-0000-0000-000000000001') $$,
+  '%has reserved/layby stock%',
   'a non-forced merge refuses while the BOGO holds reserved stock');
 
 -- 2. Force merge migrates the reservation onto the paid pool.

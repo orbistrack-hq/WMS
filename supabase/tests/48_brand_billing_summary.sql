@@ -163,7 +163,9 @@ from child_skus cs,
 where cs.id = 'a0000000-0000-0000-0000-000000000001';
 select results_eq(
   $$ select site_id, shake_grams from brand_billing_summary('2026-09-01', '2026-09-30') order by site_id $$,
-  $$ values (:MAIN::uuid, 6.50::numeric), (:EAST::uuid, 0::numeric) $$,
+  -- psql does not expand :MAIN / :EAST inside a dollar-quoted string.
+  $$ values ('11111111-1111-1111-1111-111111111111'::uuid, 6.50::numeric),
+            ('22222222-2222-2222-2222-222222222222'::uuid, 0::numeric) $$,
   'shake: MAIN September is 6.5 g (tagged, not reversed, in period); EAST none');
 
 -- Under the app role.
