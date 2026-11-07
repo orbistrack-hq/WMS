@@ -4,6 +4,7 @@ import {
   addDays,
   gramsUsed,
   gramsWithPounds,
+  potLabel,
   presetPeriod,
   suggestFill,
   toGrams,
@@ -44,15 +45,18 @@ describe("suggestFill", () => {
 })
 
 describe("weights", () => {
-  it("converts on the house convention", () => {
-    expect(toGrams(1, "lb")).toBe(448)
-    expect(toGrams(2.5, "oz")).toBe(70)
+  it("weighs shake on a 454 g pound", () => {
+    expect(toGrams(1, "lb")).toBe(454)
+    expect(toGrams(50, "lb")).toBe(22700)
+    expect(toGrams(16, "oz")).toBe(454)
+    expect(toGrams(2.5, "oz")).toBe(70.94)
     expect(toGrams(12.345, "g")).toBe(12.35)
   })
 
   it("adds pounds once it's at least a quarter pound", () => {
     expect(gramsWithPounds(84)).toBe("84g")
-    expect(gramsWithPounds(1232)).toBe("1,232g (2.75 lb)")
+    expect(gramsWithPounds(113)).toBe("113g")
+    expect(gramsWithPounds(1362)).toBe("1,362g (3.00 lb)")
   })
 })
 
@@ -80,5 +84,12 @@ describe("presetPeriod", () => {
   it("adds days across month and year ends", () => {
     expect(addDays("2026-12-31", 1)).toBe("2027-01-01")
     expect(addDays("2026-03-01", -1)).toBe("2026-02-28")
+  })
+})
+
+describe("potLabel", () => {
+  it("labels the screen pots and the hidden premium pot", () => {
+    expect(potLabel("light_dep")).toBe("Light dep")
+    expect(potLabel("premium")).toBe("Premium")
   })
 })

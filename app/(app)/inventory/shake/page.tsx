@@ -5,7 +5,7 @@ import { createClient } from "@/lib/supabase/server"
 import { PageHeader } from "@/components/page-header"
 import { buttonVariants } from "@/components/ui/button"
 import { todayISODate } from "@/lib/format"
-import { QUALITIES, type Quality } from "@/lib/shake"
+import { QUALITIES, isQuality, type Quality } from "@/lib/shake"
 
 import { ShakeScreen, type DistributionRow, type EntryRow } from "./shake-screen"
 
@@ -13,7 +13,7 @@ export const dynamic = "force-dynamic"
 
 type RawDistribution = {
   id: string
-  quality: Quality
+  quality: string
   period_from: string
   period_to: string
   total_grams: number | string
@@ -75,7 +75,8 @@ export default async function ShakePage() {
   >
   const distributions: DistributionRow[] = ((distRes.data ?? []) as unknown as RawDistribution[]).map(
     (d) => {
-      if (!d.reversed_at) {
+      // Only the screen's pots move "Since last split"; premium (0118) is history only.
+      if (!d.reversed_at && isQuality(d.quality)) {
         const cur = lastPeriodTo[d.quality]
         if (!cur || d.period_to > cur) lastPeriodTo[d.quality] = d.period_to
       }
@@ -103,7 +104,7 @@ export default async function ShakePage() {
 
   const entries: EntryRow[] = (entriesRes.data ?? []).map((e) => ({
     id: e.id,
-    quality: e.quality as Quality,
+    quality: e.quality,
     grams: Number(e.delta_grams),
     note: e.note,
     createdAt: e.created_at,

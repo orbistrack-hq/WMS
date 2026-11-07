@@ -28,6 +28,7 @@ import {
   WEIGH_UNITS,
   gramsUsed,
   gramsWithPounds,
+  potLabel,
   presetPeriod,
   suggestFill,
   toGrams,
@@ -47,7 +48,8 @@ import {
 
 export type EntryRow = {
   id: string
-  quality: Quality
+  /** A pot name: one of QUALITIES, or "premium" for the 0118 one-off. */
+  quality: string
   grams: number
   note: string | null
   createdAt: string
@@ -56,7 +58,8 @@ export type EntryRow = {
 
 export type DistributionRow = {
   id: string
-  quality: Quality
+  /** A pot name: one of QUALITIES, or "premium" for the 0118 one-off. */
+  quality: string
   periodFrom: string
   periodTo: string
   totalGrams: number
@@ -674,7 +677,7 @@ function History({
                 {distributions.map((d) => (
                   <TableRow key={d.id} className={cn(d.reversed && "opacity-50")}>
                     <TableCell className="whitespace-nowrap">{dateTime.format(new Date(d.createdAt))}</TableCell>
-                    <TableCell>{QUALITY_LABEL[d.quality]}</TableCell>
+                    <TableCell>{potLabel(d.quality)}</TableCell>
                     <TableCell className="whitespace-nowrap">
                       {fmtDay(d.periodFrom)} – {fmtDay(d.periodTo)}
                     </TableCell>
@@ -697,7 +700,7 @@ function History({
                             onUndo(
                               "distribution",
                               d.id,
-                              `the ${QUALITY_LABEL[d.quality].toLowerCase()} split of ${gramsWithPounds(d.totalGrams)}`,
+                              `the ${potLabel(d.quality).toLowerCase()} split of ${gramsWithPounds(d.totalGrams)}`,
                             )
                           }
                         >
@@ -729,7 +732,7 @@ function History({
                 >
                   <div className="flex min-w-0 flex-col">
                     <span className="text-sm tabular-nums">
-                      {gramsWithPounds(e.grams)} · {QUALITY_LABEL[e.quality]}
+                      {gramsWithPounds(e.grams)} · {potLabel(e.quality)}
                     </span>
                     <span className="truncate text-xs text-muted-foreground">
                       {dateTime.format(new Date(e.createdAt))}
@@ -747,7 +750,7 @@ function History({
                         onUndo(
                           "entry",
                           e.id,
-                          `adding ${gramsWithPounds(e.grams)} of ${QUALITY_LABEL[e.quality].toLowerCase()} shake`,
+                          `adding ${gramsWithPounds(e.grams)} of ${potLabel(e.quality).toLowerCase()} shake`,
                         )
                       }
                     >

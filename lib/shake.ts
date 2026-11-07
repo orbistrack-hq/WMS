@@ -14,23 +14,40 @@ export const QUALITY_LABEL: Record<Quality, string> = {
   exotic: "Exotic",
 }
 
+/**
+ * Label for any pot in history, including the hidden one-off "premium" pot
+ * (migration 0118), which is never offered on the screen.
+ */
+export function potLabel(pot: string): string {
+  if (isQuality(pot)) return QUALITY_LABEL[pot]
+  if (pot === "premium") return "Premium"
+  return pot
+}
+
 export function isQuality(v: unknown): v is Quality {
   return typeof v === "string" && (QUALITIES as readonly string[]).includes(v)
 }
 
-/** Weighing units the team uses, on the house convention (1 oz = 28 g, 1 lb = 448 g). */
-export const WEIGH_UNITS = { g: 1, oz: 28, lb: 448 } as const
+/**
+ * Grams in a pound for shake only. Shake is weighed on a true pound (454 g),
+ * unlike strain stock, which stays on the 448 g house pound (lib/catalog/weight.ts,
+ * intake). 1 oz is a sixteenth of that pound.
+ */
+export const SHAKE_LB_GRAMS = 454
+
+/** Weighing units on the Shake screen. */
+export const WEIGH_UNITS = { g: 1, oz: SHAKE_LB_GRAMS / 16, lb: SHAKE_LB_GRAMS } as const
 export type WeighUnit = keyof typeof WEIGH_UNITS
 
 export function toGrams(amount: number, unit: WeighUnit): number {
   return Math.round(amount * WEIGH_UNITS[unit] * 100) / 100
 }
 
-/** "1,234g (2.75 lb)" style: grams first, pounds as a hint once it's big. */
+/** "1,362g (3.00 lb)" style: grams first, pounds as a hint from a quarter pound up. */
 export function gramsWithPounds(grams: number): string {
   const g = Math.round(grams * 100) / 100
   const gs = `${g.toLocaleString("en-US", { maximumFractionDigits: 2 })}g`
-  return g >= 112 ? `${gs} (${(g / 448).toFixed(2)} lb)` : gs
+  return g >= SHAKE_LB_GRAMS / 4 ? `${gs} (${(g / SHAKE_LB_GRAMS).toFixed(2)} lb)` : gs
 }
 
 export type Variant = { id: string; gramsPerUnit: number }
